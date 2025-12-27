@@ -5,6 +5,7 @@ from typing import Optional
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import noload
 
 from app.benchmarks import get_adapter
 from app.benchmarks.base import ItemResult
@@ -66,8 +67,10 @@ class BenchmarkWorker:
         """
         async with async_session_maker() as db:
             # Claim a queued run with row lock
+            # Use noload to prevent JOIN that's incompatible with FOR UPDATE
             result = await db.execute(
                 select(BenchmarkRun)
+                .options(noload(BenchmarkRun.model))
                 .where(BenchmarkRun.status == RunStatus.QUEUED.value)
                 .order_by(BenchmarkRun.created_at)
                 .limit(1)
