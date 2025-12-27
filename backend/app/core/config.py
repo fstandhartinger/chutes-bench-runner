@@ -44,12 +44,19 @@ class Settings(BaseSettings):
 
     @property
     def async_database_url(self) -> str:
-        """Convert database URL to async version."""
+        """Convert database URL to async version.
+        
+        Also converts sslmode to ssl for asyncpg compatibility:
+        - sslmode=require -> ssl=require
+        """
         url = self.database_url
         if url.startswith("postgresql://"):
-            return url.replace("postgresql://", "postgresql+asyncpg://", 1)
-        if url.startswith("postgres://"):
-            return url.replace("postgres://", "postgresql+asyncpg://", 1)
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        elif url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        
+        # Convert sslmode to ssl for asyncpg compatibility
+        url = url.replace("sslmode=", "ssl=")
         return url
 
     @property
