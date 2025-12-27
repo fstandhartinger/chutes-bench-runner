@@ -26,9 +26,14 @@ app = FastAPI(
 )
 
 # CORS middleware
+cors_origins = [
+    "http://localhost:3000",
+    "https://chutes-bench-runner-ui.onrender.com",
+    "https://chutes-bench-runner-frontend.onrender.com",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
