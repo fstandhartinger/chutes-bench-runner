@@ -8,10 +8,8 @@ services:
     runtime: python
     region: oregon
     plan: starter
-    buildCommand: |
-      cd backend && pip install -e ".[benchmarks]" && alembic upgrade head
-    startCommand: |
-      cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    buildCommand: cd backend && pip install -r requirements.txt
+    startCommand: cd backend && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -22,8 +20,8 @@ services:
       - key: ADMIN_SECRET
         sync: false
       - key: PYTHON_VERSION
-        value: "3.11"
-    healthCheckPath: /api/health
+        value: "3.11.6"
+    healthCheckPath: /api/v1/health
 
   # Background Worker
   - type: worker
@@ -31,10 +29,8 @@ services:
     runtime: python
     region: oregon
     plan: starter
-    buildCommand: |
-      cd backend && pip install -e ".[benchmarks]"
-    startCommand: |
-      cd backend && python -m app.worker.runner
+    buildCommand: cd backend && pip install -r requirements.txt
+    startCommand: cd backend && python -m app.worker.runner
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -45,7 +41,7 @@ services:
       - key: WORKER_POLL_INTERVAL
         value: "5"
       - key: PYTHON_VERSION
-        value: "3.11"
+        value: "3.11.6"
 
   # Frontend
   - type: web
