@@ -128,10 +128,17 @@ Answer:"""
             )
 
         except Exception as e:
-            logger.error("MMLU-Pro evaluation failed", item_id=item_id, error=str(e))
+            # Extract more details for HTTP errors
+            error_detail = str(e)
+            if hasattr(e, 'response'):
+                try:
+                    error_detail = f"{e}: {e.response.text}"
+                except Exception:
+                    pass
+            logger.error("MMLU-Pro evaluation failed", item_id=item_id, error=error_detail)
             return ItemResult(
                 item_id=item_id,
                 prompt=prompt,
-                error=str(e),
+                error=error_detail,
             )
 
