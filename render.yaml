@@ -50,11 +50,11 @@ services:
     region: oregon
     plan: starter
     rootDir: frontend
-    buildCommand: npm ci && npm run build
+    buildCommand: npm install && npm run build
     startCommand: npm start
     envVars:
       - key: NEXT_PUBLIC_BACKEND_URL
-        value: https://chutes-bench-runner-api.onrender.com
+        value: https://chutes-bench-runner-api-v2.onrender.com
       - key: NODE_VERSION
         value: "20"
 
