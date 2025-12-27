@@ -36,7 +36,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshAuthState = useCallback(async () => {
     try {
-      const response = await fetch(`${BACKEND_URL}/api/auth/status`, {
+      // Use frontend API route that proxies to backend with cookie
+      const response = await fetch('/api/auth/status', {
         credentials: 'include',
       });
       
@@ -80,7 +81,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      await fetch(`${BACKEND_URL}/api/auth/logout`, {
+      // Use frontend API route that handles cookie deletion
+      await fetch('/api/auth/logout', {
         method: 'POST',
         credentials: 'include',
       });
