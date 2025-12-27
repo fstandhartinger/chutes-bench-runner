@@ -44,25 +44,28 @@ class ChutesClient:
         Returns:
             List of model dictionaries with slug, name, tagline, etc.
         """
-        client = await self._get_client()
-        all_items: list[dict[str, Any]] = []
-        page = 0
-        limit = 100
+        # Use a separate client without auth for public API
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0),
+        ) as client:
+            all_items: list[dict[str, Any]] = []
+            page = 0
+            limit = 500
 
-        while True:
-            url = f"{self.models_api_url}/chutes/?include_public=true&page={page}&limit={limit}&include_schemas=false"
-            logger.debug("Fetching models", url=url, page=page)
+            while True:
+                url = f"{self.models_api_url}/chutes/?include_public=true&page={page}&limit={limit}&include_schemas=false"
+                logger.debug("Fetching models", url=url, page=page)
 
-            response = await client.get(url)
-            response.raise_for_status()
-            data = response.json()
+                response = await client.get(url)
+                response.raise_for_status()
+                data = response.json()
 
-            items = data.get("items", [])
-            all_items.extend(items)
+                items = data.get("items", [])
+                all_items.extend(items)
 
-            if len(items) < limit or len(all_items) >= data.get("total", 0):
-                break
-            page += 1
+                if len(items) < limit or len(all_items) >= data.get("total", 0):
+                    break
+                page += 1
 
         # Transform to consistent format
         models = [
