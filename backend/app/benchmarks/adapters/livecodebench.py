@@ -80,12 +80,13 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             return ItemResult(item_id=item_id, error=f"Item {item_id} not found")
 
         starter = item.get("starter_code", "")
+        starter_section = f"Starter code:\n{starter}" if starter else ""
         prompt = f"""Solve the following coding problem. Provide a complete Python solution.
 
 Problem:
 {item["question"]}
 
-{f"Starter code:\n{starter}" if starter else ""}
+{starter_section}
 
 Solution:
 ```python
