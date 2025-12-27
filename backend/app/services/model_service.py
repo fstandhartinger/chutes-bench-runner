@@ -2,6 +2,7 @@
 from typing import Optional
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -13,50 +14,55 @@ logger = get_logger(__name__)
 
 async def sync_models(db: AsyncSession) -> int:
     """
-    Sync models from Chutes API to local database.
+    Sync models from Chutes API to local database using upsert.
     
     Returns:
         Number of models updated/created
     """
     client = get_chutes_client()
     models = await client.list_models()
-    count = 0
-
+    
+    # Filter out models without slugs and deduplicate by slug
+    seen_slugs: set[str] = set()
+    unique_models: list[dict] = []
     for model_data in models:
         slug = model_data.get("slug")
-        if not slug:
-            continue
-
-        # Check if model exists
-        result = await db.execute(select(Model).where(Model.slug == slug))
-        existing = result.scalar_one_or_none()
-
-        if existing:
-            # Update existing model
-            existing.name = model_data.get("name", slug)
-            existing.tagline = model_data.get("tagline")
-            existing.user = model_data.get("user")
-            existing.logo = model_data.get("logo")
-            existing.chute_id = model_data.get("chute_id")
-            existing.instance_count = model_data.get("instance_count", 0)
-            existing.is_active = True
-        else:
-            # Create new model
-            new_model = Model(
-                slug=slug,
-                name=model_data.get("name", slug),
-                tagline=model_data.get("tagline"),
-                user=model_data.get("user"),
-                logo=model_data.get("logo"),
-                chute_id=model_data.get("chute_id"),
-                instance_count=model_data.get("instance_count", 0),
-                is_active=True,
-            )
-            db.add(new_model)
-
-        count += 1
-
+        if slug and slug not in seen_slugs:
+            seen_slugs.add(slug)
+            unique_models.append(model_data)
+    
+    if not unique_models:
+        logger.warning("No models to sync")
+        return 0
+    
+    # Use PostgreSQL upsert (INSERT ... ON CONFLICT UPDATE)
+    for model_data in unique_models:
+        slug = model_data.get("slug")
+        stmt = pg_insert(Model).values(
+            slug=slug,
+            name=model_data.get("name", slug),
+            tagline=model_data.get("tagline"),
+            user=model_data.get("user"),
+            logo=model_data.get("logo"),
+            chute_id=model_data.get("chute_id"),
+            instance_count=model_data.get("instance_count", 0),
+            is_active=True,
+        ).on_conflict_do_update(
+            index_elements=["slug"],
+            set_={
+                "name": model_data.get("name", slug),
+                "tagline": model_data.get("tagline"),
+                "user": model_data.get("user"),
+                "logo": model_data.get("logo"),
+                "chute_id": model_data.get("chute_id"),
+                "instance_count": model_data.get("instance_count", 0),
+                "is_active": True,
+            }
+        )
+        await db.execute(stmt)
+    
     await db.commit()
+    count = len(unique_models)
     logger.info("Models synced", count=count)
     return count
 
