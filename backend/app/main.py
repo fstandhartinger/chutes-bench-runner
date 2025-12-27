@@ -6,15 +6,28 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.core.config import get_settings
-from app.core.logging import setup_logging
+from app.core.logging import get_logger, setup_logging
+from app.db.session import async_session_maker
+from app.services.model_service import sync_models
 
 settings = get_settings()
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     setup_logging()
+    
+    # Sync models from Chutes API on startup
+    logger.info("Syncing models from Chutes API on startup...")
+    try:
+        async with async_session_maker() as db:
+            count = await sync_models(db)
+            logger.info(f"Synced {count} models from Chutes API")
+    except Exception as e:
+        logger.error(f"Failed to sync models on startup: {e}")
+    
     yield
 
 
