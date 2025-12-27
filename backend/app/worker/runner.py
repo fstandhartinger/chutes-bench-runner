@@ -250,7 +250,7 @@ class BenchmarkWorker:
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
                     error=result.error,
-                    metadata=result.metadata,
+                    item_metadata=result.metadata,
                 )
 
                 if result.is_correct:

@@ -126,7 +126,7 @@ def upgrade() -> None:
         sa.Column("input_tokens", sa.Integer, nullable=True),
         sa.Column("output_tokens", sa.Integer, nullable=True),
         sa.Column("error", sa.Text, nullable=True),
-        sa.Column("metadata", postgresql.JSONB, nullable=True),
+        sa.Column("item_metadata", postgresql.JSONB, nullable=True),
         sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
     )
     op.create_index("ix_benchmark_item_results_run_benchmark_id", "benchmark_item_results", ["run_benchmark_id"])
