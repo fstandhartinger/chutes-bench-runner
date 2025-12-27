@@ -16,7 +16,7 @@ python-dotenv>=1.0.0
 tenacity>=8.2.3
 structlog>=24.1.0
 
-# Benchmarks (optional - install for dataset loading)
-# datasets>=2.16.0
-# transformers>=4.36.0
+# Benchmarks (for dataset loading)
+datasets>=2.16.0
+huggingface-hub>=0.20.0
 
