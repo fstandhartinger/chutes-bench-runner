@@ -1,0 +1,71 @@
+# Render Infrastructure-as-Code
+# Deploy with: render deploy
+
+services:
+  # Backend API
+  - type: web
+    name: chutes-bench-runner-api
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: |
+      cd backend && pip install -e ".[benchmarks]" && alembic upgrade head
+    startCommand: |
+      cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: chutes-bench-runner-db
+          property: connectionString
+      - key: CHUTES_API_KEY
+        sync: false
+      - key: ADMIN_SECRET
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.11"
+    healthCheckPath: /api/health
+
+  # Background Worker
+  - type: worker
+    name: chutes-bench-runner-worker
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: |
+      cd backend && pip install -e ".[benchmarks]"
+    startCommand: |
+      cd backend && python -m app.worker.runner
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: chutes-bench-runner-db
+          property: connectionString
+      - key: CHUTES_API_KEY
+        sync: false
+      - key: WORKER_POLL_INTERVAL
+        value: "5"
+      - key: PYTHON_VERSION
+        value: "3.11"
+
+  # Frontend
+  - type: web
+    name: chutes-bench-runner-frontend
+    runtime: node
+    region: oregon
+    plan: starter
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NEXT_PUBLIC_BACKEND_URL
+        value: https://chutes-bench-runner-api.onrender.com
+      - key: NODE_VERSION
+        value: "20"
+
+databases:
+  - name: chutes-bench-runner-db
+    databaseName: bench_runner
+    user: bench
+    region: oregon
+    plan: free
+

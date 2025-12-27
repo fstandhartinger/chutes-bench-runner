@@ -1,0 +1,64 @@
+[project]
+name = "chutes-bench-runner-backend"
+version = "0.1.0"
+description = "Backend for Chutes LLM Benchmark Runner"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "gunicorn>=21.2.0",
+    "sqlalchemy>=2.0.25",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.1",
+    "pydantic>=2.5.3",
+    "pydantic-settings>=2.1.0",
+    "httpx>=0.26.0",
+    "sse-starlette>=1.8.2",
+    "python-multipart>=0.0.6",
+    "reportlab>=4.0.8",
+    "python-dotenv>=1.0.0",
+    "tenacity>=8.2.3",
+    "structlog>=24.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.4",
+    "pytest-asyncio>=0.23.3",
+    "pytest-cov>=4.1.0",
+    "httpx>=0.26.0",
+    "mypy>=1.8.0",
+    "ruff>=0.1.13",
+    "types-python-dateutil>=2.8.19",
+]
+benchmarks = [
+    "evalscope>=0.5.0",
+    "datasets>=2.16.0",
+    "transformers>=4.36.0",
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
