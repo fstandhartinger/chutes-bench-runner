@@ -10,23 +10,51 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 settings = get_settings()
 
+# IDP endpoint for user token inference
+IDP_INFERENCE_URL = "https://idp.chutes.ai/v1"
+
 
 class ChutesClient:
-    """Client for Chutes API operations."""
+    """Client for Chutes API operations.
+    
+    Supports two modes:
+    1. API key mode: Uses CHUTES_API_KEY for inference (default)
+    2. User token mode: Uses user's OAuth access token for inference (BYOC)
+    """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        user_access_token: Optional[str] = None,
+    ):
+        """Initialize the Chutes client.
+        
+        Args:
+            api_key: Chutes API key (fallback if no user token)
+            user_access_token: User's OAuth access token for BYOC
+        """
         self.api_key = api_key or settings.chutes_api_key
+        self.user_access_token = user_access_token
         self.base_url = settings.chutes_api_base_url
         self.models_api_url = settings.chutes_models_api_url
         self._client: Optional[httpx.AsyncClient] = None
+        self._is_user_token_mode = user_access_token is not None
+
+    @property
+    def using_user_token(self) -> bool:
+        """Check if client is using user's token."""
+        return self._is_user_token_mode
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
+            # Use user token if available, otherwise use API key
+            auth_token = self.user_access_token or self.api_key
+            
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(60.0, connect=10.0),
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
+                    "Authorization": f"Bearer {auth_token}",
                     "Content-Type": "application/json",
                 },
             )
@@ -97,6 +125,9 @@ class ChutesClient:
         """
         Run inference against a Chutes model.
         
+        When using a user's OAuth token (BYOC mode), requests go through the IDP
+        endpoint with a Host header override to route to the LLM gateway.
+        
         Args:
             model_slug: The model identifier/slug
             messages: List of message dicts with 'role' and 'content'
@@ -108,8 +139,6 @@ class ChutesClient:
         Returns:
             Response dict with 'choices', 'usage', etc.
         """
-        client = await self._get_client()
-
         payload: dict[str, Any] = {
             "model": model_slug,
             "messages": messages,
@@ -121,12 +150,36 @@ class ChutesClient:
             payload["stop"] = stop
         payload.update(kwargs)
 
-        logger.debug("Running inference", model=model_slug, message_count=len(messages))
-
-        response = await client.post(
-            f"{self.base_url}/chat/completions",
-            json=payload,
+        logger.debug(
+            "Running inference",
+            model=model_slug,
+            message_count=len(messages),
+            user_token_mode=self._is_user_token_mode,
         )
+
+        if self._is_user_token_mode:
+            # Use IDP endpoint with Host header for user token auth
+            # This routes through the IDP which validates the user's token
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(120.0, connect=10.0),
+            ) as client:
+                response = await client.post(
+                    f"{IDP_INFERENCE_URL}/chat/completions",
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {self.user_access_token}",
+                        "Host": "llm.chutes.ai",
+                        "Content-Type": "application/json",
+                    },
+                )
+        else:
+            # Use standard API with API key
+            client = await self._get_client()
+            response = await client.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+            )
+        
         response.raise_for_status()
         result = response.json()
 
@@ -170,12 +223,26 @@ class ChutesClient:
         return text, metadata
 
 
-# Singleton client instance
+# Singleton client instance for API key mode
 _client: Optional[ChutesClient] = None
 
 
-def get_chutes_client() -> ChutesClient:
-    """Get singleton Chutes client."""
+def get_chutes_client(user_access_token: Optional[str] = None) -> ChutesClient:
+    """Get Chutes client.
+    
+    Args:
+        user_access_token: If provided, returns a new client using the user's
+                          OAuth token for BYOC mode. Otherwise returns the
+                          singleton API key client.
+    
+    Returns:
+        ChutesClient configured for the appropriate auth mode.
+    """
+    if user_access_token:
+        # Always create a new client for user token mode
+        return ChutesClient(user_access_token=user_access_token)
+    
+    # Use singleton for API key mode
     global _client
     if _client is None:
         _client = ChutesClient()

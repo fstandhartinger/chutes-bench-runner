@@ -34,10 +34,13 @@ class Settings(BaseSettings):
     worker_poll_interval: int = 5
     worker_max_concurrent: int = 1
 
-    # Chutes IDP (future)
+    # Chutes IDP
     chutes_client_id: Optional[str] = None
     chutes_client_secret: Optional[str] = None
-    chutes_idp_url: str = "https://api.chutes.ai"
+    chutes_idp_url: str = "https://idp.chutes.ai"
+    
+    # Frontend URL (for redirects and CORS)
+    frontend_url: str = "http://localhost:3000"
 
     # PDF
     pdf_font_path: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
