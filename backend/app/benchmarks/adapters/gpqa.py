@@ -1,5 +1,6 @@
 """GPQA Diamond benchmark adapter."""
 import time
+import re
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
@@ -127,7 +128,14 @@ Answer:"""
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
-            answer = response_text.strip().upper()[:1]
+            answer = response_text.strip().upper()
+            # Find the letter in the response - models sometimes say "The correct answer is A"
+            match = re.search(r"\b([A-D])\b", answer)
+            if match:
+                answer = match.group(1)
+            else:
+                answer = answer[:1]
+                
             is_correct = answer == correct_letter
 
             return ItemResult(

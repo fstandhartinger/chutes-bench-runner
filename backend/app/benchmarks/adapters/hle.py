@@ -1,5 +1,6 @@
 """Humanity's Last Exam (HLE) benchmark adapter."""
 import time
+import re
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
@@ -117,8 +118,12 @@ Answer:"""
             expected = item["answer"].strip().lower()
             response_clean = response_text.strip().lower()
             
-            # Simple exact match for now
-            is_correct = expected in response_clean or response_clean in expected
+            # Simple flexible match
+            expected_words = set(re.findall(r'\w+', expected))
+            response_words = set(re.findall(r'\w+', response_clean))
+            
+            # If all expected words are in response, it's correct
+            is_correct = expected_words.issubset(response_words) or expected in response_clean or response_clean in expected
 
             return ItemResult(
                 item_id=item_id,
