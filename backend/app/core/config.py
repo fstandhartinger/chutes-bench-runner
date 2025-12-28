@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # PDF
     pdf_font_path: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
+    # Sandy Sandbox
+    sandy_base_url: str = "https://sandy.65.109.49.103.nip.io"
+    sandy_api_key: Optional[str] = None
+
     @property
     def async_database_url(self) -> str:
         """Convert database URL to async version.

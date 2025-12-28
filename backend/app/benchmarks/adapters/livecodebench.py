@@ -1,10 +1,12 @@
 """LiveCodeBench benchmark adapter."""
 import time
+import re
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
 from app.core.logging import get_logger
+from app.services.sandy_service import SandyService
 
 logger = get_logger(__name__)
 
@@ -20,10 +22,11 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []
+        self.sandy = SandyService()
 
     def get_name(self) -> str:
         return "livecodebench"
-
+    
     def get_display_name(self) -> str:
         return "LiveCodeBench"
 
@@ -31,7 +34,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         return True
 
     def get_setup_notes(self) -> Optional[str]:
-        return "LiveCodeBench requires local code execution environment for verification."
+        return "LiveCodeBench requires a sandbox for code execution."
 
     async def get_total_items(self) -> int:
         if not self._items:
@@ -54,7 +57,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             sources = [
                 ("livecodebench/code_generation_lite", "test", ["question_content", "starter_code"]),
                 ("codeparrot/apps", "test", ["question", "starter_code"]),
-                ("openai_humaneval", "test", ["prompt", None]),
+                ("openai_humaneval", "test", ["prompt", "test"]),
             ]
             
             dataset = None
@@ -73,9 +76,9 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             if dataset is None:
                 # Use placeholder coding problems
                 self._items = [
-                    {"id": "0", "question": "Write a function that returns the sum of two integers.", "starter_code": "def add(a, b):", "difficulty": "easy"},
-                    {"id": "1", "question": "Write a function that checks if a string is a palindrome.", "starter_code": "def is_palindrome(s):", "difficulty": "easy"},
-                    {"id": "2", "question": "Write a function that finds the longest common subsequence of two strings.", "starter_code": "def lcs(s1, s2):", "difficulty": "medium"},
+                    {"id": "0", "question": "Write a function that returns the sum of two integers.", "starter_code": "def add(a, b):", "difficulty": "easy", "test": "assert add(1, 2) == 3\nassert add(-1, 1) == 0"},
+                    {"id": "1", "question": "Write a function that checks if a string is a palindrome.", "starter_code": "def is_palindrome(s):", "difficulty": "easy", "test": "assert is_palindrome('aba') == True\nassert is_palindrome('abc') == False"},
+                    {"id": "2", "question": "Write a function that finds the longest common subsequence of two strings.", "starter_code": "def lcs(s1, s2):", "difficulty": "medium", "test": "assert lcs('abcde', 'ace') == 'ace'"},
                 ]
                 logger.info(f"Using {len(self._items)} placeholder LiveCodeBench items")
                 return
@@ -84,13 +87,14 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             for i, item in enumerate(dataset):
                 question = item.get(field_map["question"], "") or ""
                 starter = item.get(field_map["starter_code"], "") if field_map["starter_code"] else ""
+                test = item.get("test", "") or item.get("canonical_solution", "")
                 if question:
                     self._items.append({
                         "id": str(i),
                         "question": question,
                         "starter_code": starter or "",
                         "difficulty": item.get("difficulty", ""),
-                        "test_cases": item.get("test", ""),
+                        "test": test,
                     })
             
             logger.info(f"Loaded {len(self._items)} LiveCodeBench items")
@@ -137,21 +141,44 @@ Solution:
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
-            # Note: Full evaluation requires code execution
-            # For now, we just capture the response
+            # Extract code from response
+            code_match = re.search(r"```python\n(.*?)\n```", response_text, re.DOTALL)
+            if not code_match:
+                # Try without language tag
+                code_match = re.search(r"```\n(.*?)\n```", response_text, re.DOTALL)
+            
+            extracted_code = code_match.group(1) if code_match else response_text.strip()
+            
+            # Prepare execution code
+            test_code = item.get("test", "")
+            full_code = f"{extracted_code}\n\n{test_code}"
+            
+            # Execute in sandbox
+            execution_result = await self.sandy.run_python_code(full_code)
+            
+            is_correct = execution_result.get("success", False) and execution_result.get("exit_code") == 0
+            error = None
+            if not is_correct:
+                error = execution_result.get("stderr") or execution_result.get("error")
+
             return ItemResult(
                 item_id=item_id,
                 item_hash=self.compute_item_hash(item["question"]),
                 prompt=prompt,
                 response=response_text.strip(),
-                expected="[Code execution required]",
-                is_correct=None,  # Cannot determine without execution
-                score=None,
+                expected="[Tests passed]",
+                is_correct=is_correct,
+                score=1.0 if is_correct else 0.0,
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
                 metadata={"difficulty": item.get("difficulty")},
-                judge_output={"note": "Code execution required for scoring"},
+                judge_output={
+                    "stdout": execution_result.get("stdout"),
+                    "stderr": execution_result.get("stderr"),
+                    "exit_code": execution_result.get("exit_code")
+                },
+                error=error
             )
 
         except Exception as e:

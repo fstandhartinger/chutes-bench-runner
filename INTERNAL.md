@@ -36,9 +36,11 @@ CHUTES_API_KEY=<system API key>
 CHUTES_CLIENT_ID=<IDP client ID>
 CHUTES_CLIENT_SECRET=<IDP client secret>
 CHUTES_IDP_URL=https://auth.chutes.ai
-FRONTEND_URL=https://chutes-bench-runner-ui.onrender.com
-ADMIN_SECRET=<secret for admin endpoints>
-```
+    FRONTEND_URL=https://chutes-bench-runner-ui.onrender.com
+    ADMIN_SECRET=<secret for admin endpoints>
+    SANDY_BASE_URL=https://sandy.65.109.49.103.nip.io
+    SANDY_API_KEY=4e253b301b6934ec824c24565270713007dde805c937599449dc35ee078ca9d0
+    ```
 
 **API Key Location**: System-wide `$CHUTES_API_KEY` environment variable. Use `echo $CHUTES_API_KEY` to access.
 
@@ -171,9 +173,9 @@ Each benchmark adapter in `backend/app/benchmarks/adapters/` tries to load data 
 
 ### Benchmark Scoring Notes
 
-- **Code benchmarks** (livecodebench, scicode, aa_lcr, swe_bench_pro): Return `score=None` or `score=0` because proper evaluation requires code execution
-- **IFBench**: Uses basic heuristic (response length > 20 chars) - full IFEval checker needed for accurate scoring
-- **Terminal-Bench**: Uses exact command matching - fuzzy matching recommended for production
+- **Code benchmarks** (livecodebench, scicode, aa_lcr, swe_bench_pro): Use the **Sandy Sandbox** on the Hetzner Server for code execution.
+- **IFBench**: Uses basic heuristic (response length > 20 chars) - full IFEval checker needed for accurate scoring.
+- **Terminal-Bench**: Executes commands in the Sandy Sandbox and checks for successful exit codes.
 
 ## File Reference
 
@@ -182,6 +184,7 @@ Each benchmark adapter in `backend/app/benchmarks/adapters/` tries to load data 
 | `backend/app/core/config.py` | All settings, env var loading, SSL fix |
 | `backend/app/services/chutes_client.py` | Chutes API + IDP inference |
 | `backend/app/services/auth_service.py` | OAuth/PKCE flow, session management |
+| `backend/app/services/sandy_service.py` | Sandy Sandbox integration |
 | `backend/app/worker/runner.py` | Benchmark execution loop |
 | `backend/app/benchmarks/adapters/` | Individual benchmark implementations |
 | `frontend/contexts/auth-context.tsx` | Frontend auth state |

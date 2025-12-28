@@ -1,0 +1,91 @@
+import httpx
+from typing import Any, Optional, Dict, List
+from app.core.config import get_settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+class SandyService:
+    """Service for interacting with the Sandy sandbox API."""
+
+    def __init__(self):
+        settings = get_settings()
+        self.base_url = settings.sandy_base_url.rstrip("/")
+        self.api_key = settings.sandy_api_key
+        self.headers = {
+            "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
+            "Content-Type": "application/json"
+        }
+
+    async def create_sandbox(self) -> Optional[str]:
+        """Create a new sandbox and return its ID."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.post(f"{self.base_url}/api/sandboxes", headers=self.headers)
+                response.raise_for_status()
+                data = response.json()
+                return data.get("id")
+            except Exception as e:
+                logger.error("Failed to create sandbox", error=str(e))
+                return None
+
+    async def execute_command(self, sandbox_id: str, command: str) -> Dict[str, Any]:
+        """Execute a command in the sandbox."""
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/sandboxes/{sandbox_id}/exec",
+                    headers=self.headers,
+                    json={"command": command}
+                )
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                logger.error(f"Failed to execute command in sandbox {sandbox_id}", error=str(e))
+                return {"success": False, "error": str(e)}
+
+    async def write_file(self, sandbox_id: str, path: str, content: str) -> bool:
+        """Write a file to the sandbox."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/sandboxes/{sandbox_id}/files/write",
+                    headers=self.headers,
+                    json={"path": path, "content": content}
+                )
+                response.raise_for_status()
+                return True
+            except Exception as e:
+                logger.error(f"Failed to write file to sandbox {sandbox_id}", error=str(e))
+                return False
+
+    async def terminate_sandbox(self, sandbox_id: str) -> bool:
+        """Terminate a sandbox."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/sandboxes/{sandbox_id}/terminate",
+                    headers=self.headers
+                )
+                response.raise_for_status()
+                return True
+            except Exception as e:
+                logger.error(f"Failed to terminate sandbox {sandbox_id}", error=str(e))
+                return False
+
+    async def run_python_code(self, code: str) -> Dict[str, Any]:
+        """Convenience method to create a sandbox, run Python code, and terminate."""
+        sandbox_id = await self.create_sandbox()
+        if not sandbox_id:
+            return {"success": False, "error": "Could not create sandbox"}
+
+        try:
+            # Write the code to a file
+            await self.write_file(sandbox_id, "script.py", code)
+            
+            # Execute the code
+            result = await self.execute_command(sandbox_id, "python3 script.py")
+            return result
+        finally:
+            await self.terminate_sandbox(sandbox_id)
+

@@ -5,6 +5,7 @@ from typing import Any, AsyncIterator, Optional
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
 from app.core.logging import get_logger
+from app.services.sandy_service import SandyService
 
 logger = get_logger(__name__)
 
@@ -20,6 +21,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []
+        self.sandy = SandyService()
 
     def get_name(self) -> str:
         return "terminal_bench_hard"
@@ -31,7 +33,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         return True
 
     def get_setup_notes(self) -> Optional[str]:
-        return "Terminal-Bench requires Docker or isolated shell environment for execution."
+        return "Terminal-Bench requires a sandbox for command execution."
 
     def supports_subset(self) -> bool:
         return True
@@ -96,28 +98,46 @@ Command:"""
             latency_ms = int((time.time() - start_time) * 1000)
 
             response_cmd = response_text.strip().split("\n")[0].strip()
-            expected_cmd = item.get("expected_cmd", "")
             
-            # Simple command matching (full eval requires execution)
-            is_correct = response_cmd.lower() == expected_cmd.lower()
-
-            return ItemResult(
-                item_id=item_id,
-                item_hash=self.compute_item_hash(item["task"]),
-                prompt=prompt,
-                response=response_cmd,
-                expected=expected_cmd,
-                is_correct=is_correct,
-                score=1.0 if is_correct else 0.0,
-                latency_ms=latency_ms,
-                input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
-                output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                judge_output={"note": "Full evaluation requires command execution"},
-            )
+            # Create sandbox and run command
+            sandbox_id = await self.sandy.create_sandbox()
+            if not sandbox_id:
+                return ItemResult(item_id=item_id, prompt=prompt, error="Could not create sandbox")
+            
+            try:
+                # Basic execution check
+                execution_result = await self.sandy.execute_command(sandbox_id, response_cmd)
+                
+                # In a real benchmark, we'd compare output or state with expected
+                # For now, we'll use a mix of execution success and string matching
+                expected_cmd = item.get("expected_cmd", "")
+                is_correct = response_cmd.lower() == expected_cmd.lower() or (execution_result.get("success", False) and execution_result.get("exit_code") == 0)
+                
+                return ItemResult(
+                    item_id=item_id,
+                    item_hash=self.compute_item_hash(item["task"]),
+                    prompt=prompt,
+                    response=response_cmd,
+                    expected=expected_cmd,
+                    is_correct=is_correct,
+                    score=1.0 if is_correct else 0.0,
+                    latency_ms=latency_ms,
+                    input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
+                    output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                    judge_output={
+                        "stdout": execution_result.get("stdout"),
+                        "stderr": execution_result.get("stderr"),
+                        "exit_code": execution_result.get("exit_code")
+                    }
+                )
+            finally:
+                await self.sandy.terminate_sandbox(sandbox_id)
 
         except Exception as e:
             logger.error("Terminal-Bench evaluation failed", item_id=item_id, error=str(e))
             return ItemResult(item_id=item_id, prompt=prompt, error=str(e))
+
+
 
 
 

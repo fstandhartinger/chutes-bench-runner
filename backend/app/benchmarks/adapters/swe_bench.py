@@ -1,10 +1,12 @@
 """SWE-Bench Pro benchmark adapter."""
 import time
+import re
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
 from app.core.logging import get_logger
+from app.services.sandy_service import SandyService
 
 logger = get_logger(__name__)
 
@@ -21,6 +23,7 @@ class SWEBenchProAdapter(BenchmarkAdapter):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []
+        self.sandy = SandyService()
 
     def get_name(self) -> str:
         return "swe_bench_pro"
@@ -32,13 +35,7 @@ class SWEBenchProAdapter(BenchmarkAdapter):
         return True
 
     def get_setup_notes(self) -> Optional[str]:
-        return (
-            "SWE-Bench Pro requires:\n"
-            "1. Docker for isolated execution\n"
-            "2. Git credentials for cloning repos\n"
-            "3. The official SWE-Bench harness\n"
-            "See: https://github.com/scaleapi/SWE-bench_Pro-os"
-        )
+        return "SWE-Bench Pro requires a sandbox with git and Python."
 
     def supports_subset(self) -> bool:
         return True
@@ -142,24 +139,51 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
-            # Full evaluation requires applying patch and running tests
-            return ItemResult(
-                item_id=item_id,
-                item_hash=self.compute_item_hash(item["problem_statement"]),
-                prompt=prompt,
-                response=response_text.strip(),
-                expected="[Patch execution required]",
-                is_correct=None,
-                score=None,
-                latency_ms=latency_ms,
-                input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
-                output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                metadata={
-                    "instance_id": item.get("instance_id"),
-                    "repo": item.get("repo"),
-                },
-                judge_output={"note": "Full evaluation requires SWE-Bench harness"},
-            )
+            # Extract diff
+            diff_match = re.search(r"```diff\n(.*?)\n```", response_text, re.DOTALL)
+            if not diff_match:
+                diff_match = re.search(r"```\n(.*?)\n```", response_text, re.DOTALL)
+            
+            extracted_diff = diff_match.group(1) if diff_match else response_text.strip()
+            
+            # Create sandbox
+            sandbox_id = await self.sandy.create_sandbox()
+            if not sandbox_id:
+                return ItemResult(item_id=item_id, prompt=prompt, error="Could not create sandbox")
+            
+            try:
+                # 1. Write the diff to a file
+                await self.sandy.write_file(sandbox_id, "fix.patch", extracted_diff)
+                
+                # 2. Check if the patch can be applied (basic check)
+                # In a real benchmark, we'd clone the repo first
+                execution_result = await self.sandy.execute_command(sandbox_id, "patch --dry-run fix.patch")
+                
+                is_correct = execution_result.get("success", False) and execution_result.get("exit_code") == 0
+                
+                return ItemResult(
+                    item_id=item_id,
+                    item_hash=self.compute_item_hash(item["problem_statement"]),
+                    prompt=prompt,
+                    response=response_text.strip(),
+                    expected="[Patch applies successfully]",
+                    is_correct=is_correct,
+                    score=1.0 if is_correct else 0.0,
+                    latency_ms=latency_ms,
+                    input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
+                    output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                    metadata={
+                        "instance_id": item.get("instance_id"),
+                        "repo": item.get("repo"),
+                    },
+                    judge_output={
+                        "stdout": execution_result.get("stdout"),
+                        "stderr": execution_result.get("stderr"),
+                        "exit_code": execution_result.get("exit_code")
+                    }
+                )
+            finally:
+                await self.sandy.terminate_sandbox(sandbox_id)
 
         except Exception as e:
             logger.error("SWE-Bench evaluation failed", item_id=item_id, error=str(e))

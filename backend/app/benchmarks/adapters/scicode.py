@@ -1,10 +1,12 @@
 """SciCode benchmark adapter."""
 import time
+import re
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
 from app.core.logging import get_logger
+from app.services.sandy_service import SandyService
 
 logger = get_logger(__name__)
 
@@ -20,6 +22,7 @@ class SciCodeAdapter(BenchmarkAdapter):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []
+        self.sandy = SandyService()
 
     def get_name(self) -> str:
         return "scicode"
@@ -71,9 +74,9 @@ class SciCodeAdapter(BenchmarkAdapter):
             if dataset is None:
                 # Use placeholder scientific computing problems
                 self._items = [
-                    {"id": "0", "problem": "Write a NumPy function to compute the eigenvalues of a symmetric matrix.", "domain": "linear algebra", "context": "import numpy as np"},
-                    {"id": "1", "problem": "Implement numerical integration using Simpson's rule.", "domain": "numerical methods", "context": "import numpy as np"},
-                    {"id": "2", "problem": "Write a function to solve a system of ODEs using Runge-Kutta 4th order method.", "domain": "differential equations", "context": "import numpy as np"},
+                    {"id": "0", "problem": "Write a NumPy function to compute the eigenvalues of a symmetric matrix.", "domain": "linear algebra", "context": "import numpy as np", "test": "import numpy as np\nA = np.array([[2, 1], [1, 2]])\nevals = compute_eigenvalues(A)\nassert np.allclose(sorted(evals), [1, 3])"},
+                    {"id": "1", "problem": "Implement numerical integration using Simpson's rule.", "domain": "numerical methods", "context": "import numpy as np", "test": "import numpy as np\nf = lambda x: x**2\nresult = simpsons_rule(f, 0, 1, 100)\nassert np.isclose(result, 1/3, atol=1e-3)"},
+                    {"id": "2", "problem": "Write a function to solve a system of ODEs using Runge-Kutta 4th order method.", "domain": "differential equations", "context": "import numpy as np", "test": "import numpy as np\ndef f(t, y): return -y\ny = solve_ode(f, 0, 1, 0.1, 10)\nassert np.isclose(y[-1], np.exp(-1), atol=1e-2)"},
                 ]
                 logger.info(f"Using {len(self._items)} placeholder SciCode items")
                 return
@@ -81,12 +84,14 @@ class SciCodeAdapter(BenchmarkAdapter):
             self._items = []
             for i, item in enumerate(dataset):
                 problem = item.get("problem_description") or item.get("prompt") or item.get("question") or ""
+                test = item.get("test", "") or item.get("canonical_solution", "")
                 if problem:
                     self._items.append({
                         "id": str(i),
                         "problem": problem,
                         "domain": item.get("domain", ""),
                         "context": item.get("context", ""),
+                        "test": test,
                     })
             
             logger.info(f"Loaded {len(self._items)} SciCode items")
@@ -131,18 +136,43 @@ Solution:
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
+            # Extract code from response
+            code_match = re.search(r"```python\n(.*?)\n```", response_text, re.DOTALL)
+            if not code_match:
+                code_match = re.search(r"```\n(.*?)\n```", response_text, re.DOTALL)
+            
+            extracted_code = code_match.group(1) if code_match else response_text.strip()
+            
+            # Prepare execution code
+            test_code = item.get("test", "")
+            full_code = f"{context}\n\n{extracted_code}\n\n{test_code}"
+            
+            # Execute in sandbox
+            execution_result = await self.sandy.run_python_code(full_code)
+            
+            is_correct = execution_result.get("success", False) and execution_result.get("exit_code") == 0
+            error = None
+            if not is_correct:
+                error = execution_result.get("stderr") or execution_result.get("error")
+
             return ItemResult(
                 item_id=item_id,
                 item_hash=self.compute_item_hash(item["problem"]),
                 prompt=prompt,
                 response=response_text.strip(),
-                expected="[Code execution required]",
-                is_correct=None,
-                score=None,
+                expected="[Tests passed]",
+                is_correct=is_correct,
+                score=1.0 if is_correct else 0.0,
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
                 metadata={"domain": item.get("domain")},
+                judge_output={
+                    "stdout": execution_result.get("stdout"),
+                    "stderr": execution_result.get("stderr"),
+                    "exit_code": execution_result.get("exit_code")
+                },
+                error=error
             )
 
         except Exception as e:
