@@ -141,30 +141,14 @@ Solution:
             
             # Prepare execution code - include prompt code if it has function definitions
             # item["problem"] often contains starter code/functions the solution depends on
-            prompt_code = ""
+            test_code_str = item.get("test", "")
+            prompt_code_str = ""
             if "def " in item["problem"]:
-                # Try to extract function definitions from the problem description
-                # This is a bit heuristic but helps with dependencies
-                lines = item["problem"].split("\n")
-                code_lines = []
-                in_code = False
-                for line in lines:
-                    if line.strip().startswith("def ") or in_code:
-                        code_lines.append(line)
-                        in_code = True
-                    if in_code and line.strip() == "":
-                        # Heuristic: stop at empty line after a block
-                        # But wait, some functions have empty lines. 
-                        # Let's just take all lines that start with space or are part of a def
-                        pass
-                # Actually, many scicode problems ARE just code with one missing function
-                # Let's just include the whole problem text if it contains 'def ' 
-                # but try to strip prose if possible.
-                # For now, let's just prepend the problem text if it looks like code
+                # If the problem starts with a function definition, include it
                 if item["problem"].strip().startswith("def "):
-                    prompt_code = item["problem"]
+                    prompt_code_str = item["problem"]
 
-            full_code = f"{context}\n\n{prompt_code}\n\n{extracted_code}\n\n{test_code}"
+            full_code = f"{context}\n\n{prompt_code_str}\n\n{extracted_code}\n\n{test_code_str}"
             
             # Execute in sandbox
             execution_result = await self.sandy.run_python_code(full_code)
@@ -197,5 +181,3 @@ Solution:
         except Exception as e:
             logger.error("SciCode evaluation failed", item_id=item_id, error=str(e))
             return ItemResult(item_id=item_id, prompt=prompt, error=str(e))
-
-
