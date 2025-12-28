@@ -106,28 +106,33 @@ export function BenchmarkRunner() {
       const eventSource = createEventSource(run.id);
 
       eventSource.onmessage = (e) => {
-        const event = JSON.parse(e.data) as RunEvent;
-        setEvents((prev) => [...prev, event]);
+        try {
+          const event = JSON.parse(e.data) as RunEvent;
+          setEvents((prev) => [...prev, event]);
+          
+          // Check for run completion/failure events
+          if (event.event_type === "run_completed" || event.event_type === "run_failed") {
+            setRunning(false);
+            // Update run status
+            setCurrentRun((prev) => prev ? {
+              ...prev,
+              status: event.event_type === "run_completed" ? "succeeded" : "failed"
+            } : null);
+            eventSource.close();
+          }
+        } catch (err) {
+          console.error("Failed to parse event:", e.data, err);
+        }
       };
-
-      eventSource.addEventListener("run_completed", () => {
-        setRunning(false);
-        eventSource.close();
-      });
-
-      eventSource.addEventListener("run_failed", () => {
-        setRunning(false);
-        eventSource.close();
-      });
 
       eventSource.addEventListener("done", () => {
         setRunning(false);
         eventSource.close();
       });
 
-      eventSource.onerror = () => {
-        setRunning(false);
-        eventSource.close();
+      eventSource.onerror = (err) => {
+        console.error("EventSource error:", err);
+        // Don't close immediately - could be a transient error
       };
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start run");
@@ -135,37 +140,69 @@ export function BenchmarkRunner() {
     }
   };
 
-  // Compute progress
+  // Compute progress from events
   const progressData = useCallback(() => {
-    if (!currentRun) return { overall: 0, benchmarks: {} as Record<string, { completed: number; total: number; score?: number }> };
+    if (!currentRun) return { overall: 0, benchmarks: {} as Record<string, { completed: number; total: number; score?: number; status?: string }>, status: "queued" };
 
-    const benchmarkProgress: Record<string, { completed: number; total: number; score?: number }> = {};
-    let totalCompleted = 0;
-    let totalItems = 0;
+    const benchmarkProgress: Record<string, { completed: number; total: number; score?: number; status?: string }> = {};
+    let runStatus = currentRun.status;
 
+    // Initialize from run benchmarks (may have 0 values initially)
     for (const rb of currentRun.benchmarks) {
       benchmarkProgress[rb.benchmark_name] = {
-        completed: rb.completed_items,
-        total: rb.sampled_items || rb.total_items,
+        completed: rb.completed_items || 0,
+        total: rb.sampled_items || rb.total_items || 0,
         score: rb.score,
+        status: rb.status,
       };
-      totalCompleted += rb.completed_items;
-      totalItems += rb.sampled_items || rb.total_items;
     }
 
-    // Update from events
+    // Update from events - events have the most current data
     for (const event of events) {
-      if (event.event_type === "benchmark_progress" && event.benchmark_name && event.data) {
+      if (event.event_type === "run_started") {
+        runStatus = "running";
+      } else if (event.event_type === "run_completed") {
+        runStatus = "succeeded";
+      } else if (event.event_type === "run_failed") {
+        runStatus = "failed";
+      } else if (event.event_type === "benchmark_started" && event.benchmark_name) {
+        if (benchmarkProgress[event.benchmark_name]) {
+          benchmarkProgress[event.benchmark_name].status = "running";
+        }
+      } else if (event.event_type === "benchmark_progress" && event.benchmark_name && event.data) {
+        const data = event.data as { completed?: number; total?: number; current_accuracy?: number };
         benchmarkProgress[event.benchmark_name] = {
-          completed: (event.data as any).completed || 0,
-          total: (event.data as any).total || 0,
-          score: (event.data as any).current_accuracy,
+          ...benchmarkProgress[event.benchmark_name],
+          completed: data.completed || 0,
+          total: data.total || benchmarkProgress[event.benchmark_name]?.total || 0,
+          score: data.current_accuracy,
+          status: "running",
         };
+      } else if (event.event_type === "benchmark_completed" && event.benchmark_name && event.data) {
+        const data = event.data as { score?: number };
+        if (benchmarkProgress[event.benchmark_name]) {
+          benchmarkProgress[event.benchmark_name].status = "succeeded";
+          if (data.score !== undefined) {
+            benchmarkProgress[event.benchmark_name].score = data.score;
+          }
+        }
+      } else if (event.event_type === "benchmark_failed" && event.benchmark_name) {
+        if (benchmarkProgress[event.benchmark_name]) {
+          benchmarkProgress[event.benchmark_name].status = "failed";
+        }
       }
     }
 
+    // Calculate overall progress from benchmark progress
+    let totalCompleted = 0;
+    let totalItems = 0;
+    for (const bp of Object.values(benchmarkProgress)) {
+      totalCompleted += bp.completed;
+      totalItems += bp.total;
+    }
+
     const overall = totalItems > 0 ? (totalCompleted / totalItems) * 100 : 0;
-    return { overall, benchmarks: benchmarkProgress };
+    return { overall, benchmarks: benchmarkProgress, status: runStatus };
   }, [currentRun, events]);
 
   if (loading) {
@@ -307,8 +344,8 @@ export function BenchmarkRunner() {
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
               <span>Run Progress</span>
-              <span className={cn("text-sm", getStatusColor(currentRun.status))}>
-                {currentRun.status.toUpperCase()}
+              <span className={cn("text-sm", getStatusColor(progress.status || currentRun.status))}>
+                {(progress.status || currentRun.status).toUpperCase()}
               </span>
             </CardTitle>
           </CardHeader>
@@ -327,28 +364,32 @@ export function BenchmarkRunner() {
               {currentRun.benchmarks.map((rb) => {
                 const bp = progress.benchmarks[rb.benchmark_name];
                 const pct = bp && bp.total > 0 ? (bp.completed / bp.total) * 100 : 0;
+                const benchmarkStatus = bp?.status || rb.status;
 
                 return (
                   <div key={rb.id} className="space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        {rb.status === "succeeded" && (
+                        {benchmarkStatus === "succeeded" && (
                           <CheckCircle2 className="h-4 w-4 text-moss" />
                         )}
-                        {rb.status === "failed" && (
+                        {benchmarkStatus === "failed" && (
                           <XCircle className="h-4 w-4 text-red-400" />
                         )}
-                        {rb.status === "running" && (
+                        {benchmarkStatus === "running" && (
                           <Loader2 className="h-4 w-4 animate-spin text-moss" />
+                        )}
+                        {!["succeeded", "failed", "running"].includes(benchmarkStatus) && (
+                          <div className="h-4 w-4 rounded-full bg-ink-500" />
                         )}
                         <span className="font-medium">{rb.benchmark_name}</span>
                       </div>
                       <div className="flex items-center gap-4 text-sm">
-                        {bp?.score !== undefined && (
+                        {bp?.score !== undefined && bp.score !== null && (
                           <span className="text-moss">{formatPercent(bp.score)}</span>
                         )}
                         <span className="text-ink-400">
-                          {bp?.completed || 0}/{bp?.total || rb.sampled_items}
+                          {bp?.completed || 0}/{bp?.total || 0}
                         </span>
                       </div>
                     </div>

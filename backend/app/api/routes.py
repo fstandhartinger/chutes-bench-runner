@@ -231,12 +231,15 @@ async def stream_run_events(
 
             for event in events:
                 data = RunEventResponse.model_validate(event).model_dump_json()
-                yield f"id: {event.id}\nevent: {event.event_type}\ndata: {data}\n\n"
+                # Send as generic message (no event: field) so onmessage can catch it
+                # The event_type is included in the data JSON
+                yield f"id: {event.id}\ndata: {data}\n\n"
                 current_last_id = event.id
 
             # Check if run is finished
             await db.refresh(run)
             if run.status in finished_statuses:
+                # Send done event as named event for specific listener
                 yield f"event: done\ndata: {{}}\n\n"
                 break
 
