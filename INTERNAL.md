@@ -114,6 +114,10 @@ NEXT_PUBLIC_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 **Problem**: Old instances continue running during deploy, causing confusion with logs
 **Fix**: Wait for deploy status `live` before testing; check instance IDs in logs
 
+### 9. SSE Named Events vs onmessage
+**Problem**: Backend sent SSE events with `event: type` field, but frontend used `onmessage` which only catches unnamed events
+**Fix**: Remove `event:` field from SSE output - send only `id:` and `data:`, include `event_type` in the JSON payload. Use `addEventListener` only for special events like `done`.
+
 ## Testing
 
 ### Backend Tests
