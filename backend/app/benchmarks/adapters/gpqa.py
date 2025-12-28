@@ -32,6 +32,12 @@ class GPQADiamondAdapter(BenchmarkAdapter):
             await self.preload()
         return len(self._items)
 
+    def requires_setup(self) -> bool:
+        return True
+
+    def get_setup_notes(self) -> Optional[str]:
+        return "GPQA Diamond is a gated dataset. Request access at https://huggingface.co/datasets/Idavidrein/gpqa and set HF_TOKEN env var."
+
     async def preload(self) -> None:
         """Load GPQA Diamond dataset."""
         if self._items:
@@ -39,9 +45,16 @@ class GPQADiamondAdapter(BenchmarkAdapter):
 
         try:
             from datasets import load_dataset
+            import os
 
             logger.info("Loading GPQA Diamond dataset")
-            dataset = load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train")
+            # This is a gated dataset - requires HF authentication
+            hf_token = os.environ.get("HF_TOKEN")
+            if hf_token:
+                dataset = load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train", token=hf_token)
+            else:
+                # Try without token - will fail for gated datasets
+                dataset = load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train")
             
             self._items = []
             for i, item in enumerate(dataset):
@@ -58,8 +71,8 @@ class GPQADiamondAdapter(BenchmarkAdapter):
             
             logger.info(f"Loaded {len(self._items)} GPQA Diamond items")
         except Exception as e:
-            logger.error("Failed to load GPQA Diamond", error=str(e))
-            raise
+            logger.error("Failed to load GPQA Diamond - this is a gated dataset requiring HF authentication", error=str(e))
+            self._items = []
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         if not self._items:

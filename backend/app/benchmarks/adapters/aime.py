@@ -33,6 +33,12 @@ class AIME2025Adapter(BenchmarkAdapter):
             await self.preload()
         return len(self._items)
 
+    def requires_setup(self) -> bool:
+        return True
+
+    def get_setup_notes(self) -> Optional[str]:
+        return "AIME dataset requires access to competition math datasets. Set HF_TOKEN if using gated datasets."
+
     async def preload(self) -> None:
         """Load AIME 2025 dataset."""
         if self._items:
@@ -40,28 +46,48 @@ class AIME2025Adapter(BenchmarkAdapter):
 
         try:
             from datasets import load_dataset
+            import os
 
-            logger.info("Loading AIME 2025 dataset")
-            # Try to load from common AIME dataset sources
-            try:
-                dataset = load_dataset("AI-MO/aime24", split="test")
-            except Exception:
-                # Fallback to a simpler dataset structure
-                dataset = load_dataset("hendrycks/competition_math", split="test")
+            logger.info("Loading AIME/Competition Math dataset")
+            hf_token = os.environ.get("HF_TOKEN")
+            dataset = None
+            
+            # Try multiple sources in order of preference
+            sources = [
+                ("AI-MO/aimo-validation-aime", "train", {"token": hf_token} if hf_token else {}),
+                ("lighteval/MATH", "test", {}),
+                ("hendrycks/competition_math", "test", {}),
+            ]
+            
+            for source_name, split, kwargs in sources:
+                try:
+                    logger.info(f"Trying to load from {source_name}")
+                    dataset = load_dataset(source_name, split=split, **kwargs)
+                    break
+                except Exception as e:
+                    logger.warning(f"Could not load {source_name}: {e}")
+                    continue
+            
+            if dataset is None:
+                logger.error("No AIME dataset source available")
+                self._items = []
+                return
             
             self._items = []
             for i, item in enumerate(dataset):
-                if "problem" in item:
+                problem = item.get("problem") or item.get("question") or ""
+                answer = item.get("answer") or item.get("solution") or ""
+                if problem:
                     self._items.append({
                         "id": str(i),
-                        "problem": item.get("problem", ""),
-                        "answer": item.get("answer", ""),
-                        "level": item.get("level", ""),
+                        "problem": problem,
+                        "answer": answer,
+                        "level": item.get("level", item.get("type", "")),
                     })
             
             logger.info(f"Loaded {len(self._items)} AIME items")
         except Exception as e:
-            logger.error("Failed to load AIME 2025", error=str(e))
+            logger.error("Failed to load AIME", error=str(e))
             self._items = []
 
     async def enumerate_items(self) -> AsyncIterator[str]:

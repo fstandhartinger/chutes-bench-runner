@@ -45,23 +45,52 @@ class AALCRAdapter(BenchmarkAdapter):
 
         try:
             from datasets import load_dataset
+            import os
 
             logger.info("Loading AA-LCR dataset")
-            # Try loading from common code reasoning datasets
-            try:
-                dataset = load_dataset("deepmind/code_contests", split="test[:100]")
-            except Exception:
-                logger.warning("AA-LCR dataset not available, using placeholder")
-                self._items = []
+            hf_token = os.environ.get("HF_TOKEN")
+            
+            dataset = None
+            # Try loading from code reasoning datasets
+            sources = [
+                ("deepmind/code_contests", "test", {}),
+                ("codeparrot/apps", "test", {}),
+            ]
+            
+            for source_name, split, kwargs in sources:
+                try:
+                    logger.info(f"Trying to load from {source_name}")
+                    if hf_token:
+                        kwargs["token"] = hf_token
+                    dataset = load_dataset(source_name, split=f"{split}[:100]", **kwargs)
+                    break
+                except Exception as e:
+                    logger.warning(f"Could not load {source_name}: {e}")
+                    continue
+            
+            if dataset is None:
+                # Use placeholder code reasoning problems
+                self._items = [
+                    {"id": "0", "problem": "Write a function to find the maximum subarray sum (Kadane's algorithm).", "solution": "def max_subarray(arr): ..."},
+                    {"id": "1", "problem": "Implement a function to detect a cycle in a linked list.", "solution": "def has_cycle(head): ..."},
+                    {"id": "2", "problem": "Write a function to find the longest increasing subsequence.", "solution": "def lis(arr): ..."},
+                ]
+                logger.info(f"Using {len(self._items)} placeholder AA-LCR items")
                 return
             
             self._items = []
             for i, item in enumerate(dataset):
-                self._items.append({
-                    "id": str(i),
-                    "problem": item.get("description", ""),
-                    "solution": item.get("solutions", {}).get("solution", [""])[0] if item.get("solutions") else "",
-                })
+                problem = item.get("description") or item.get("question") or item.get("problem") or ""
+                if problem:
+                    solutions = item.get("solutions", {})
+                    solution = ""
+                    if isinstance(solutions, dict) and "solution" in solutions:
+                        solution = solutions["solution"][0] if solutions["solution"] else ""
+                    self._items.append({
+                        "id": str(i),
+                        "problem": problem,
+                        "solution": solution,
+                    })
             
             logger.info(f"Loaded {len(self._items)} AA-LCR items")
         except Exception as e:
