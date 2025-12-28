@@ -84,7 +84,7 @@ function ItemDetailCard({ item, index }: { item: ItemResult; index: number }) {
               <span className="font-mono text-sm font-medium text-ink-200">
                 #{index + 1} · {item.item_id}
               </span>
-              {item.item_metadata?.category && (
+              {item.item_metadata?.category !== undefined && (
                 <span className="rounded bg-ink-700 px-2 py-0.5 text-xs text-ink-400">
                   {String(item.item_metadata.category)}
                 </span>
