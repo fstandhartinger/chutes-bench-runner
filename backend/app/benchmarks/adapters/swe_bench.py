@@ -133,7 +133,7 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are an expert software engineer. Generate precise git patches to fix bugs. Be concise and provide ONLY the diff block.",
+                system_prompt="Output ONLY the final git diff within a markdown code block. Do NOT use <think> tags. Do NOT provide any explanations or prose. Just the diff.",
                 max_tokens=4096,
                 temperature=0.0,
             )

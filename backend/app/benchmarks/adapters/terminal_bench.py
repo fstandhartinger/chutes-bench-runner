@@ -91,7 +91,7 @@ Command:"""
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are a Linux shell expert. Output only the command, no explanations.",
+                system_prompt="Output ONLY the final shell command within a markdown code block. Do NOT use <think> tags. Do NOT provide any explanations or prose. Just the command.",
                 max_tokens=512,
                 temperature=0.0,
             )

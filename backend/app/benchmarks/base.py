@@ -171,33 +171,24 @@ class BenchmarkAdapter(ABC):
         """Extract Python code from model response robustly."""
         import re
         
-        # Remove thinking block if present
-        cleaned_response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
-        # If it didn't finish the thinking block, try removing the start tag
-        if cleaned_response.startswith("<think>"):
-            cleaned_response = re.sub(r"<think>.*", "", cleaned_response, flags=re.DOTALL).strip()
-        
         # 1. Try to find a complete markdown block
-        match = re.search(r"```python\n(.*?)\n```", cleaned_response, re.DOTALL)
+        match = re.search(r"```(?:python|bash|diff)?\n(.*?)\n```", response, re.DOTALL)
         if match:
             return match.group(1).strip()
             
-        # 2. Try to find an incomplete markdown block (starts with ```python but doesn't end)
-        match = re.search(r"```python\n(.*)", cleaned_response, re.DOTALL)
+        # 2. Try to find an incomplete markdown block
+        match = re.search(r"```(?:python|bash|diff)?\n(.*)", response, re.DOTALL)
         if match:
             return match.group(1).strip()
             
-        # 3. Try to find a generic code block
-        match = re.search(r"```\n(.*?)\n```", cleaned_response, re.DOTALL)
-        if match:
-            return match.group(1).strip()
+        # 3. If no markdown block, remove thinking block if present
+        cleaned_response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+        
+        # 4. If it still starts with <think> (unclosed), strip it
+        if cleaned_response.startswith("<think>"):
+            cleaned_response = re.sub(r"^<think>", "", cleaned_response).strip()
             
-        # 4. Try to find an incomplete generic code block
-        match = re.search(r"```\n(.*)", cleaned_response, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-            
-        # 5. Final fallback: return the cleaned response (stripped of tags)
+        # 5. Final fallback
         return cleaned_response
 
     async def run_evaluation(
