@@ -109,8 +109,8 @@ Action:"""
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are a helpful telecom customer service agent. Provide the best action for each scenario.",
-                max_tokens=64,
+                system_prompt="You are a telecom customer service agent. Output ONLY the action name from the provided list. No explanation, no thinking.",
+                max_tokens=512,  # Allow for potential <think> blocks
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)

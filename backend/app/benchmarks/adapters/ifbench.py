@@ -80,8 +80,8 @@ class IFBenchAdapter(BenchmarkAdapter):
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="Follow the instructions precisely and completely.",
-                max_tokens=2048,
+                system_prompt="Follow the instructions precisely and completely. Output ONLY the response fulfilling the instructions. Do NOT use <think> tags.",
+                max_tokens=4096,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)

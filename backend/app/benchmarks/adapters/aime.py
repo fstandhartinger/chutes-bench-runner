@@ -117,8 +117,8 @@ Solution:"""
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are an expert mathematician solving competition problems. Show your work and provide the final integer answer.",
-                max_tokens=2048,
+                system_prompt="You are an expert mathematician. Solve the problem step by step and provide the final integer answer on a new line prefixed with 'ANSWER:'.",
+                max_tokens=4096,  # Allow for long reasoning
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
