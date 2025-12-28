@@ -104,7 +104,7 @@ Answer:"""
                 self.model_slug,
                 prompt,
                 system_prompt="You are an expert test taker. Answer multiple choice questions with only the letter of the correct answer.",
-                max_tokens=1024,  # Allow for chain-of-thought models
+                max_tokens=256,  # Allow for chain-of-thought models
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
