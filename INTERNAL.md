@@ -149,6 +149,32 @@ curl -X POST https://chutes-bench-runner-api-v2.onrender.com/api/runs \
   -d '{"model_id":"<uuid>","subset_pct":1,"benchmark_names":["mmlu_pro"]}'
 ```
 
+## Benchmark Adapter Status
+
+Each benchmark adapter in `backend/app/benchmarks/adapters/` tries to load data from HuggingFace datasets. If unavailable, they fall back to placeholder data.
+
+| Benchmark | Dataset Source | Fallback |
+|-----------|---------------|----------|
+| `mmlu_pro` | TIGER-Lab/MMLU-Pro | None needed (public) |
+| `gpqa_diamond` | Idavidrein/gpqa (GATED) | 3 placeholder science questions |
+| `aime_2025` | AI-MO/aimo-validation-aime, lighteval/MATH, hendrycks/competition_math | Multiple fallbacks |
+| `ifbench` | google/IFEval | None (public dataset) |
+| `hle` | cais/hle | 3 placeholder expert questions |
+| `livecodebench` | livecodebench/code_generation_lite, codeparrot/apps, openai_humaneval | 3 placeholder coding problems |
+| `scicode` | SciCode-Bench/SciCode, bigcode/humanevalpack | 3 placeholder sci-computing problems |
+| `aa_lcr` | deepmind/code_contests, codeparrot/apps | 3 placeholder code reasoning |
+| `swe_bench_pro` | princeton-nlp/SWE-bench_Lite, princeton-nlp/SWE-bench | 2 placeholder issues |
+| `tau_bench_telecom` | None (hardcoded) | 3 telecom scenarios |
+| `terminal_bench_hard` | None (hardcoded) | 5 shell command tasks |
+
+**Note**: To enable gated datasets, set `HF_TOKEN` environment variable in the worker with a HuggingFace access token that has been granted access to the relevant datasets.
+
+### Benchmark Scoring Notes
+
+- **Code benchmarks** (livecodebench, scicode, aa_lcr, swe_bench_pro): Return `score=None` or `score=0` because proper evaluation requires code execution
+- **IFBench**: Uses basic heuristic (response length > 20 chars) - full IFEval checker needed for accurate scoring
+- **Terminal-Bench**: Uses exact command matching - fuzzy matching recommended for production
+
 ## File Reference
 
 | File | Purpose |
