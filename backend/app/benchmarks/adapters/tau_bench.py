@@ -91,6 +91,13 @@ class TauBenchTelecomAdapter(BenchmarkAdapter):
 
         prompt = f"""You are a telecom customer service agent. Analyze the scenario and determine the best action.
 
+Examples:
+Scenario: User wants to cancel their subscription.
+Action: cancel_subscription
+
+Scenario: User reports slow internet speeds.
+Action: check_network_status
+
 Scenario: {item["scenario"]}
 
 Context: {item["context"]}
@@ -115,9 +122,32 @@ Action:"""
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
-            response_action = response_text.strip().lower().replace(" ", "_").split("\n")[0]
+            # Extract action more robustly
+            clean_response = response_text.strip().lower()
+            if "</think>" in clean_response:
+                clean_response = clean_response.split("</think>")[-1].strip()
+            
+            # Look for the predefined action names in the response
+            actions = [
+                "offer_plan_upgrade",
+                "check_network_status",
+                "review_billing",
+                "transfer_to_specialist",
+                "schedule_technician"
+            ]
+            
+            response_action = ""
+            for action in actions:
+                if action in clean_response or action.replace("_", " ") in clean_response:
+                    response_action = action
+                    break
+            
+            if not response_action:
+                # Fallback to the old method
+                response_action = clean_response.replace(" ", "_").split("\n")[0]
+            
             expected = item.get("expected_action", "")
-            is_correct = expected in response_action or response_action in expected
+            is_correct = expected == response_action or expected in response_action
 
             return ItemResult(
                 item_id=item_id,

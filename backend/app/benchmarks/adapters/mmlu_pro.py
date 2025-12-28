@@ -94,14 +94,21 @@ class MMLUProAdapter(BenchmarkAdapter):
 
 {options_str}
 
-Answer with ONLY the letter (A, B, C, D, E, F, G, H, I, or J). Do not explain."""
+Examples:
+Question: What is 2+2?
+A. 3
+B. 4
+Answer: B
+
+Question: {item["question"]}
+Answer:"""
 
         try:
             start_time = time.time()
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are a test-taking assistant. Output ONLY the answer letter (A-J). No explanation, no reasoning, no thinking. Just one letter.",
+                system_prompt="You are a test-taking assistant. Output ONLY the answer letter (A-J). No explanation, no reasoning, no thinking. Just the letter.",
                 max_tokens=1024,  # Account for potential <think> blocks
                 temperature=0.0,
             )

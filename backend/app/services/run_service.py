@@ -96,6 +96,7 @@ async def list_runs(
     db: AsyncSession,
     status: Optional[str] = None,
     model_id: Optional[str] = None,
+    model_slug: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[BenchmarkRun]:
@@ -106,6 +107,8 @@ async def list_runs(
         query = query.where(BenchmarkRun.status == status)
     if model_id:
         query = query.where(BenchmarkRun.model_id == model_id)
+    if model_slug:
+        query = query.where(BenchmarkRun.model_slug.ilike(f"%{model_slug}%"))
 
     query = query.order_by(BenchmarkRun.created_at.desc()).offset(offset).limit(limit)
 

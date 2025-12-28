@@ -12,17 +12,19 @@ import {
   getStatusBgColor,
   cn,
 } from "@/lib/utils";
-import { Loader2, ExternalLink, Download } from "lucide-react";
+import { Loader2, ExternalLink, Download, Search } from "lucide-react";
+import { Input } from "@/components/ui/input";
 
 export default function RunsPage() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [modelFilter, setModelFilter] = useState("");
 
   useEffect(() => {
     async function load() {
       try {
-        const data = await getRuns();
+        const data = await getRuns(undefined, 100); // Fetch more runs
         setRuns(data.runs);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load runs");
@@ -32,6 +34,10 @@ export default function RunsPage() {
     }
     load();
   }, []);
+
+  const filteredRuns = runs.filter((run) =>
+    run.model_slug.toLowerCase().includes(modelFilter.toLowerCase())
+  );
 
   if (loading) {
     return (
@@ -50,24 +56,49 @@ export default function RunsPage() {
         </p>
       </div>
 
+      <div className="mb-8 flex items-center gap-4">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+          <Input
+            placeholder="Filter by model name..."
+            value={modelFilter}
+            onChange={(e) => setModelFilter(e.target.value)}
+            className="pl-9 bg-ink-800/50 border-ink-600 focus:border-moss/50"
+          />
+        </div>
+        {modelFilter && (
+          <Button
+            variant="ghost"
+            onClick={() => setModelFilter("")}
+            className="text-ink-400 hover:text-ink-200"
+          >
+            Clear Filter
+          </Button>
+        )}
+      </div>
+
       {error && (
         <div className="mb-6 rounded-lg bg-red-500/10 p-4 text-red-400">
           {error}
         </div>
       )}
 
-      {runs.length === 0 ? (
+      {filteredRuns.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center">
-            <p className="text-ink-400">No benchmark runs yet</p>
-            <Button asChild className="mt-4">
-              <Link href="/">Start Your First Run</Link>
-            </Button>
+            <p className="text-ink-400">
+              {modelFilter ? "No runs found matching your filter" : "No benchmark runs yet"}
+            </p>
+            {!modelFilter && (
+              <Button asChild className="mt-4">
+                <Link href="/">Start Your First Run</Link>
+              </Button>
+            )}
           </CardContent>
         </Card>
       ) : (
         <div className="space-y-4">
-          {runs.map((run) => (
+          {filteredRuns.map((run) => (
             <Card key={run.id} className="overflow-hidden">
               <div className="flex items-center justify-between p-6">
                 <div className="space-y-1">

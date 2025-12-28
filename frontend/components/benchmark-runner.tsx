@@ -340,7 +340,16 @@ export function BenchmarkRunner() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
-              <span>Run Progress</span>
+              <div className="flex items-center gap-3">
+                <span>Run Progress</span>
+                {(progress.status === "succeeded" || progress.status === "failed") && (
+                  <Button variant="outline" size="sm" asChild>
+                    <Link href={`/runs/${currentRun.id}`}>
+                      View Details
+                    </Link>
+                  </Button>
+                )}
+              </div>
               <span className={cn("text-sm", getStatusColor(progress.status || currentRun.status))}>
                 {(progress.status || currentRun.status).toUpperCase()}
               </span>

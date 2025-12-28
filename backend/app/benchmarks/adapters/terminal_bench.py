@@ -80,10 +80,22 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             return ItemResult(item_id=item_id, error=f"Item {item_id} not found")
 
         prompt = f"""You are a Linux shell expert. Given the task, provide the exact shell command to accomplish it.
-Only output the command, nothing else.
+Only output the command within a markdown code block.
+
+Examples:
+Task: List all files
+Command:
+```bash
+ls -a
+```
+
+Task: Find files larger than 100MB
+Command:
+```bash
+find . -size +100M
+```
 
 Task: {item["task"]}
-
 Command:"""
 
         try:
@@ -91,7 +103,7 @@ Command:"""
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="Output ONLY the final shell command within a markdown code block (e.g. ```bash\nls -l\n```). Do NOT use <think> tags. Do NOT provide any explanations or prose. Just the command.",
+                system_prompt="You are a Linux shell expert. Output ONLY the final shell command within a markdown code block. No explanation, no thinking, no prose.",
                 max_tokens=512,
                 temperature=0.0,
             )
@@ -99,6 +111,21 @@ Command:"""
 
             # Extract command robustly
             response_cmd = self.extract_python_code(response_text)
+            
+            # If the extracted "code" still looks like prose (e.g. no command-like symbols or too many words)
+            # try to find the last line that actually looks like a command
+            if len(response_cmd.split()) > 10 and "```" not in response_text:
+                # Heuristic: models sometimes put the command on the last line or after some prose
+                lines = [l.strip() for l in response_cmd.split("\n") if l.strip()]
+                for line in reversed(lines):
+                    # Basic command heuristic: starts with common utility or doesn't look like a sentence
+                    if any(line.startswith(cmd) for cmd in ["ls", "find", "grep", "wc", "du", "lsof", "ps", "cat", "echo"]):
+                        response_cmd = line
+                        break
+                else:
+                    # If still not found, take the first non-empty line
+                    if lines:
+                        response_cmd = lines[0]
             
             # Create sandbox and run command
             sandbox_id = await self.sandy.create_sandbox()

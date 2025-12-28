@@ -108,6 +108,12 @@ class AIME2025Adapter(BenchmarkAdapter):
         prompt = f"""Solve the following math competition problem. AIME answers are always integers from 0 to 999.
 Show your reasoning step by step, then provide your final answer as a single integer on a new line prefixed with "ANSWER:".
 
+Example:
+Problem: What is 2+2?
+Solution:
+2+2 is 4.
+ANSWER: 4
+
 Problem: {item["problem"]}
 
 Solution:"""
@@ -117,15 +123,33 @@ Solution:"""
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are an expert mathematician. Solve the problem step by step and provide the final integer answer on a new line prefixed with 'ANSWER:'.",
+                system_prompt="You are an expert mathematician. Solve the problem step by step. Always end your response with 'ANSWER: ' followed by the integer result.",
                 max_tokens=4096,  # Allow for long reasoning
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
-            # Extract answer
+            # Extract answer - try multiple patterns
+            model_answer = ""
+            
+            # 1. Look for ANSWER: XXX
             answer_match = re.search(r"ANSWER:\s*(\d+)", response_text, re.IGNORECASE)
-            model_answer = answer_match.group(1) if answer_match else ""
+            if answer_match:
+                model_answer = answer_match.group(1)
+            
+            # 2. Look for \boxed{XXX}
+            if not model_answer:
+                boxed_match = re.search(r"\\boxed\{(\d+)\}", response_text)
+                if boxed_match:
+                    model_answer = boxed_match.group(1)
+            
+            # 3. Look for the last integer in the response if it's short
+            if not model_answer:
+                # Clean response of thinking tags for better extraction
+                clean_text = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL).strip()
+                numbers = re.findall(r"\b\d+\b", clean_text)
+                if numbers:
+                    model_answer = numbers[-1]
             
             # Clean expected answer
             expected = str(item["answer"]).strip()
