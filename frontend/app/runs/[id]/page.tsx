@@ -239,7 +239,11 @@ export default function RunDetailPage() {
               {selectedBenchmark || "Select a benchmark"} - DEBUG
             </CardTitle>
           </CardHeader>
-          <CardContent className="bg-blue-500/20">
+          <CardContent className="bg-blue-500/20 min-h-[200px]">
+            <p className="text-red-500 font-bold">DEBUG: CardContent is rendering</p>
+            <p className="text-yellow-500">selectedRb: {selectedRb ? "truthy" : "falsy"}</p>
+            <p className="text-yellow-500">itemsLoading: {itemsLoading ? "true" : "false"}</p>
+            <p className="text-yellow-500">items.length: {items.length}</p>
             {selectedRb ? (
               <div className="space-y-6">
                 {/* Metrics */}
