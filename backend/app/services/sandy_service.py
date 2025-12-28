@@ -24,7 +24,7 @@ class SandyService:
                 response = await client.post(f"{self.base_url}/api/sandboxes", headers=self.headers)
                 response.raise_for_status()
                 data = response.json()
-                return data.get("id")
+                return data.get("sandboxId")
             except Exception as e:
                 logger.error("Failed to create sandbox", error=str(e))
                 return None
@@ -39,10 +39,16 @@ class SandyService:
                     json={"command": command}
                 )
                 response.raise_for_status()
-                return response.json()
+                data = response.json()
+                return {
+                    "success": True,
+                    "stdout": data.get("stdout", ""),
+                    "stderr": data.get("stderr", ""),
+                    "exit_code": data.get("exitCode", 0)
+                }
             except Exception as e:
                 logger.error(f"Failed to execute command in sandbox {sandbox_id}", error=str(e))
-                return {"success": False, "error": str(e)}
+                return {"success": False, "error": str(e), "exit_code": -1}
 
     async def write_file(self, sandbox_id: str, path: str, content: str) -> bool:
         """Write a file to the sandbox."""
