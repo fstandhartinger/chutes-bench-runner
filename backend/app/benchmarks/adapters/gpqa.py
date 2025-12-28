@@ -123,7 +123,7 @@ Answer:"""
                 self.model_slug,
                 prompt,
                 system_prompt="You are an expert scientist. Answer the question with only the letter of the correct answer.",
-                max_tokens=10,
+                max_tokens=1024,  # Account for potential <think> blocks
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)

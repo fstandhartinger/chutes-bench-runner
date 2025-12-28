@@ -171,32 +171,34 @@ class BenchmarkAdapter(ABC):
         """Extract Python code from model response robustly."""
         import re
         
+        # Remove thinking block if present
+        cleaned_response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+        # If it didn't finish the thinking block, try removing the start tag
+        if cleaned_response.startswith("<think>"):
+            cleaned_response = re.sub(r"<think>.*", "", cleaned_response, flags=re.DOTALL).strip()
+        
         # 1. Try to find a complete markdown block
-        match = re.search(r"```python\n(.*?)\n```", response, re.DOTALL)
+        match = re.search(r"```python\n(.*?)\n```", cleaned_response, re.DOTALL)
         if match:
             return match.group(1).strip()
             
         # 2. Try to find an incomplete markdown block (starts with ```python but doesn't end)
-        match = re.search(r"```python\n(.*)", response, re.DOTALL)
+        match = re.search(r"```python\n(.*)", cleaned_response, re.DOTALL)
         if match:
             return match.group(1).strip()
             
         # 3. Try to find a generic code block
-        match = re.search(r"```\n(.*?)\n```", response, re.DOTALL)
+        match = re.search(r"```\n(.*?)\n```", cleaned_response, re.DOTALL)
         if match:
             return match.group(1).strip()
             
         # 4. Try to find an incomplete generic code block
-        match = re.search(r"```\n(.*)", response, re.DOTALL)
+        match = re.search(r"```\n(.*)", cleaned_response, re.DOTALL)
         if match:
             return match.group(1).strip()
             
-        # 5. Fallback: if there's a </think> block, take everything after it
-        if "</think>" in response:
-            return response.split("</think>")[-1].strip()
-            
-        # 6. Final fallback: return the original string (cleaned)
-        return response.strip()
+        # 5. Final fallback: return the cleaned response (stripped of tags)
+        return cleaned_response
 
     async def run_evaluation(
         self,

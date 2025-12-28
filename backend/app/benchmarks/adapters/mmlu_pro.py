@@ -102,7 +102,7 @@ Answer with ONLY the letter (A, B, C, D, E, F, G, H, I, or J). Do not explain.""
                 self.model_slug,
                 prompt,
                 system_prompt="You are a test-taking assistant. Output ONLY the answer letter (A-J). No explanation, no reasoning, no thinking. Just one letter.",
-                max_tokens=50,  # Short response expected - just a letter
+                max_tokens=1024,  # Account for potential <think> blocks
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)

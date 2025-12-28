@@ -135,7 +135,7 @@ Solution:
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are an expert programmer. Write clean, correct Python code.",
+                system_prompt="You are an expert programmer. Write clean, correct Python code. Be concise and provide ONLY the code block.",
                 max_tokens=4096,
                 temperature=0.0,
             )
