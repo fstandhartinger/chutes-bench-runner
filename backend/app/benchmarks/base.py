@@ -167,6 +167,37 @@ class BenchmarkAdapter(ABC):
             data_str = json.dumps(item_data, sort_keys=True)
         return hashlib.sha256(data_str.encode()).hexdigest()[:16]
 
+    def extract_python_code(self, response: str) -> str:
+        """Extract Python code from model response robustly."""
+        import re
+        
+        # 1. Try to find a complete markdown block
+        match = re.search(r"```python\n(.*?)\n```", response, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+            
+        # 2. Try to find an incomplete markdown block (starts with ```python but doesn't end)
+        match = re.search(r"```python\n(.*)", response, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+            
+        # 3. Try to find a generic code block
+        match = re.search(r"```\n(.*?)\n```", response, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+            
+        # 4. Try to find an incomplete generic code block
+        match = re.search(r"```\n(.*)", response, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+            
+        # 5. Fallback: if there's a </think> block, take everything after it
+        if "</think>" in response:
+            return response.split("</think>")[-1].strip()
+            
+        # 6. Final fallback: return the original string (cleaned)
+        return response.strip()
+
     async def run_evaluation(
         self,
         subset_pct: int,

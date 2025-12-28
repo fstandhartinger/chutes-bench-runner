@@ -139,12 +139,8 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
-            # Extract diff
-            diff_match = re.search(r"```diff\n(.*?)\n```", response_text, re.DOTALL)
-            if not diff_match:
-                diff_match = re.search(r"```\n(.*?)\n```", response_text, re.DOTALL)
-            
-            extracted_diff = diff_match.group(1) if diff_match else response_text.strip()
+            # Extract diff robustly
+            extracted_diff = self.extract_python_code(response_text)
             
             # Create sandbox
             sandbox_id = await self.sandy.create_sandbox()

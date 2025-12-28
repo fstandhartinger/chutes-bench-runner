@@ -92,12 +92,13 @@ Command:"""
                 self.model_slug,
                 prompt,
                 system_prompt="You are a Linux shell expert. Output only the command, no explanations.",
-                max_tokens=256,
+                max_tokens=512,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
-            response_cmd = response_text.strip().split("\n")[0].strip()
+            # Extract command robustly
+            response_cmd = self.extract_python_code(response_text)
             
             # Create sandbox and run command
             sandbox_id = await self.sandy.create_sandbox()

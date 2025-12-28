@@ -131,17 +131,13 @@ Solution:
                 self.model_slug,
                 prompt,
                 system_prompt="You are an expert scientific programmer. Write efficient, correct numerical code.",
-                max_tokens=2048,
+                max_tokens=4096,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
-            # Extract code from response
-            code_match = re.search(r"```python\n(.*?)\n```", response_text, re.DOTALL)
-            if not code_match:
-                code_match = re.search(r"```\n(.*?)\n```", response_text, re.DOTALL)
-            
-            extracted_code = code_match.group(1) if code_match else response_text.strip()
+            # Extract code from response robustly
+            extracted_code = self.extract_python_code(response_text)
             
             # Prepare execution code
             test_code = item.get("test", "")
