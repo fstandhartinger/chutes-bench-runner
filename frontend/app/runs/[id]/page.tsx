@@ -5,7 +5,6 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import {
   getRun,
   getBenchmarkDetails,
@@ -16,7 +15,6 @@ import {
 import {
   formatDate,
   formatPercent,
-  formatDuration,
   getStatusColor,
   getStatusBgColor,
   cn,
@@ -188,160 +186,159 @@ export default function RunDetailPage() {
         </div>
       )}
 
-      {/* Benchmark Results */}
-      <div className="grid gap-6 lg:grid-cols-[1fr_2fr]">
+      {/* Benchmark Results - Using Flexbox */}
+      <div className="flex flex-col lg:flex-row gap-6">
         {/* Benchmark List */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Benchmarks</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {run.benchmarks.map((rb) => (
-              <button
-                key={rb.id}
-                onClick={() => setSelectedBenchmark(rb.benchmark_name)}
-                className={cn(
-                  "flex w-full items-center justify-between rounded-lg p-3 text-left transition-colors",
-                  selectedBenchmark === rb.benchmark_name
-                    ? "bg-moss/10 border border-moss/30"
-                    : "bg-ink-700/50 hover:bg-ink-600/50"
-                )}
-              >
-                <div className="flex items-center gap-2">
-                  {rb.status === "succeeded" && (
-                    <CheckCircle2 className="h-4 w-4 text-moss" />
+        <div className="lg:w-1/3">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Benchmarks</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {run.benchmarks.map((rb) => (
+                <button
+                  key={rb.id}
+                  onClick={() => setSelectedBenchmark(rb.benchmark_name)}
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-lg p-3 text-left transition-colors",
+                    selectedBenchmark === rb.benchmark_name
+                      ? "bg-moss/10 border border-moss/30"
+                      : "bg-ink-700/50 hover:bg-ink-600/50"
                   )}
-                  {rb.status === "failed" && (
-                    <XCircle className="h-4 w-4 text-red-400" />
+                >
+                  <div className="flex items-center gap-2">
+                    {rb.status === "succeeded" && (
+                      <CheckCircle2 className="h-4 w-4 text-moss" />
+                    )}
+                    {rb.status === "failed" && (
+                      <XCircle className="h-4 w-4 text-red-400" />
+                    )}
+                    {rb.status === "running" && (
+                      <Loader2 className="h-4 w-4 animate-spin text-moss" />
+                    )}
+                    {!["succeeded", "failed", "running"].includes(rb.status) && (
+                      <div className="h-4 w-4 rounded-full bg-ink-500" />
+                    )}
+                    <span className="font-medium">{rb.benchmark_name}</span>
+                  </div>
+                  {rb.score !== undefined && rb.score !== null && (
+                    <span className="text-sm text-moss">
+                      {formatPercent(rb.score)}
+                    </span>
                   )}
-                  {rb.status === "running" && (
-                    <Loader2 className="h-4 w-4 animate-spin text-moss" />
-                  )}
-                  {!["succeeded", "failed", "running"].includes(rb.status) && (
-                    <div className="h-4 w-4 rounded-full bg-ink-500" />
-                  )}
-                  <span className="font-medium">{rb.benchmark_name}</span>
-                </div>
-                {rb.score !== undefined && rb.score !== null && (
-                  <span className="text-sm text-moss">
-                    {formatPercent(rb.score)}
-                  </span>
-                )}
-              </button>
-            ))}
-          </CardContent>
-        </Card>
+                </button>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
 
         {/* Benchmark Details */}
-        <Card className="border-2 border-red-500">
-          <CardHeader className="bg-red-500/20">
-            <CardTitle className="text-lg">
-              {selectedBenchmark || "Select a benchmark"} - DEBUG
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="bg-blue-500/20 min-h-[200px]">
-            <p className="text-red-500 font-bold">DEBUG: CardContent is rendering</p>
-            <p className="text-yellow-500">selectedRb: {selectedRb ? "truthy" : "falsy"}</p>
-            <p className="text-yellow-500">itemsLoading: {itemsLoading ? "true" : "false"}</p>
-            <p className="text-yellow-500">items.length: {items.length}</p>
-            {selectedRb ? (
-              <div className="space-y-6">
-                {/* Metrics */}
-                <div className="grid gap-4 sm:grid-cols-3">
-                  <div className="rounded-lg bg-ink-700/50 p-4">
-                    <div className="text-sm text-ink-400">Score</div>
-                    <div className="text-2xl font-semibold text-moss">
-                      {formatPercent(selectedRb.score)}
+        <div className="lg:w-2/3">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">
+                {selectedBenchmark || "Select a benchmark"}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {selectedRb ? (
+                <div className="space-y-6">
+                  {/* Metrics */}
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <div className="rounded-lg bg-ink-700/50 p-4">
+                      <div className="text-sm text-ink-400">Score</div>
+                      <div className="text-2xl font-semibold text-moss">
+                        {formatPercent(selectedRb.score)}
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-ink-700/50 p-4">
+                      <div className="text-sm text-ink-400">Items</div>
+                      <div className="text-2xl font-semibold">
+                        {selectedRb.completed_items}/{selectedRb.sampled_items}
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-ink-700/50 p-4">
+                      <div className="text-sm text-ink-400">Status</div>
+                      <div
+                        className={cn(
+                          "text-2xl font-semibold capitalize",
+                          getStatusColor(selectedRb.status)
+                        )}
+                      >
+                        {selectedRb.status}
+                      </div>
                     </div>
                   </div>
-                  <div className="rounded-lg bg-ink-700/50 p-4">
-                    <div className="text-sm text-ink-400">Items</div>
-                    <div className="text-2xl font-semibold">
-                      {selectedRb.completed_items}/{selectedRb.sampled_items}
-                    </div>
-                  </div>
-                  <div className="rounded-lg bg-ink-700/50 p-4">
-                    <div className="text-sm text-ink-400">Status</div>
-                    <div
-                      className={cn(
-                        "text-2xl font-semibold capitalize",
-                        getStatusColor(selectedRb.status)
-                      )}
-                    >
-                      {selectedRb.status}
-                    </div>
-                  </div>
-                </div>
 
-                {/* Item Results */}
-                <div>
-                  <h4 className="mb-3 font-medium text-ink-200">
-                    Item Results
-                  </h4>
-                  {itemsLoading ? (
-                    <div className="flex justify-center py-8">
-                      <Loader2 className="h-6 w-6 animate-spin text-moss" />
-                    </div>
-                  ) : items.length === 0 ? (
-                    <p className="py-8 text-center text-ink-400">
-                      No items evaluated yet
-                    </p>
-                  ) : (
-                    <div className="max-h-96 space-y-2 overflow-y-auto rounded-lg bg-ink-900 p-4">
-                      {items.map((item) => (
-                        <div
-                          key={item.id}
-                          className="flex items-start gap-3 rounded border border-ink-600 p-3"
-                        >
-                          <div className="mt-0.5">
-                            {item.is_correct === true && (
-                              <CheckCircle2 className="h-4 w-4 text-moss" />
-                            )}
-                            {item.is_correct === false && (
-                              <XCircle className="h-4 w-4 text-red-400" />
-                            )}
-                            {item.is_correct === null && (
-                              <div className="h-4 w-4 rounded-full bg-ink-500" />
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 text-sm">
-                              <span className="font-mono text-ink-400">
-                                {item.item_id}
-                              </span>
-                              {item.latency_ms && (
-                                <span className="text-ink-500">
-                                  {item.latency_ms}ms
-                                </span>
+                  {/* Item Results */}
+                  <div>
+                    <h4 className="mb-3 font-medium text-ink-200">
+                      Item Results
+                    </h4>
+                    {itemsLoading ? (
+                      <div className="flex justify-center py-8">
+                        <Loader2 className="h-6 w-6 animate-spin text-moss" />
+                      </div>
+                    ) : items.length === 0 ? (
+                      <p className="py-8 text-center text-ink-400">
+                        No items evaluated yet
+                      </p>
+                    ) : (
+                      <div className="max-h-96 space-y-2 overflow-y-auto rounded-lg bg-ink-900 p-4">
+                        {items.map((item) => (
+                          <div
+                            key={item.id}
+                            className="flex items-start gap-3 rounded border border-ink-600 p-3"
+                          >
+                            <div className="mt-0.5">
+                              {item.is_correct === true && (
+                                <CheckCircle2 className="h-4 w-4 text-moss" />
+                              )}
+                              {item.is_correct === false && (
+                                <XCircle className="h-4 w-4 text-red-400" />
+                              )}
+                              {item.is_correct === null && (
+                                <div className="h-4 w-4 rounded-full bg-ink-500" />
                               )}
                             </div>
-                            {item.response && (
-                              <div className="mt-1 truncate text-sm text-ink-300">
-                                {item.response.slice(0, 100)}
-                                {item.response.length > 100 && "..."}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 text-sm">
+                                <span className="font-mono text-ink-400">
+                                  {item.item_id}
+                                </span>
+                                {item.latency_ms && (
+                                  <span className="text-ink-500">
+                                    {item.latency_ms}ms
+                                  </span>
+                                )}
                               </div>
-                            )}
-                            {item.error && (
-                              <div className="mt-1 text-sm text-red-400">
-                                Error: {item.error}
-                              </div>
-                            )}
+                              {item.response && (
+                                <div className="mt-1 truncate text-sm text-ink-300">
+                                  {item.response.slice(0, 100)}
+                                  {item.response.length > 100 && "..."}
+                                </div>
+                              )}
+                              {item.error && (
+                                <div className="mt-1 text-sm text-red-400">
+                                  Error: {item.error}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <p className="py-8 text-center text-ink-400">
-                Select a benchmark to view details
-              </p>
-            )}
-          </CardContent>
-        </Card>
+              ) : (
+                <p className="py-8 text-center text-ink-400">
+                  Select a benchmark to view details
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );
 }
-
