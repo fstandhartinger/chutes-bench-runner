@@ -1,12 +1,18 @@
 """Test fixtures and configuration."""
 import asyncio
+import os
 from typing import AsyncGenerator, Generator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+# Set environment variables before importing app modules
+os.environ["DATABASE_URL"] = "postgresql://test:test@localhost/test"
+os.environ["CHUTES_API_KEY"] = "test-key"
+
 from fastapi.testclient import TestClient
-from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base, get_db
 from app.main import app
@@ -30,6 +36,8 @@ async def test_engine():
     engine = create_async_engine(
         TEST_DATABASE_URL,
         echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -92,4 +100,3 @@ def mock_chutes_client():
         return_value=("A", {"usage": {"prompt_tokens": 10, "completion_tokens": 1}})
     )
     return mock
-

@@ -86,25 +86,23 @@ class MMLUProAdapter(BenchmarkAdapter):
                 error=f"Item {item_id} not found",
             )
 
-        # Format prompt
+        # Format prompt - explicitly request no reasoning/thinking
         options_str = "\n".join(
             f"{chr(65 + i)}. {opt}" for i, opt in enumerate(item["options"])
         )
-        prompt = f"""Answer the following multiple choice question. Respond with only the letter of the correct answer (A, B, C, D, etc.).
-
-Question: {item["question"]}
+        prompt = f"""Question: {item["question"]}
 
 {options_str}
 
-Answer:"""
+Answer with ONLY the letter (A, B, C, D, E, F, G, H, I, or J). Do not explain."""
 
         try:
             start_time = time.time()
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are an expert test taker. Answer multiple choice questions with only the letter of the correct answer.",
-                max_tokens=256,  # Allow for chain-of-thought models
+                system_prompt="You are a test-taking assistant. Output ONLY the answer letter (A-J). No explanation, no reasoning, no thinking. Just one letter.",
+                max_tokens=50,  # Short response expected - just a letter
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
