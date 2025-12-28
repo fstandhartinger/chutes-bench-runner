@@ -257,7 +257,7 @@ async def stream_run_events(
 async def export_run(
     db: SessionDep,
     run_id: str,
-    format: str = Query(default="csv", regex="^(csv|pdf)$"),
+    format: str = Query(default="csv", pattern="^(csv|pdf)$"),
 ):
     """Export run results as CSV or PDF."""
     run = await get_run(db, run_id)
