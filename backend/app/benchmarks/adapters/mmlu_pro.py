@@ -1,4 +1,5 @@
 """MMLU-Pro benchmark adapter."""
+import re
 import time
 from typing import Any, AsyncIterator, Optional
 
@@ -103,13 +104,31 @@ Answer:"""
                 self.model_slug,
                 prompt,
                 system_prompt="You are an expert test taker. Answer multiple choice questions with only the letter of the correct answer.",
-                max_tokens=10,
+                max_tokens=1024,  # Allow for chain-of-thought models
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
-            # Parse response
-            answer_letter = response_text.strip().upper()[:1]
+            # Parse response - handle chain-of-thought models
+            answer_text = response_text.strip()
+            
+            # If response contains </think>, extract answer after it
+            if "</think>" in answer_text:
+                answer_text = answer_text.split("</think>")[-1].strip()
+            
+            # Extract the first letter (A-J) from the answer
+            answer_letter = ""
+            # Look for patterns like "A", "A.", "(A)", "Answer: A", etc.
+            match = re.search(r'\b([A-J])\b', answer_text.upper())
+            if match:
+                answer_letter = match.group(1)
+            else:
+                # Fallback: take first uppercase letter
+                for char in answer_text.upper():
+                    if char in "ABCDEFGHIJ":
+                        answer_letter = char
+                        break
+            
             expected = item["answer"].upper()[:1]
             is_correct = answer_letter == expected
 
