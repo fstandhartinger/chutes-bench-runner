@@ -34,3 +34,5 @@ def get_all_adapters() -> dict[str, Type[BenchmarkAdapter]]:
 from app.benchmarks.adapters import *  # noqa: F401, F403, E402
 
 
+
+

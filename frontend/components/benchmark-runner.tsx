@@ -238,16 +238,13 @@ export function BenchmarkRunner() {
                 <SelectValue placeholder="Select a model..." />
               </SelectTrigger>
               <SelectContent>
-                {models.map((model) => (
-                  <SelectItem key={model.id} value={model.id}>
-                    <span className="flex items-center gap-2">
+                {models
+                  .filter((model) => model.is_active && model.instance_count > 0)
+                  .map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
                       <span>{model.name}</span>
-                      {model.instance_count > 0 && (
-                        <span className="text-xs text-moss">● Active</span>
-                      )}
-                    </span>
-                  </SelectItem>
-                ))}
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
           </div>
@@ -423,5 +420,3 @@ export function BenchmarkRunner() {
     </div>
   );
 }
-
-

@@ -31,3 +31,5 @@ class Model(Base):
         return f"<Model(slug={self.slug}, name={self.name})>"
 
 
+
+

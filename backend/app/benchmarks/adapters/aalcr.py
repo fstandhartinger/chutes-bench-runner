@@ -51,10 +51,11 @@ class AALCRAdapter(BenchmarkAdapter):
             hf_token = os.environ.get("HF_TOKEN")
             
             dataset = None
-            # Try loading from code reasoning datasets
+            # Try loading from code reasoning datasets - prioritizing smaller ones
             sources = [
-                ("deepmind/code_contests", "test", {}),
+                ("openai_humaneval", "test", {}),
                 ("codeparrot/apps", "test", {}),
+                ("deepmind/code_contests", "test", {}),
             ]
             
             for source_name, split, kwargs in sources:
@@ -62,7 +63,11 @@ class AALCRAdapter(BenchmarkAdapter):
                     logger.info(f"Trying to load from {source_name}")
                     if hf_token:
                         kwargs["token"] = hf_token
-                    dataset = load_dataset(source_name, split=f"{split}[:100]", **kwargs)
+                    # For larger datasets, try to only load a slice if possible
+                    if source_name == "deepmind/code_contests":
+                        dataset = load_dataset(source_name, split=f"{split}[:100]", **kwargs)
+                    else:
+                        dataset = load_dataset(source_name, split=split, **kwargs)
                     break
                 except Exception as e:
                     logger.warning(f"Could not load {source_name}: {e}")
@@ -80,12 +85,13 @@ class AALCRAdapter(BenchmarkAdapter):
             
             self._items = []
             for i, item in enumerate(dataset):
-                problem = item.get("description") or item.get("question") or item.get("problem") or ""
+                problem = item.get("prompt") or item.get("description") or item.get("question") or item.get("problem") or ""
                 if problem:
-                    solutions = item.get("solutions", {})
-                    solution = ""
-                    if isinstance(solutions, dict) and "solution" in solutions:
-                        solution = solutions["solution"][0] if solutions["solution"] else ""
+                    solution = item.get("canonical_solution") or ""
+                    if not solution:
+                        solutions = item.get("solutions", {})
+                        if isinstance(solutions, dict) and "solution" in solutions:
+                            solution = solutions["solution"][0] if solutions["solution"] else ""
                     self._items.append({
                         "id": str(i),
                         "problem": problem,
