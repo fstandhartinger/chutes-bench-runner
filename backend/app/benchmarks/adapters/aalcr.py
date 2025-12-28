@@ -148,7 +148,12 @@ Solution:
             
             # Prepare execution code
             test_code = item.get("test", "")
-            full_code = f"{extracted_code}\n\n{test_code}"
+            # Include problem text if it contains function definitions
+            prompt_code = ""
+            if "def " in item["problem"] and item["problem"].strip().startswith("def "):
+                prompt_code = item["problem"]
+                
+            full_code = f"{prompt_code}\n\n{extracted_code}\n\n{test_code}"
             
             # Execute in sandbox
             execution_result = await self.sandy.run_python_code(full_code)
