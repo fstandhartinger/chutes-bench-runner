@@ -11,6 +11,7 @@ import {
   getExportUrl,
   type Run,
   type ItemResult,
+  type BenchmarkRunBenchmark,
 } from "@/lib/api";
 import {
   formatDate,
@@ -27,7 +28,263 @@ import {
   CheckCircle2,
   XCircle,
   AlertCircle,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  Zap,
+  Hash,
+  MessageSquare,
+  Target,
+  AlertTriangle,
+  Info,
 } from "lucide-react";
+
+// Expandable Item Component
+function ItemDetailCard({ item, index }: { item: ItemResult; index: number }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border transition-all",
+        item.is_correct === true
+          ? "border-moss/30 bg-moss/5"
+          : item.is_correct === false
+          ? "border-red-400/30 bg-red-400/5"
+          : item.error
+          ? "border-yellow-400/30 bg-yellow-400/5"
+          : "border-ink-600 bg-ink-800/50"
+      )}
+    >
+      {/* Header - Always visible */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center justify-between p-4 text-left"
+      >
+        <div className="flex items-center gap-3">
+          {/* Status Icon */}
+          <div className="flex-shrink-0">
+            {item.is_correct === true && (
+              <CheckCircle2 className="h-5 w-5 text-moss" />
+            )}
+            {item.is_correct === false && (
+              <XCircle className="h-5 w-5 text-red-400" />
+            )}
+            {item.is_correct === null && item.error && (
+              <AlertTriangle className="h-5 w-5 text-yellow-400" />
+            )}
+            {item.is_correct === null && !item.error && (
+              <div className="h-5 w-5 rounded-full bg-ink-500" />
+            )}
+          </div>
+
+          {/* Item ID and Quick Stats */}
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-sm font-medium text-ink-200">
+                #{index + 1} · {item.item_id}
+              </span>
+              {item.item_metadata?.category && (
+                <span className="rounded bg-ink-700 px-2 py-0.5 text-xs text-ink-400">
+                  {String(item.item_metadata.category)}
+                </span>
+              )}
+            </div>
+            <div className="mt-1 flex items-center gap-3 text-xs text-ink-400">
+              {item.latency_ms !== undefined && (
+                <span className="flex items-center gap-1">
+                  <Clock className="h-3 w-3" />
+                  {item.latency_ms}ms
+                </span>
+              )}
+              {(item.input_tokens || item.output_tokens) && (
+                <span className="flex items-center gap-1">
+                  <Zap className="h-3 w-3" />
+                  {item.input_tokens || 0} → {item.output_tokens || 0} tokens
+                </span>
+              )}
+              {item.score !== undefined && item.score !== null && (
+                <span className="flex items-center gap-1">
+                  <Target className="h-3 w-3" />
+                  Score: {item.score.toFixed(2)}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Expand/Collapse Icon */}
+        <div className="flex items-center gap-2">
+          {item.is_correct !== null && (
+            <span
+              className={cn(
+                "text-sm font-medium",
+                item.is_correct ? "text-moss" : "text-red-400"
+              )}
+            >
+              {item.is_correct ? "Correct" : "Incorrect"}
+            </span>
+          )}
+          {expanded ? (
+            <ChevronUp className="h-5 w-5 text-ink-400" />
+          ) : (
+            <ChevronDown className="h-5 w-5 text-ink-400" />
+          )}
+        </div>
+      </button>
+
+      {/* Expanded Content */}
+      {expanded && (
+        <div className="border-t border-ink-700 p-4 space-y-4">
+          {/* Error Message */}
+          {item.error && (
+            <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-3">
+              <div className="flex items-center gap-2 text-red-400 font-medium text-sm mb-1">
+                <AlertTriangle className="h-4 w-4" />
+                Error
+              </div>
+              <p className="text-sm text-red-300 font-mono">{item.error}</p>
+            </div>
+          )}
+
+          {/* Task/Prompt */}
+          {item.prompt && (
+            <div>
+              <div className="flex items-center gap-2 text-sm font-medium text-ink-300 mb-2">
+                <MessageSquare className="h-4 w-4" />
+                Task / Prompt
+              </div>
+              <div className="rounded-lg bg-ink-900 p-3 text-sm text-ink-200 font-mono whitespace-pre-wrap max-h-64 overflow-y-auto">
+                {item.prompt}
+              </div>
+            </div>
+          )}
+
+          {/* Model Response */}
+          {item.response && (
+            <div>
+              <div className="flex items-center gap-2 text-sm font-medium text-ink-300 mb-2">
+                <Zap className="h-4 w-4" />
+                Model Response
+              </div>
+              <div
+                className={cn(
+                  "rounded-lg p-3 text-sm font-mono whitespace-pre-wrap max-h-64 overflow-y-auto",
+                  item.is_correct === true
+                    ? "bg-moss/10 text-moss"
+                    : item.is_correct === false
+                    ? "bg-red-500/10 text-red-300"
+                    : "bg-ink-900 text-ink-200"
+                )}
+              >
+                {item.response}
+              </div>
+            </div>
+          )}
+
+          {/* Expected Answer */}
+          {item.expected && (
+            <div>
+              <div className="flex items-center gap-2 text-sm font-medium text-ink-300 mb-2">
+                <Target className="h-4 w-4" />
+                Expected Answer
+              </div>
+              <div className="rounded-lg bg-ink-900 p-3 text-sm text-moss font-mono">
+                {item.expected}
+              </div>
+            </div>
+          )}
+
+          {/* Metadata */}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded bg-ink-800 p-2">
+              <div className="text-xs text-ink-400">Latency</div>
+              <div className="text-sm font-medium">
+                {item.latency_ms ? `${item.latency_ms}ms` : "-"}
+              </div>
+            </div>
+            <div className="rounded bg-ink-800 p-2">
+              <div className="text-xs text-ink-400">Input Tokens</div>
+              <div className="text-sm font-medium">
+                {item.input_tokens ?? "-"}
+              </div>
+            </div>
+            <div className="rounded bg-ink-800 p-2">
+              <div className="text-xs text-ink-400">Output Tokens</div>
+              <div className="text-sm font-medium">
+                {item.output_tokens ?? "-"}
+              </div>
+            </div>
+            <div className="rounded bg-ink-800 p-2">
+              <div className="text-xs text-ink-400">Item Hash</div>
+              <div className="text-sm font-medium font-mono truncate">
+                {item.item_hash?.slice(0, 8) || "-"}
+              </div>
+            </div>
+          </div>
+
+          {/* Judge Output if present */}
+          {item.judge_output && Object.keys(item.judge_output).length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 text-sm font-medium text-ink-300 mb-2">
+                <Info className="h-4 w-4" />
+                Judge Output
+              </div>
+              <div className="rounded-lg bg-ink-900 p-3 text-sm text-ink-200 font-mono whitespace-pre-wrap">
+                {JSON.stringify(item.judge_output, null, 2)}
+              </div>
+            </div>
+          )}
+
+          {/* Additional Metadata */}
+          {item.item_metadata && Object.keys(item.item_metadata).length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 text-sm font-medium text-ink-300 mb-2">
+                <Hash className="h-4 w-4" />
+                Item Metadata
+              </div>
+              <div className="rounded-lg bg-ink-900 p-3 text-sm text-ink-200 font-mono whitespace-pre-wrap">
+                {JSON.stringify(item.item_metadata, null, 2)}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Error/Failure Info Component
+function FailureInfo({
+  run,
+  benchmark,
+}: {
+  run: Run;
+  benchmark?: BenchmarkRunBenchmark;
+}) {
+  const errorMessage = benchmark?.error_message || run.error_message;
+
+  if (!errorMessage && run.status !== "failed" && benchmark?.status !== "failed") {
+    return null;
+  }
+
+  return (
+    <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-4 mb-4">
+      <div className="flex items-center gap-2 text-red-400 font-medium mb-2">
+        <AlertTriangle className="h-5 w-5" />
+        {benchmark ? `Benchmark Failed: ${benchmark.benchmark_name}` : "Run Failed"}
+      </div>
+      {errorMessage && (
+        <p className="text-sm text-red-300">{errorMessage}</p>
+      )}
+      {!errorMessage && (
+        <p className="text-sm text-red-300/70">
+          No detailed error message available. Check the worker logs for more information.
+        </p>
+      )}
+    </div>
+  );
+}
 
 export default function RunDetailPage() {
   const params = useParams();
@@ -36,9 +293,11 @@ export default function RunDetailPage() {
   const [run, setRun] = useState<Run | null>(null);
   const [selectedBenchmark, setSelectedBenchmark] = useState<string | null>(null);
   const [items, setItems] = useState<ItemResult[]>([]);
+  const [totalItems, setTotalItems] = useState(0);
   const [loading, setLoading] = useState(true);
   const [itemsLoading, setItemsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [itemsLimit, setItemsLimit] = useState(20);
 
   useEffect(() => {
     async function load() {
@@ -63,8 +322,9 @@ export default function RunDetailPage() {
     async function loadItems() {
       setItemsLoading(true);
       try {
-        const data = await getBenchmarkDetails(runId, selectedBenchmark!, 50, 0);
+        const data = await getBenchmarkDetails(runId, selectedBenchmark!, itemsLimit, 0);
         setItems(data.items.items);
+        setTotalItems(data.items.total);
       } catch (e) {
         console.error("Failed to load items:", e);
       } finally {
@@ -72,7 +332,7 @@ export default function RunDetailPage() {
       }
     }
     loadItems();
-  }, [runId, selectedBenchmark]);
+  }, [runId, selectedBenchmark, itemsLimit]);
 
   if (loading) {
     return (
@@ -98,6 +358,21 @@ export default function RunDetailPage() {
 
   const selectedRb = run.benchmarks.find(
     (rb) => rb.benchmark_name === selectedBenchmark
+  );
+
+  // Calculate stats
+  const correctCount = items.filter((i) => i.is_correct === true).length;
+  const incorrectCount = items.filter((i) => i.is_correct === false).length;
+  const errorCount = items.filter((i) => i.error).length;
+  const avgLatency =
+    items.length > 0
+      ? Math.round(
+          items.reduce((sum, i) => sum + (i.latency_ms || 0), 0) / items.length
+        )
+      : 0;
+  const totalTokens = items.reduce(
+    (sum, i) => sum + (i.input_tokens || 0) + (i.output_tokens || 0),
+    0
   );
 
   return (
@@ -141,6 +416,11 @@ export default function RunDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Run-level Error Message */}
+      {(run.status === "failed" || run.error_message) && (
+        <FailureInfo run={run} />
+      )}
 
       {/* Summary Card */}
       <Card className="mb-8">
@@ -234,14 +514,21 @@ export default function RunDetailPage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">
-              {selectedBenchmark ? `${selectedBenchmark} Details` : "Select a benchmark"}
+              {selectedBenchmark
+                ? `${selectedBenchmark} Details`
+                : "Select a benchmark"}
             </CardTitle>
           </CardHeader>
           <CardContent>
             {selectedRb ? (
               <div className="space-y-6">
+                {/* Benchmark-level Error */}
+                {selectedRb.status === "failed" && (
+                  <FailureInfo run={run} benchmark={selectedRb} />
+                )}
+
                 {/* Metrics */}
-                <div className="grid gap-4 sm:grid-cols-3">
+                <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-6">
                   <div className="rounded-lg bg-ink-700/50 p-4">
                     <div className="text-sm text-ink-400">Score</div>
                     <div className="text-2xl font-semibold text-moss">
@@ -249,29 +536,81 @@ export default function RunDetailPage() {
                     </div>
                   </div>
                   <div className="rounded-lg bg-ink-700/50 p-4">
-                    <div className="text-sm text-ink-400">Items Completed</div>
+                    <div className="text-sm text-ink-400">Items</div>
                     <div className="text-2xl font-semibold">
                       {selectedRb.completed_items} / {selectedRb.sampled_items}
                     </div>
                   </div>
                   <div className="rounded-lg bg-ink-700/50 p-4">
-                    <div className="text-sm text-ink-400">Status</div>
-                    <div
-                      className={cn(
-                        "text-2xl font-semibold capitalize",
-                        getStatusColor(selectedRb.status)
-                      )}
-                    >
-                      {selectedRb.status}
+                    <div className="text-sm text-ink-400">Correct</div>
+                    <div className="text-2xl font-semibold text-moss">
+                      {correctCount}
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-ink-700/50 p-4">
+                    <div className="text-sm text-ink-400">Incorrect</div>
+                    <div className="text-2xl font-semibold text-red-400">
+                      {incorrectCount}
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-ink-700/50 p-4">
+                    <div className="text-sm text-ink-400">Avg Latency</div>
+                    <div className="text-2xl font-semibold">
+                      {avgLatency}ms
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-ink-700/50 p-4">
+                    <div className="text-sm text-ink-400">Total Tokens</div>
+                    <div className="text-2xl font-semibold">
+                      {totalTokens.toLocaleString()}
                     </div>
                   </div>
                 </div>
 
+                {/* Benchmark Metrics if available */}
+                {selectedRb.metrics &&
+                  Object.keys(selectedRb.metrics).length > 0 && (
+                    <div className="rounded-lg bg-ink-800 p-4">
+                      <h4 className="font-medium text-ink-200 mb-2">
+                        Benchmark Metrics
+                      </h4>
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                        {Object.entries(selectedRb.metrics).map(
+                          ([key, value]) => (
+                            <div key={key} className="rounded bg-ink-700 p-2">
+                              <div className="text-xs text-ink-400 capitalize">
+                                {key.replace(/_/g, " ")}
+                              </div>
+                              <div className="text-sm font-medium">
+                                {typeof value === "number"
+                                  ? value.toLocaleString(undefined, {
+                                      maximumFractionDigits: 4,
+                                    })
+                                  : String(value)}
+                              </div>
+                            </div>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                 {/* Item Results */}
                 <div>
-                  <h4 className="mb-3 font-medium text-ink-200">
-                    Item Results ({items.length} items)
-                  </h4>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="font-medium text-ink-200">
+                      Item Results ({totalItems} total
+                      {items.length < totalItems
+                        ? `, showing ${items.length}`
+                        : ""}
+                      )
+                    </h4>
+                    {errorCount > 0 && (
+                      <span className="text-sm text-yellow-400">
+                        {errorCount} items with errors
+                      </span>
+                    )}
+                  </div>
                   {itemsLoading ? (
                     <div className="flex justify-center py-8">
                       <Loader2 className="h-6 w-6 animate-spin text-moss" />
@@ -281,48 +620,30 @@ export default function RunDetailPage() {
                       No items evaluated yet
                     </p>
                   ) : (
-                    <div className="max-h-96 space-y-2 overflow-y-auto rounded-lg bg-ink-900 p-4">
-                      {items.map((item) => (
-                        <div
+                    <div className="space-y-3">
+                      {items.map((item, index) => (
+                        <ItemDetailCard
                           key={item.id}
-                          className="flex items-start gap-3 rounded border border-ink-600 p-3"
-                        >
-                          <div className="mt-0.5">
-                            {item.is_correct === true && (
-                              <CheckCircle2 className="h-4 w-4 text-moss" />
-                            )}
-                            {item.is_correct === false && (
-                              <XCircle className="h-4 w-4 text-red-400" />
-                            )}
-                            {item.is_correct === null && (
-                              <div className="h-4 w-4 rounded-full bg-ink-500" />
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 text-sm">
-                              <span className="font-mono text-ink-400">
-                                {item.item_id}
-                              </span>
-                              {item.latency_ms && (
-                                <span className="text-ink-500">
-                                  {item.latency_ms}ms
-                                </span>
-                              )}
-                            </div>
-                            {item.response && (
-                              <div className="mt-1 text-sm text-ink-300 break-all">
-                                {item.response.slice(0, 200)}
-                                {item.response.length > 200 && "..."}
-                              </div>
-                            )}
-                            {item.error && (
-                              <div className="mt-1 text-sm text-red-400">
-                                Error: {item.error}
-                              </div>
-                            )}
-                          </div>
-                        </div>
+                          item={item}
+                          index={index}
+                        />
                       ))}
+
+                      {/* Load More Button */}
+                      {items.length < totalItems && (
+                        <div className="text-center pt-4">
+                          <Button
+                            variant="secondary"
+                            onClick={() => setItemsLimit((prev) => prev + 20)}
+                            disabled={itemsLoading}
+                          >
+                            {itemsLoading ? (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : null}
+                            Load More ({totalItems - items.length} remaining)
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

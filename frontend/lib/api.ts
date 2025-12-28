@@ -67,13 +67,18 @@ export interface RunEvent {
 export interface ItemResult {
   id: string;
   item_id: string;
+  item_hash?: string;
   prompt?: string;
   response?: string;
   expected?: string;
   is_correct?: boolean;
   score?: number;
+  judge_output?: Record<string, unknown>;
   latency_ms?: number;
+  input_tokens?: number;
+  output_tokens?: number;
   error?: string;
+  item_metadata?: Record<string, unknown>;
   created_at: string;
 }
 
