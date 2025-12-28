@@ -52,7 +52,7 @@ class ChutesClient:
             auth_token = self.user_access_token or self.api_key
             
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(60.0, connect=10.0),
+                timeout=httpx.Timeout(300.0, connect=10.0),
                 headers={
                     "Authorization": f"Bearer {auth_token}",
                     "Content-Type": "application/json",
@@ -161,7 +161,7 @@ class ChutesClient:
             # Use IDP endpoint with Host header for user token auth
             # This routes through the IDP which validates the user's token
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(120.0, connect=10.0),
+                timeout=httpx.Timeout(300.0, connect=10.0),
             ) as client:
                 response = await client.post(
                     f"{IDP_INFERENCE_URL}/chat/completions",
