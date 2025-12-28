@@ -120,6 +120,16 @@ NEXT_PUBLIC_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 **Problem**: Backend sent SSE events with `event: type` field, but frontend used `onmessage` which only catches unnamed events
 **Fix**: Remove `event:` field from SSE output - send only `id:` and `data:`, include `event_type` in the JSON payload. Use `addEventListener` only for special events like `done`.
 
+### 10. Robust Payload Extraction (Reasoning Models)
+**Problem**: Chain-of-thought models (like DeepSeek R1 or Qwen3) often ignore "Output ONLY X" instructions and provide a `<think>` block, even if told not to.
+**Fix**: All adapters now use `extract_python_code` (which handles `<think>` removal and markdown block extraction) and have improved regex patterns to find the final answer/command/action even if embedded in prose.
+
+### 11. Benchmark Specific Fixes
+- **AIME 2025**: Changed to integer comparison (e.g., "24" == "024") and increased `max_tokens` to 8192.
+- **Terminal-Bench**: Added few-shot examples and command-line heuristics to find the command if no markdown is used.
+- **Tau-Bench**: Added few-shot examples and regex keyword matching for action names.
+- **GPQA**: Added case-insensitive think tag handling and standalone letter matching (e.g., "C." or "C").
+
 ## Testing
 
 ### Backend Tests
