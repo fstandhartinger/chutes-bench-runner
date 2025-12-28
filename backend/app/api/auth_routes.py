@@ -229,3 +229,4 @@ async def auth_status(request: Request, db: SessionDep):
         "has_invoke_scope": has_invoke_scope,
     }
 
+

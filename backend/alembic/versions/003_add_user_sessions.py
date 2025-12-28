@@ -41,3 +41,4 @@ def downgrade() -> None:
     op.drop_index("ix_user_sessions_session_id", table_name="user_sessions")
     op.drop_table("user_sessions")
 
+

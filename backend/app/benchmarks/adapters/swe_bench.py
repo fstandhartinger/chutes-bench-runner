@@ -144,3 +144,4 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
             logger.error("SWE-Bench evaluation failed", item_id=item_id, error=str(e))
             return ItemResult(item_id=item_id, prompt=prompt, error=str(e))
 
+

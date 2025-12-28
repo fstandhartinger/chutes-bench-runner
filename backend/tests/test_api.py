@@ -111,3 +111,4 @@ def test_export_format_validation(client: TestClient):
     response = client.get("/api/runs/00000000-0000-0000-0000-000000000000/export?format=invalid")
     assert response.status_code == 422
 
+

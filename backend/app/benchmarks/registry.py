@@ -33,3 +33,4 @@ def get_all_adapters() -> dict[str, Type[BenchmarkAdapter]]:
 # Import adapters to trigger registration
 from app.benchmarks.adapters import *  # noqa: F401, F403, E402
 
+

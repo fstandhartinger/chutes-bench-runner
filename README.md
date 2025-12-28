@@ -269,7 +269,12 @@ MIT License - see LICENSE file for details.
 3. Make your changes with tests
 4. Submit a pull request
 
+## For Developers & AI Agents
+
+📖 **See [INTERNAL.md](./INTERNAL.md)** for deployment details, implementation notes, lessons learned, and technical context useful for debugging, extending, or maintaining this project.
+
 ---
 
 Built with ❤️ for the [Chutes](https://chutes.ai) ecosystem.
+
 

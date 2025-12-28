@@ -53,3 +53,4 @@ class UserSession(Base):
         """Check if session has chutes:invoke scope."""
         return self.has_scope("chutes:invoke")
 
+
