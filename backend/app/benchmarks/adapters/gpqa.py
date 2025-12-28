@@ -128,15 +128,37 @@ Answer:"""
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
-            answer = response_text.strip().upper()
-            # Find the letter in the response - models sometimes say "The correct answer is A"
-            match = re.search(r"\b([A-D])\b", answer)
+            # Parse response - handle chain-of-thought models
+            answer_text = response_text.strip()
+            
+            # If response contains </think>, extract answer after it
+            # Use case-insensitive search for the tag
+            think_match = re.search(r'</think>', answer_text, re.IGNORECASE)
+            if think_match:
+                answer_text = answer_text[think_match.end():].strip()
+            
+            # Extract the first letter (A-D) from the answer
+            answer_letter = ""
+            # Look for patterns like "A", "A.", "(A)", "Answer: A", etc.
+            # Use a more specific pattern to avoid matching letters in words
+            match = re.search(r'(?:^|\s|\*\*|[(\.])([A-D])(?:[)\.]|\s|\*\*|$)', answer_text.upper())
             if match:
-                answer = match.group(1)
+                answer_letter = match.group(1)
             else:
-                answer = answer[:1]
+                # Fallback: take first uppercase letter that stands alone
+                for char in answer_text.upper():
+                    if char in "ABCD":
+                        answer_letter = char
+                        break
+            
+            # Detailed logging for debugging
+            logger.info("GPQA evaluation details", 
+                        item_id=item_id, 
+                        correct_letter=correct_letter, 
+                        answer_letter=answer_letter,
+                        extracted_text=answer_text[:50])
                 
-            is_correct = answer == correct_letter
+            is_correct = answer_letter == correct_letter
 
             return ItemResult(
                 item_id=item_id,

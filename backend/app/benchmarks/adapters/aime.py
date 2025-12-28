@@ -124,7 +124,7 @@ Solution:"""
                 self.model_slug,
                 prompt,
                 system_prompt="You are an expert mathematician. Solve the problem step by step. Always end your response with 'ANSWER: ' followed by the integer result.",
-                max_tokens=4096,  # Allow for long reasoning
+                max_tokens=8192,  # Increased for complex AIME problems
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
@@ -157,7 +157,11 @@ Solution:"""
                 expected = expected[7:-1]
             expected = re.sub(r"[^\d]", "", expected)
             
-            is_correct = model_answer == expected
+            # Compare as integers if possible
+            try:
+                is_correct = int(model_answer) == int(expected)
+            except (ValueError, TypeError):
+                is_correct = model_answer == expected
 
             return ItemResult(
                 item_id=item_id,

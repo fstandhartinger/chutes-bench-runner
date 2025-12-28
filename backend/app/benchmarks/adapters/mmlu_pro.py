@@ -118,17 +118,20 @@ Answer:"""
             answer_text = response_text.strip()
             
             # If response contains </think>, extract answer after it
-            if "</think>" in answer_text:
-                answer_text = answer_text.split("</think>")[-1].strip()
+            # Use case-insensitive search for the tag
+            think_match = re.search(r'</think>', answer_text, re.IGNORECASE)
+            if think_match:
+                answer_text = answer_text[think_match.end():].strip()
             
             # Extract the first letter (A-J) from the answer
             answer_letter = ""
             # Look for patterns like "A", "A.", "(A)", "Answer: A", etc.
-            match = re.search(r'\b([A-J])\b', answer_text.upper())
+            # Use a more specific pattern to avoid matching letters in words
+            match = re.search(r'(?:^|\s|\*\*|[(\.])([A-J])(?:[)\.]|\s|\*\*|$)', answer_text.upper())
             if match:
                 answer_letter = match.group(1)
             else:
-                # Fallback: take first uppercase letter
+                # Fallback: take first uppercase letter that stands alone
                 for char in answer_text.upper():
                     if char in "ABCDEFGHIJ":
                         answer_letter = char
