@@ -189,9 +189,9 @@ export default function RunDetailPage() {
       )}
 
       {/* Benchmark Results */}
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-6 lg:grid-cols-[1fr_2fr]">
         {/* Benchmark List */}
-        <Card className="lg:col-span-1">
+        <Card>
           <CardHeader>
             <CardTitle className="text-lg">Benchmarks</CardTitle>
           </CardHeader>
@@ -233,7 +233,7 @@ export default function RunDetailPage() {
         </Card>
 
         {/* Benchmark Details */}
-        <Card className="lg:col-span-2">
+        <Card>
           <CardHeader>
             <CardTitle className="text-lg">
               {selectedBenchmark || "Select a benchmark"}
