@@ -233,13 +233,13 @@ export default function RunDetailPage() {
         </Card>
 
         {/* Benchmark Details */}
-        <Card>
-          <CardHeader>
+        <Card className="border-2 border-red-500">
+          <CardHeader className="bg-red-500/20">
             <CardTitle className="text-lg">
-              {selectedBenchmark || "Select a benchmark"}
+              {selectedBenchmark || "Select a benchmark"} - DEBUG
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="bg-blue-500/20">
             {selectedRb ? (
               <div className="space-y-6">
                 {/* Metrics */}
