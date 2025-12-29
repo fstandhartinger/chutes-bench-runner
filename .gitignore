@@ -83,3 +83,4 @@ Thumbs.db
 *.bak
 *.tmp
 
+backend/.venv_tmp/
