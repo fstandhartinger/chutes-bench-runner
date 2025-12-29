@@ -45,6 +45,14 @@ import {
 // Expandable Item Component
 function ItemDetailCard({ item, index }: { item: ItemResult; index: number }) {
   const [expanded, setExpanded] = useState(false);
+  const promptText = typeof item.prompt === "string" ? item.prompt : "";
+  const responseText = typeof item.response === "string" ? item.response : "";
+  const expectedText = typeof item.expected === "string" ? item.expected : "";
+  const errorText = typeof item.error === "string" ? item.error : "";
+  const systemPromptText =
+    typeof item.item_metadata?.system_prompt === "string"
+      ? item.item_metadata.system_prompt
+      : "";
 
   return (
     <div
@@ -151,20 +159,20 @@ function ItemDetailCard({ item, index }: { item: ItemResult; index: number }) {
           )}
 
           {/* Task/Prompt */}
-          {item.prompt && (
+          {promptText && (
             <div>
               <div className="flex items-center gap-2 text-sm font-medium text-ink-300 mb-2">
                 <MessageSquare className="h-4 w-4" />
                 Task / Prompt
               </div>
               <div className="rounded-lg bg-ink-900 p-3 text-sm text-ink-200 font-mono whitespace-pre-wrap max-h-64 overflow-y-auto">
-                {item.prompt}
+                {promptText}
               </div>
             </div>
           )}
 
           {/* Model Response */}
-          {(item.response !== undefined || item.error) && (
+          {Boolean(responseText || errorText) && (
             <div>
               <div className="flex items-center gap-2 text-sm font-medium text-ink-300 mb-2">
                 <Zap className="h-4 w-4" />
@@ -180,33 +188,33 @@ function ItemDetailCard({ item, index }: { item: ItemResult; index: number }) {
                     : "bg-ink-900 text-ink-200"
                 )}
               >
-                {item.response && item.response.length > 0 ? item.response : "No response captured."}
+                {responseText.length > 0 ? responseText : "No response captured."}
               </div>
             </div>
           )}
 
           {/* Expected Answer */}
-          {item.expected && (
+          {expectedText && (
             <div>
               <div className="flex items-center gap-2 text-sm font-medium text-ink-300 mb-2">
                 <Target className="h-4 w-4" />
                 Expected Answer
               </div>
               <div className="rounded-lg bg-ink-900 p-3 text-sm text-moss font-mono">
-                {item.expected}
+                {expectedText}
               </div>
             </div>
           )}
 
           {/* System Prompt */}
-          {item.item_metadata?.system_prompt && (
+          {systemPromptText && (
             <div>
               <div className="flex items-center gap-2 text-sm font-medium text-ink-300 mb-2">
                 <Info className="h-4 w-4" />
                 System Prompt
               </div>
               <div className="rounded-lg bg-ink-900 p-3 text-sm text-ink-200 font-mono whitespace-pre-wrap max-h-64 overflow-y-auto">
-                {String(item.item_metadata.system_prompt)}
+                {systemPromptText}
               </div>
             </div>
           )}
