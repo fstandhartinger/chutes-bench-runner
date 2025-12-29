@@ -253,6 +253,7 @@ class BenchmarkWorker:
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
                     error=result.error,
+                    test_code=result.test_code,
                     item_metadata=result.metadata,
                 )
 

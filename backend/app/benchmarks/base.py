@@ -167,8 +167,11 @@ class BenchmarkAdapter(ABC):
             data_str = json.dumps(item_data, sort_keys=True)
         return hashlib.sha256(data_str.encode()).hexdigest()[:16]
 
-    def extract_python_code(self, response: str) -> str:
+    def extract_python_code(self, response: Optional[str]) -> str:
         """Extract Python code from model response robustly."""
+        if not response:
+            return ""
+            
         import re
         
         # 1. Try to find a complete markdown block
@@ -182,11 +185,11 @@ class BenchmarkAdapter(ABC):
             return match.group(1).strip()
             
         # 3. If no markdown block, remove thinking block if present
-        cleaned_response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+        cleaned_response = re.sub(r"(?i)<think>.*?</think>", "", response, flags=re.DOTALL).strip()
         
         # 4. If it still starts with <think> (unclosed), strip it
-        if cleaned_response.startswith("<think>"):
-            cleaned_response = re.sub(r"^<think>", "", cleaned_response).strip()
+        if cleaned_response.lower().startswith("<think>"):
+            cleaned_response = re.sub(r"(?i)^<think>", "", cleaned_response).strip()
             
         # 5. Final fallback
         return cleaned_response

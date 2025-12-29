@@ -122,13 +122,16 @@ NEXT_PUBLIC_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 
 ### 10. Robust Payload Extraction (Reasoning Models)
 **Problem**: Chain-of-thought models (like DeepSeek R1 or Qwen3) often ignore "Output ONLY X" instructions and provide a `<think>` block, even if told not to.
-**Fix**: All adapters now use `extract_python_code` (which handles `<think>` removal and markdown block extraction) and have improved regex patterns to find the final answer/command/action even if embedded in prose.
+**Fix**: All adapters now use `extract_python_code` (which handles case-insensitive `<think>` removal and markdown block extraction) and have improved regex patterns to find the final answer/command/action even if embedded in prose.
 
 ### 11. Benchmark Specific Fixes
 - **AIME 2025**: Changed to integer comparison (e.g., "24" == "024") and increased `max_tokens` to 8192.
 - **Terminal-Bench**: Added few-shot examples and command-line heuristics to find the command if no markdown is used.
 - **Tau-Bench**: Added few-shot examples and regex keyword matching for action names.
 - **GPQA**: Added case-insensitive think tag handling and standalone letter matching (e.g., "C." or "C").
+- **IFEval**: Implemented custom internal checker for 10+ instruction types (punctuation, case, length, JSON, quotes, keywords).
+- **Transparency**: Added `test_code` to `ItemResult` so users can see exactly what validation code was run in the sandbox.
+- **Error Resilience**: Fixed `NoneType` attribute errors by ensuring `ChutesClient` always returns a string and adding null checks in adapters.
 
 ## Testing
 

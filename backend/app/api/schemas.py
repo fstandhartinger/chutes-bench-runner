@@ -112,6 +112,7 @@ class ItemResultResponse(BaseModel):
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     error: Optional[str] = None
+    test_code: Optional[str] = None
     item_metadata: Optional[dict[str, Any]] = None
     created_at: datetime
 

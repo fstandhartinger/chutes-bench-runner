@@ -37,6 +37,8 @@ import {
   Target,
   AlertTriangle,
   Info,
+  Code,
+  Terminal,
 } from "lucide-react";
 
 // Expandable Item Component
@@ -222,6 +224,19 @@ function ItemDetailCard({ item, index }: { item: ItemResult; index: number }) {
               </div>
             </div>
           </div>
+
+          {/* Test Code if present */}
+          {item.test_code && (
+            <div>
+              <div className="flex items-center gap-2 text-sm font-medium text-ink-300 mb-2">
+                <Terminal className="h-4 w-4" />
+                Test Code (Validation)
+              </div>
+              <div className="rounded-lg bg-ink-900 p-3 text-sm text-ink-200 font-mono whitespace-pre-wrap max-h-64 overflow-y-auto">
+                {item.test_code}
+              </div>
+            </div>
+          )}
 
           {/* Judge Output if present */}
           {item.judge_output && Object.keys(item.judge_output).length > 0 && (

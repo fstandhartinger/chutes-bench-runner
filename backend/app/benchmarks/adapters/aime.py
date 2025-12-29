@@ -75,8 +75,8 @@ class AIME2025Adapter(BenchmarkAdapter):
             
             self._items = []
             for i, item in enumerate(dataset):
-                problem = item.get("problem") or item.get("question") or ""
-                answer = item.get("answer") or item.get("solution") or ""
+                problem = str(item.get("problem") or item.get("question") or "")
+                answer = str(item.get("answer") or item.get("solution") or "")
                 if problem:
                     self._items.append({
                         "id": str(i),
@@ -118,41 +118,60 @@ Problem: {item["problem"]}
 
 Solution:"""
 
+        system_prompt = "You are an expert mathematician. Solve the problem step by step. Always end your response with 'ANSWER: ' followed by the integer result."
         try:
             start_time = time.time()
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are an expert mathematician. Solve the problem step by step. Always end your response with 'ANSWER: ' followed by the integer result.",
+                system_prompt=system_prompt,
                 max_tokens=8192,  # Increased for complex AIME problems
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
+            if not response_text or response_text is None:
+                return ItemResult(
+                    item_id=item_id,
+                    item_hash=self.compute_item_hash(item["problem"]),
+                    prompt=prompt,
+                    response="",
+                    expected=str(item.get("answer", "")),
+                    is_correct=False,
+                    score=0.0,
+                    error="Model produced empty or None response",
+                    latency_ms=latency_ms,
+                    input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
+                    output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                    metadata={"level": item.get("level"), "system_prompt": system_prompt},
+                )
+
             # Extract answer - try multiple patterns
+            # Ensure response_text is a string
+            response_str = str(response_text)
             model_answer = ""
             
             # 1. Look for ANSWER: XXX
-            answer_match = re.search(r"ANSWER:\s*(\d+)", response_text, re.IGNORECASE)
+            answer_match = re.search(r"ANSWER:\s*(\d+)", response_str, re.IGNORECASE)
             if answer_match:
                 model_answer = answer_match.group(1)
             
             # 2. Look for \boxed{XXX}
             if not model_answer:
-                boxed_match = re.search(r"\\boxed\{(\d+)\}", response_text)
+                boxed_match = re.search(r"\\boxed\{(\d+)\}", response_str)
                 if boxed_match:
                     model_answer = boxed_match.group(1)
             
             # 3. Look for the last integer in the response if it's short
             if not model_answer:
                 # Clean response of thinking tags for better extraction
-                clean_text = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL).strip()
+                clean_text = re.sub(r"(?i)<think>.*?</think>", "", response_str, flags=re.DOTALL).strip()
                 numbers = re.findall(r"\b\d+\b", clean_text)
                 if numbers:
                     model_answer = numbers[-1]
             
-            # Clean expected answer
-            expected = str(item["answer"]).strip()
+            # Clean expected answer - ensure it's not None
+            expected = str(item.get("answer", "")).strip()
             if expected.startswith("\\boxed{"):
                 expected = expected[7:-1]
             expected = re.sub(r"[^\d]", "", expected)
@@ -174,11 +193,19 @@ Solution:"""
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                metadata={"level": item.get("level")},
+                metadata={"level": item.get("level"), "system_prompt": system_prompt},
             )
 
         except Exception as e:
             logger.error("AIME evaluation failed", item_id=item_id, error=str(e))
-            return ItemResult(item_id=item_id, prompt=prompt, error=str(e))
+            # Safely capture what we have
+            res = locals().get("response_text", "")
+            return ItemResult(
+                item_id=item_id, 
+                prompt=prompt, 
+                response=res if res is not None else "", 
+                error=str(e),
+                metadata={"level": item.get("level"), "system_prompt": system_prompt},
+            )
 
 

@@ -213,6 +213,7 @@ async def save_item_result(
     input_tokens: Optional[int] = None,
     output_tokens: Optional[int] = None,
     error: Optional[str] = None,
+    test_code: Optional[str] = None,
     item_metadata: Optional[dict[str, Any]] = None,
     item_hash: Optional[str] = None,
 ) -> BenchmarkItemResult:
@@ -231,6 +232,7 @@ async def save_item_result(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         error=error,
+        test_code=test_code,
         item_metadata=item_metadata,
     )
     db.add(result)

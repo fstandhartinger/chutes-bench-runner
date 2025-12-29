@@ -60,10 +60,13 @@ class HLEAdapter(BenchmarkAdapter):
                 
                 self._items = []
                 for i, item in enumerate(dataset):
+                    # Ensure all fields are strings, not None
+                    question = item.get("question") or ""
+                    answer = item.get("answer") or ""
                     self._items.append({
                         "id": str(i),
-                        "question": item.get("question", ""),
-                        "answer": item.get("answer", ""),
+                        "question": str(question) if question else "",
+                        "answer": str(answer) if answer else "",
                         "subject": item.get("subject", ""),
                         "source": item.get("source", ""),
                     })
@@ -103,20 +106,39 @@ Question: {item["question"]}
 
 Answer:"""
 
+        system_prompt = "You are an expert in all fields. Answer questions accurately and concisely."
         try:
             start_time = time.time()
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are an expert in all fields. Answer questions accurately and concisely.",
+                system_prompt=system_prompt,
                 max_tokens=512,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
+            # Robust handling of empty or None response
+            if not response_text or response_text is None:
+                return ItemResult(
+                    item_id=item_id,
+                    item_hash=self.compute_item_hash(item["question"]),
+                    prompt=prompt,
+                    response="",
+                    expected=str(item.get("answer", "")),
+                    is_correct=False,
+                    score=0.0,
+                    error="Model produced empty or None response",
+                    latency_ms=latency_ms,
+                    input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
+                    output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                    metadata={"subject": item.get("subject"), "system_prompt": system_prompt},
+                )
+
             # HLE uses exact match or semantic similarity
-            expected = item["answer"].strip().lower()
-            response_clean = response_text.strip().lower()
+            # Ensure answer is not None
+            expected = str(item.get("answer", "")).strip().lower()
+            response_clean = str(response_text).strip().lower()
             
             # Simple flexible match
             expected_words = set(re.findall(r'\w+', expected))
@@ -136,11 +158,19 @@ Answer:"""
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                metadata={"subject": item.get("subject")},
+                metadata={"subject": item.get("subject"), "system_prompt": system_prompt},
             )
 
         except Exception as e:
             logger.error("HLE evaluation failed", item_id=item_id, error=str(e))
-            return ItemResult(item_id=item_id, prompt=prompt, error=str(e))
+            # Safely capture what we have
+            res = locals().get("response_text", "")
+            return ItemResult(
+                item_id=item_id, 
+                prompt=prompt, 
+                response=res if res is not None else "", 
+                error=str(e),
+                metadata={"subject": item.get("subject"), "system_prompt": system_prompt},
+            )
 
 

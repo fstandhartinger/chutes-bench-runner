@@ -61,12 +61,12 @@ class GPQADiamondAdapter(BenchmarkAdapter):
             for i, item in enumerate(dataset):
                 self._items.append({
                     "id": str(i),
-                    "question": item["Question"],
-                    "correct_answer": item["Correct Answer"],
+                    "question": str(item.get("Question", "")),
+                    "correct_answer": str(item.get("Correct Answer", "")),
                     "incorrect_answers": [
-                        item.get("Incorrect Answer 1", ""),
-                        item.get("Incorrect Answer 2", ""),
-                        item.get("Incorrect Answer 3", ""),
+                        str(item.get("Incorrect Answer 1", "")),
+                        str(item.get("Incorrect Answer 2", "")),
+                        str(item.get("Incorrect Answer 3", "")),
                     ],
                 })
             
@@ -128,6 +128,15 @@ Answer:"""
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
+            if not response_text:
+                return ItemResult(
+                    item_id=item_id,
+                    item_hash=self.compute_item_hash(item["question"]),
+                    prompt=prompt,
+                    error="Model produced empty response",
+                    latency_ms=latency_ms,
+                )
+
             # Parse response - handle chain-of-thought models
             answer_text = response_text.strip()
             
@@ -175,6 +184,11 @@ Answer:"""
 
         except Exception as e:
             logger.error("GPQA evaluation failed", item_id=item_id, error=str(e))
-            return ItemResult(item_id=item_id, prompt=prompt, error=str(e))
+            return ItemResult(
+                item_id=item_id, 
+                prompt=prompt, 
+                response=locals().get("response_text", ""), 
+                error=str(e)
+            )
 
 

@@ -125,16 +125,29 @@ Solution:
 ```python
 """
 
+        system_prompt = "Output ONLY the final Python code within a markdown code block. Do NOT use <think> tags. Do NOT provide any explanations or prose. Just the code."
         try:
             start_time = time.time()
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="Output ONLY the final Python code within a markdown code block. Do NOT use <think> tags. Do NOT provide any explanations or prose. Just the code.",
+                system_prompt=system_prompt,
                 max_tokens=4096,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
+
+            # Robust handling of empty or None response
+            if not response_text:
+                return ItemResult(
+                    item_id=item_id,
+                    item_hash=self.compute_item_hash(item["problem"]),
+                    prompt=prompt,
+                    response="",
+                    error="Model produced empty response",
+                    latency_ms=latency_ms,
+                    metadata={"domain": item.get("domain"), "system_prompt": system_prompt},
+                )
 
             # Extract code from response robustly
             extracted_code = self.extract_python_code(response_text)
@@ -169,15 +182,25 @@ Solution:
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                metadata={"domain": item.get("domain")},
+                metadata={"domain": item.get("domain"), "system_prompt": system_prompt},
+                test_code=full_code,
                 judge_output={
                     "stdout": execution_result.get("stdout"),
                     "stderr": execution_result.get("stderr"),
-                    "exit_code": execution_result.get("exit_code")
+                    "exit_code": execution_result.get("exit_code"),
+                    "system_prompt": system_prompt
                 },
                 error=error
             )
 
         except Exception as e:
             logger.error("SciCode evaluation failed", item_id=item_id, error=str(e))
-            return ItemResult(item_id=item_id, prompt=prompt, error=str(e))
+            # Safely capture what we have
+            res = locals().get("response_text", "")
+            return ItemResult(
+                item_id=item_id, 
+                prompt=prompt, 
+                response=res if res is not None else "", 
+                error=str(e),
+                metadata={"domain": item.get("domain"), "system_prompt": system_prompt},
+            )

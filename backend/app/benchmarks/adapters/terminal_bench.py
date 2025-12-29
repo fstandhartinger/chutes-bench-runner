@@ -109,6 +109,15 @@ Command:"""
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
+            if not response_text:
+                return ItemResult(
+                    item_id=item_id,
+                    item_hash=self.compute_item_hash(item["task"]),
+                    prompt=prompt,
+                    error="Model produced empty response",
+                    latency_ms=latency_ms,
+                )
+
             # Extract command robustly
             response_cmd = self.extract_python_code(response_text)
             
@@ -152,6 +161,7 @@ Command:"""
                     latency_ms=latency_ms,
                     input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                     output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                    test_code=f"Command to execute: {response_cmd}",
                     judge_output={
                         "stdout": execution_result.get("stdout"),
                         "stderr": execution_result.get("stderr"),
@@ -163,7 +173,12 @@ Command:"""
 
         except Exception as e:
             logger.error("Terminal-Bench evaluation failed", item_id=item_id, error=str(e))
-            return ItemResult(item_id=item_id, prompt=prompt, error=str(e))
+            return ItemResult(
+                item_id=item_id, 
+                prompt=prompt, 
+                response=locals().get("response_text", ""), 
+                error=str(e)
+            )
 
 
 

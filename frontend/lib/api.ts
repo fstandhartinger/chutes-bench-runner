@@ -79,6 +79,7 @@ export interface ItemResult {
   output_tokens?: number;
   error?: string;
   item_metadata?: Record<string, unknown>;
+  test_code?: string;
   created_at: string;
 }
 

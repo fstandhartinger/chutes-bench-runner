@@ -208,17 +208,34 @@ class ChutesClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = await self.run_inference(model_slug, messages, **kwargs)
-
+        # Initialize defaults
         text = ""
-        if response.get("choices"):
-            text = response["choices"][0].get("message", {}).get("content", "")
-
         metadata = {
-            "usage": response.get("usage", {}),
-            "model": response.get("model"),
-            "finish_reason": response["choices"][0].get("finish_reason") if response.get("choices") else None,
+            "usage": {},
+            "model": model_slug,
+            "finish_reason": None,
         }
+
+        try:
+            response = await self.run_inference(model_slug, messages, **kwargs)
+            
+            if response and isinstance(response, dict):
+                choices = response.get("choices")
+                if choices and len(choices) > 0:
+                    choice = choices[0]
+                    if choice and isinstance(choice, dict):
+                        message = choice.get("message")
+                        if message and isinstance(message, dict):
+                            text = message.get("content") or ""
+                
+                metadata["usage"] = response.get("usage", {})
+                metadata["model"] = response.get("model")
+                if choices and len(choices) > 0:
+                    metadata["finish_reason"] = choices[0].get("finish_reason")
+        except Exception as e:
+            logger.error("Inference failed", model=model_slug, error=str(e))
+            # Re-raise so adapters can handle it
+            raise
 
         return text, metadata
 

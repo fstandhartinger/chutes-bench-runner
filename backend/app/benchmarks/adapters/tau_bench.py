@@ -122,6 +122,15 @@ Action:"""
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
+            if not response_text:
+                return ItemResult(
+                    item_id=item_id,
+                    item_hash=self.compute_item_hash(item["scenario"]),
+                    prompt=prompt,
+                    error="Model produced empty response",
+                    latency_ms=latency_ms,
+                )
+
             # Extract action more robustly
             clean_response = response_text.strip().lower()
             if "</think>" in clean_response:
@@ -165,7 +174,12 @@ Action:"""
 
         except Exception as e:
             logger.error("τ²-Bench evaluation failed", item_id=item_id, error=str(e))
-            return ItemResult(item_id=item_id, prompt=prompt, error=str(e))
+            return ItemResult(
+                item_id=item_id, 
+                prompt=prompt, 
+                response=locals().get("response_text", ""), 
+                error=str(e)
+            )
 
 
 

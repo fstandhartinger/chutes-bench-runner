@@ -86,11 +86,11 @@ class SWEBenchProAdapter(BenchmarkAdapter):
             for i, item in enumerate(dataset):
                 self._items.append({
                     "id": str(i),
-                    "instance_id": item.get("instance_id", ""),
-                    "repo": item.get("repo", ""),
-                    "problem_statement": item.get("problem_statement", ""),
-                    "hints_text": item.get("hints_text", ""),
-                    "patch": item.get("patch", ""),
+                    "instance_id": str(item.get("instance_id", "")),
+                    "repo": str(item.get("repo", "")),
+                    "problem_statement": str(item.get("problem_statement", "")),
+                    "hints_text": str(item.get("hints_text", "")),
+                    "patch": str(item.get("patch", "")),
                 })
             
             logger.info(f"Loaded {len(self._items)} SWE-Bench Pro items")
@@ -128,16 +128,28 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
 ```diff
 """
 
+        system_prompt = "Output ONLY the final git diff within a markdown code block. Do NOT use <think> tags. Do NOT provide any explanations or prose. Just the diff."
         try:
             start_time = time.time()
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="Output ONLY the final git diff within a markdown code block. Do NOT use <think> tags. Do NOT provide any explanations or prose. Just the diff.",
+                system_prompt=system_prompt,
                 max_tokens=4096,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
+
+            if not response_text:
+                return ItemResult(
+                    item_id=item_id,
+                    item_hash=self.compute_item_hash(item["problem_statement"]),
+                    prompt=prompt,
+                    response="",
+                    error="Model produced empty response",
+                    latency_ms=latency_ms,
+                    metadata={"instance_id": item.get("instance_id"), "repo": item.get("repo"), "system_prompt": system_prompt},
+                )
 
             # Extract diff robustly
             extracted_diff = self.extract_python_code(response_text)
@@ -145,7 +157,15 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
             # Create sandbox
             sandbox_id = await self.sandy.create_sandbox()
             if not sandbox_id:
-                return ItemResult(item_id=item_id, prompt=prompt, error="Could not create sandbox")
+                return ItemResult(
+                    item_id=item_id, 
+                    item_hash=self.compute_item_hash(item["problem_statement"]),
+                    prompt=prompt, 
+                    response=response_text.strip(),
+                    error="Could not create sandbox",
+                    latency_ms=latency_ms,
+                    metadata={"instance_id": item.get("instance_id"), "repo": item.get("repo"), "system_prompt": system_prompt},
+                )
             
             try:
                 # 1. Write the diff to a file
@@ -156,7 +176,10 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
                 execution_result = await self.sandy.execute_command(sandbox_id, "patch --dry-run fix.patch")
                 
                 is_correct = execution_result.get("success", False) and execution_result.get("exit_code") == 0
-                
+                error = None
+                if not is_correct:
+                    error = execution_result.get("stderr") or execution_result.get("error")
+
                 return ItemResult(
                     item_id=item_id,
                     item_hash=self.compute_item_hash(item["problem_statement"]),
@@ -168,21 +191,32 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
                     latency_ms=latency_ms,
                     input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                     output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                    test_code=f"Patch:\n{extracted_diff}\n\nCommand: patch --dry-run fix.patch",
                     metadata={
                         "instance_id": item.get("instance_id"),
                         "repo": item.get("repo"),
+                        "system_prompt": system_prompt
                     },
                     judge_output={
                         "stdout": execution_result.get("stdout"),
                         "stderr": execution_result.get("stderr"),
                         "exit_code": execution_result.get("exit_code")
-                    }
+                    },
+                    error=error
                 )
             finally:
                 await self.sandy.terminate_sandbox(sandbox_id)
 
         except Exception as e:
             logger.error("SWE-Bench evaluation failed", item_id=item_id, error=str(e))
-            return ItemResult(item_id=item_id, prompt=prompt, error=str(e))
+            # Safely capture what we have
+            res = locals().get("response_text", "")
+            return ItemResult(
+                item_id=item_id, 
+                prompt=prompt, 
+                response=res if res is not None else "", 
+                error=str(e),
+                metadata={"instance_id": item.get("instance_id"), "repo": item.get("repo"), "system_prompt": system_prompt},
+            )
 
 

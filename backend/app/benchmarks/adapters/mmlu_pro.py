@@ -103,19 +103,38 @@ Answer: B
 Question: {item["question"]}
 Answer:"""
 
+        system_prompt = "You are a test-taking assistant. Output ONLY the answer letter (A-J). No explanation, no reasoning, no thinking. Just the letter."
         try:
             start_time = time.time()
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are a test-taking assistant. Output ONLY the answer letter (A-J). No explanation, no reasoning, no thinking. Just the letter.",
+                system_prompt=system_prompt,
                 max_tokens=1024,  # Account for potential <think> blocks
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
+            # Robust handling of empty or None response
+            if not response_text or response_text is None:
+                return ItemResult(
+                    item_id=item_id,
+                    item_hash=self.compute_item_hash(item["question"]),
+                    prompt=prompt,
+                    response="",
+                    expected=str(item.get("answer", ""))[:1].upper(),
+                    is_correct=False,
+                    score=0.0,
+                    error="Model produced empty or None response",
+                    latency_ms=latency_ms,
+                    input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
+                    output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                    metadata={"category": item.get("category"), "system_prompt": system_prompt},
+                )
+
             # Parse response - handle chain-of-thought models
-            answer_text = response_text.strip()
+            # Ensure response_text is a string
+            answer_text = str(response_text).strip()
             
             # If response contains </think>, extract answer after it
             # Use case-insensitive search for the tag
@@ -137,7 +156,7 @@ Answer:"""
                         answer_letter = char
                         break
             
-            expected = item["answer"].upper()[:1]
+            expected = str(item.get("answer", "")).upper()[:1]
             is_correct = answer_letter == expected
 
             return ItemResult(
@@ -151,7 +170,7 @@ Answer:"""
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                metadata={"category": item.get("category")},
+                metadata={"category": item.get("category"), "system_prompt": system_prompt},
             )
 
         except Exception as e:
@@ -163,9 +182,13 @@ Answer:"""
                 except Exception:
                     pass
             logger.error("MMLU-Pro evaluation failed", item_id=item_id, error=error_detail)
+            # Safely capture what we have
+            res = locals().get("response_text", "")
             return ItemResult(
                 item_id=item_id,
                 prompt=prompt,
+                response=res if res is not None else "", 
                 error=error_detail,
+                metadata={"category": item.get("category"), "system_prompt": system_prompt},
             )
 
