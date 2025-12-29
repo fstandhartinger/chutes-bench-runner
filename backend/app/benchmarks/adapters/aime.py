@@ -131,6 +131,11 @@ Solution:"""
             latency_ms = int((time.time() - start_time) * 1000)
 
             if not response_text or response_text is None:
+                item_metadata = {
+                    **metadata,
+                    "level": item.get("level"),
+                    "system_prompt": system_prompt,
+                }
                 return ItemResult(
                     item_id=item_id,
                     item_hash=self.compute_item_hash(item["problem"]),
@@ -139,11 +144,11 @@ Solution:"""
                     expected=str(item.get("answer", "")),
                     is_correct=False,
                     score=0.0,
-                    error="Model produced empty or None response",
+                    error=self.format_empty_response_error(metadata),
                     latency_ms=latency_ms,
                     input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                     output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                    metadata={"level": item.get("level"), "system_prompt": system_prompt},
+                    metadata=item_metadata,
                 )
 
             # Extract answer - try multiple patterns
@@ -182,6 +187,11 @@ Solution:"""
             except (ValueError, TypeError):
                 is_correct = model_answer == expected
 
+            item_metadata = {
+                **metadata,
+                "level": item.get("level"),
+                "system_prompt": system_prompt,
+            }
             return ItemResult(
                 item_id=item_id,
                 item_hash=self.compute_item_hash(item["problem"]),
@@ -193,19 +203,23 @@ Solution:"""
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                metadata={"level": item.get("level"), "system_prompt": system_prompt},
+                metadata=item_metadata,
             )
 
         except Exception as e:
             logger.error("AIME evaluation failed", item_id=item_id, error=str(e))
             # Safely capture what we have
             res = locals().get("response_text", "")
+            meta = locals().get("metadata") or {}
+            item_metadata = {
+                **meta,
+                "level": item.get("level"),
+                "system_prompt": system_prompt,
+            }
             return ItemResult(
                 item_id=item_id, 
                 prompt=prompt, 
                 response=res if res is not None else "", 
                 error=str(e),
-                metadata={"level": item.get("level"), "system_prompt": system_prompt},
+                metadata=item_metadata,
             )
-
-

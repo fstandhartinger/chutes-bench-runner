@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -327,6 +327,28 @@ export default function RunDetailPage() {
   const [itemsLoading, setItemsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [itemsLimit, setItemsLimit] = useState(20);
+  const [itemsMode, setItemsMode] = useState<"paged" | "all">("paged");
+  const [showAllLoading, setShowAllLoading] = useState(false);
+  const [exportingMarkdown, setExportingMarkdown] = useState(false);
+
+  const fetchAllItems = useCallback(async () => {
+    if (!selectedBenchmark) return [];
+    const pageSize = 200;
+    let offset = 0;
+    let total = totalItems;
+    const allItems: ItemResult[] = [];
+
+    while (offset < total || total === 0) {
+      const data = await getBenchmarkDetails(runId, selectedBenchmark, pageSize, offset);
+      const batch = data.items.items;
+      total = data.items.total;
+      if (batch.length === 0) break;
+      allItems.push(...batch);
+      offset += batch.length;
+    }
+
+    return allItems;
+  }, [runId, selectedBenchmark, totalItems]);
 
   useEffect(() => {
     async function load() {
@@ -347,6 +369,14 @@ export default function RunDetailPage() {
 
   useEffect(() => {
     if (!selectedBenchmark) return;
+    setItemsMode("paged");
+    setItemsLimit(20);
+    setItems([]);
+    setTotalItems(0);
+  }, [selectedBenchmark]);
+
+  useEffect(() => {
+    if (!selectedBenchmark || itemsMode === "all") return;
 
     async function loadItems() {
       setItemsLoading(true);
@@ -361,7 +391,7 @@ export default function RunDetailPage() {
       }
     }
     loadItems();
-  }, [runId, selectedBenchmark, itemsLimit]);
+  }, [runId, selectedBenchmark, itemsLimit, itemsMode]);
 
   if (loading) {
     return (
@@ -403,6 +433,125 @@ export default function RunDetailPage() {
     (sum, i) => sum + (i.input_tokens || 0) + (i.output_tokens || 0),
     0
   );
+  const sampledPct =
+    selectedRb && selectedRb.total_items > 0
+      ? (selectedRb.sampled_items / selectedRb.total_items) * 100
+      : 0;
+
+  const handleShowAll = async () => {
+    if (!selectedBenchmark || items.length >= totalItems) return;
+    setShowAllLoading(true);
+    setItemsMode("all");
+    try {
+      const allItems = await fetchAllItems();
+      setItems(allItems);
+      setTotalItems(allItems.length || totalItems);
+    } catch (e) {
+      console.error("Failed to load all items:", e);
+    } finally {
+      setShowAllLoading(false);
+    }
+  };
+
+  const exportMarkdown = async () => {
+    if (!selectedBenchmark || !selectedRb) return;
+    setExportingMarkdown(true);
+    try {
+      const exportItems =
+        items.length === totalItems && items.length > 0 ? items : await fetchAllItems();
+      const lines: string[] = [];
+
+      lines.push(`# Benchmark Protocol`);
+      lines.push(``);
+      lines.push(`- Run ID: ${run.id}`);
+      lines.push(`- Model: ${run.model_slug}`);
+      lines.push(`- Benchmark: ${selectedBenchmark}`);
+      lines.push(`- Subset: ${run.subset_pct}%`);
+      lines.push(`- Sampled Items: ${selectedRb.sampled_items}/${selectedRb.total_items}`);
+      lines.push(`- Status: ${selectedRb.status}`);
+      lines.push(`- Generated: ${new Date().toISOString()}`);
+      lines.push(``);
+
+      exportItems.forEach((item, index) => {
+        lines.push(`## Item ${index + 1}`);
+        lines.push(`- Item ID: ${item.item_id}`);
+        lines.push(`- Item Hash: ${item.item_hash || "-"}`);
+        lines.push(`- Correct: ${item.is_correct === true ? "true" : item.is_correct === false ? "false" : "-"}`);
+        lines.push(`- Score: ${item.score ?? "-"}`);
+        lines.push(`- Error: ${item.error || "-"}`);
+        lines.push(`- Latency: ${item.latency_ms ?? "-"} ms`);
+        lines.push(`- Input Tokens: ${item.input_tokens ?? "-"}`);
+        lines.push(`- Output Tokens: ${item.output_tokens ?? "-"}`);
+        lines.push(``);
+
+        lines.push(`### Prompt`);
+        lines.push("```text");
+        lines.push(item.prompt || "");
+        lines.push("```");
+        lines.push(``);
+
+        lines.push(`### Response`);
+        lines.push("```text");
+        lines.push(item.response || "");
+        lines.push("```");
+        lines.push(``);
+
+        if (item.expected) {
+          lines.push(`### Expected`);
+          lines.push("```text");
+          lines.push(item.expected);
+          lines.push("```");
+          lines.push(``);
+        }
+
+        if (item.item_metadata?.system_prompt) {
+          lines.push(`### System Prompt`);
+          lines.push("```text");
+          lines.push(String(item.item_metadata.system_prompt));
+          lines.push("```");
+          lines.push(``);
+        }
+
+        if (item.test_code) {
+          lines.push(`### Test Code`);
+          lines.push("```text");
+          lines.push(item.test_code);
+          lines.push("```");
+          lines.push(``);
+        }
+
+        if (item.judge_output) {
+          lines.push(`### Judge Output`);
+          lines.push("```json");
+          lines.push(JSON.stringify(item.judge_output, null, 2));
+          lines.push("```");
+          lines.push(``);
+        }
+
+        if (item.item_metadata && Object.keys(item.item_metadata).length > 0) {
+          lines.push(`### Item Metadata`);
+          lines.push("```json");
+          lines.push(JSON.stringify(item.item_metadata, null, 2));
+          lines.push("```");
+          lines.push(``);
+        }
+      });
+
+      const blob = new Blob([lines.join("\n")], { type: "text/markdown" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `benchmark_protocol_${run.id}_${selectedBenchmark}.md`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Failed to export markdown:", e);
+    } finally {
+      setExportingMarkdown(false);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-screen-xl px-6 py-10">
@@ -575,6 +724,9 @@ export default function RunDetailPage() {
                     <div className="text-2xl font-semibold">
                       {selectedRb.completed_items} / {selectedRb.sampled_items}
                     </div>
+                    <div className="mt-1 text-xs text-ink-400">
+                      Sampled {selectedRb.sampled_items} of {selectedRb.total_items} ({sampledPct.toFixed(2)}%)
+                    </div>
                   </div>
                   <div className="rounded-lg bg-ink-700/50 p-4">
                     <div className="text-sm text-ink-400">Correct</div>
@@ -632,19 +784,49 @@ export default function RunDetailPage() {
 
                 {/* Item Results */}
                 <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <h4 className="font-medium text-ink-200">
-                      Item Results ({totalItems} total
-                      {items.length < totalItems
-                        ? `, showing ${items.length}`
-                        : ""}
-                      )
-                    </h4>
-                    {errorCount > 0 && (
-                      <span className="text-sm text-yellow-400">
-                        {errorCount} items with errors
-                      </span>
-                    )}
+                  <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                    <div>
+                      <h4 className="font-medium text-ink-200">
+                        Item Results ({totalItems} total
+                        {items.length < totalItems
+                          ? `, showing ${items.length}`
+                          : ""}
+                        )
+                      </h4>
+                      {errorCount > 0 && (
+                        <span className="text-sm text-yellow-400">
+                          {errorCount} items with errors
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={handleShowAll}
+                        disabled={
+                          itemsLoading ||
+                          showAllLoading ||
+                          items.length >= totalItems
+                        }
+                      >
+                        {showAllLoading ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : null}
+                        Show All
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={exportMarkdown}
+                        disabled={exportingMarkdown || itemsLoading}
+                      >
+                        {exportingMarkdown ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : null}
+                        Export Protocol (MD)
+                      </Button>
+                    </div>
                   </div>
                   {itemsLoading ? (
                     <div className="flex justify-center py-8">
@@ -665,7 +847,7 @@ export default function RunDetailPage() {
                       ))}
 
                       {/* Load More Button */}
-                      {items.length < totalItems && (
+                      {itemsMode === "paged" && items.length < totalItems && (
                         <div className="text-center pt-4">
                           <Button
                             variant="secondary"

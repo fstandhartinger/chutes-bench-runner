@@ -144,14 +144,19 @@ Solution:
 
             # Robust handling of empty or None response
             if not response_text:
+                item_metadata = {
+                    **metadata,
+                    "difficulty": item.get("difficulty"),
+                    "system_prompt": system_prompt,
+                }
                 return ItemResult(
                     item_id=item_id,
                     item_hash=self.compute_item_hash(item["question"]),
                     prompt=prompt,
                     response="",
-                    error="Model produced empty response",
+                    error=self.format_empty_response_error(metadata),
                     latency_ms=latency_ms,
-                    metadata={"difficulty": item.get("difficulty"), "system_prompt": system_prompt},
+                    metadata=item_metadata,
                 )
 
             # Extract code from response robustly
@@ -169,6 +174,14 @@ Solution:
             if not is_correct:
                 error = execution_result.get("stderr") or execution_result.get("error")
 
+            item_metadata = {
+                **metadata,
+                "difficulty": item.get("difficulty"),
+                "system_prompt": system_prompt,
+                "test_code": test_code,
+                "full_code_executed": full_code,
+                "extracted_code": extracted_code,
+            }
             return ItemResult(
                 item_id=item_id,
                 item_hash=self.compute_item_hash(item["question"]),
@@ -181,13 +194,7 @@ Solution:
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
                 test_code=full_code,
-                metadata={
-                    "difficulty": item.get("difficulty"), 
-                    "system_prompt": system_prompt,
-                    "test_code": test_code,
-                    "full_code_executed": full_code,
-                    "extracted_code": extracted_code,
-                },
+                metadata=item_metadata,
                 judge_output={
                     "stdout": execution_result.get("stdout"),
                     "stderr": execution_result.get("stderr"),
@@ -203,10 +210,16 @@ Solution:
             logger.error("LiveCodeBench evaluation failed", item_id=item_id, error=str(e))
             # Safely capture what we have
             res = locals().get("response_text", "")
+            meta = locals().get("metadata") or {}
+            item_metadata = {
+                **meta,
+                "difficulty": item.get("difficulty"),
+                "system_prompt": system_prompt,
+            }
             return ItemResult(
                 item_id=item_id, 
                 prompt=prompt, 
                 response=res if res is not None else "", 
                 error=str(e),
-                metadata={"difficulty": item.get("difficulty"), "system_prompt": system_prompt},
+                metadata=item_metadata,
             )

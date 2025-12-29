@@ -117,6 +117,11 @@ Answer:"""
 
             # Robust handling of empty or None response
             if not response_text or response_text is None:
+                item_metadata = {
+                    **metadata,
+                    "category": item.get("category"),
+                    "system_prompt": system_prompt,
+                }
                 return ItemResult(
                     item_id=item_id,
                     item_hash=self.compute_item_hash(item["question"]),
@@ -125,11 +130,11 @@ Answer:"""
                     expected=str(item.get("answer", ""))[:1].upper(),
                     is_correct=False,
                     score=0.0,
-                    error="Model produced empty or None response",
+                    error=self.format_empty_response_error(metadata),
                     latency_ms=latency_ms,
                     input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                     output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                    metadata={"category": item.get("category"), "system_prompt": system_prompt},
+                    metadata=item_metadata,
                 )
 
             # Parse response - handle chain-of-thought models
@@ -159,6 +164,11 @@ Answer:"""
             expected = str(item.get("answer", "")).upper()[:1]
             is_correct = answer_letter == expected
 
+            item_metadata = {
+                **metadata,
+                "category": item.get("category"),
+                "system_prompt": system_prompt,
+            }
             return ItemResult(
                 item_id=item_id,
                 item_hash=self.compute_item_hash(item["question"]),
@@ -170,7 +180,7 @@ Answer:"""
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                metadata={"category": item.get("category"), "system_prompt": system_prompt},
+                metadata=item_metadata,
             )
 
         except Exception as e:
@@ -184,11 +194,16 @@ Answer:"""
             logger.error("MMLU-Pro evaluation failed", item_id=item_id, error=error_detail)
             # Safely capture what we have
             res = locals().get("response_text", "")
+            meta = locals().get("metadata") or {}
+            item_metadata = {
+                **meta,
+                "category": item.get("category"),
+                "system_prompt": system_prompt,
+            }
             return ItemResult(
                 item_id=item_id,
                 prompt=prompt,
                 response=res if res is not None else "", 
                 error=error_detail,
-                metadata={"category": item.get("category"), "system_prompt": system_prompt},
+                metadata=item_metadata,
             )
-

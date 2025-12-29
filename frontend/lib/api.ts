@@ -180,8 +180,12 @@ export function getExportUrl(runId: string, format: "csv" | "pdf" | "zip"): stri
   return `${API_BASE}/api/runs/${runId}/export?format=${format}`;
 }
 
-export function createEventSource(runId: string): EventSource {
-  return new EventSource(`${API_BASE}/api/runs/${runId}/events`);
+export function createEventSource(runId: string, lastEventId?: string): EventSource {
+  const url = new URL(`${API_BASE}/api/runs/${runId}/events`);
+  if (lastEventId) {
+    url.searchParams.set("Last-Event-ID", lastEventId);
+  }
+  return new EventSource(url.toString(), { withCredentials: true });
 }
 
 export async function verifySignedExport(file: File): Promise<SignedExportVerification> {
@@ -205,4 +209,3 @@ export async function verifySignedExport(file: File): Promise<SignedExportVerifi
 export async function getPublicKeyInfo(): Promise<PublicKeyInfo> {
   return fetchAPI("/api/exports/public-key");
 }
-

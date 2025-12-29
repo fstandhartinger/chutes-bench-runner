@@ -139,14 +139,19 @@ Solution:
 
             # Robust handling of empty or None response
             if not response_text:
+                item_metadata = {
+                    **metadata,
+                    "domain": item.get("domain"),
+                    "system_prompt": system_prompt,
+                }
                 return ItemResult(
                     item_id=item_id,
                     item_hash=self.compute_item_hash(item["problem"]),
                     prompt=prompt,
                     response="",
-                    error="Model produced empty response",
+                    error=self.format_empty_response_error(metadata),
                     latency_ms=latency_ms,
-                    metadata={"domain": item.get("domain"), "system_prompt": system_prompt},
+                    metadata=item_metadata,
                 )
 
             # Extract code from response robustly
@@ -171,6 +176,11 @@ Solution:
             if not is_correct:
                 error = execution_result.get("stderr") or execution_result.get("error")
 
+            item_metadata = {
+                **metadata,
+                "domain": item.get("domain"),
+                "system_prompt": system_prompt,
+            }
             return ItemResult(
                 item_id=item_id,
                 item_hash=self.compute_item_hash(item["problem"]),
@@ -182,7 +192,7 @@ Solution:
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                metadata={"domain": item.get("domain"), "system_prompt": system_prompt},
+                metadata=item_metadata,
                 test_code=full_code,
                 judge_output={
                     "stdout": execution_result.get("stdout"),
@@ -197,10 +207,16 @@ Solution:
             logger.error("SciCode evaluation failed", item_id=item_id, error=str(e))
             # Safely capture what we have
             res = locals().get("response_text", "")
+            meta = locals().get("metadata") or {}
+            item_metadata = {
+                **meta,
+                "domain": item.get("domain"),
+                "system_prompt": system_prompt,
+            }
             return ItemResult(
                 item_id=item_id, 
                 prompt=prompt, 
                 response=res if res is not None else "", 
                 error=str(e),
-                metadata={"domain": item.get("domain"), "system_prompt": system_prompt},
+                metadata=item_metadata,
             )

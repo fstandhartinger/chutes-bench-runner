@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -45,6 +45,37 @@ export function BenchmarkRunner() {
   const [currentRun, setCurrentRun] = useState<Run | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const progressRef = useRef<HTMLDivElement | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const lastEventIdRef = useRef<string | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimeoutRef = useRef<number | null>(null);
+  const runningRef = useRef(false);
+
+  useEffect(() => {
+    runningRef.current = running;
+  }, [running]);
+
+  useEffect(() => {
+    if (currentRun) {
+      requestAnimationFrame(() => {
+        progressRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  }, [currentRun]);
+
+  useEffect(() => {
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      if (reconnectTimeoutRef.current !== null) {
+        window.clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   // Load models and benchmarks
   useEffect(() => {
@@ -93,6 +124,12 @@ export function BenchmarkRunner() {
     setRunning(true);
     setError(null);
     setEvents([]);
+    lastEventIdRef.current = null;
+    reconnectAttemptRef.current = 0;
+    if (reconnectTimeoutRef.current !== null) {
+      window.clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
 
     try {
       const run = await createRun(
@@ -102,38 +139,66 @@ export function BenchmarkRunner() {
       );
       setCurrentRun(run);
 
-      // Subscribe to events
-      const eventSource = createEventSource(run.id);
-
-      eventSource.onmessage = (e) => {
-        try {
-          const event = JSON.parse(e.data) as RunEvent;
-          setEvents((prev) => [...prev, event]);
-          
-          // Check for run completion/failure events
-          if (event.event_type === "run_completed" || event.event_type === "run_failed") {
-            setRunning(false);
-            // Update run status
-            setCurrentRun((prev) => prev ? {
-              ...prev,
-              status: event.event_type === "run_completed" ? "succeeded" : "failed"
-            } : null);
-            eventSource.close();
-          }
-        } catch (err) {
-          console.error("Failed to parse event:", e.data, err);
+      const connectEventSource = (runId: string) => {
+        if (eventSourceRef.current) {
+          eventSourceRef.current.close();
         }
+
+        const eventSource = createEventSource(runId, lastEventIdRef.current || undefined);
+        eventSourceRef.current = eventSource;
+
+        eventSource.onopen = () => {
+          reconnectAttemptRef.current = 0;
+        };
+
+        eventSource.onmessage = (e) => {
+          try {
+            const event = JSON.parse(e.data) as RunEvent;
+            lastEventIdRef.current = e.lastEventId || event.id;
+            setEvents((prev) => [...prev, event]);
+
+            // Check for run completion/failure events
+            if (event.event_type === "run_completed" || event.event_type === "run_failed") {
+              setRunning(false);
+              setCurrentRun((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      status: event.event_type === "run_completed" ? "succeeded" : "failed",
+                    }
+                  : null
+              );
+              eventSource.close();
+              eventSourceRef.current = null;
+            }
+          } catch (err) {
+            console.warn("Failed to parse event:", err);
+          }
+        };
+
+        eventSource.addEventListener("done", () => {
+          setRunning(false);
+          eventSource.close();
+          eventSourceRef.current = null;
+        });
+
+        eventSource.onerror = () => {
+          if (!runningRef.current) return;
+
+          if (reconnectTimeoutRef.current !== null) return;
+          const attempt = reconnectAttemptRef.current;
+          const delay = Math.min(10000, 1000 * 2 ** attempt);
+          reconnectAttemptRef.current += 1;
+
+          reconnectTimeoutRef.current = window.setTimeout(() => {
+            reconnectTimeoutRef.current = null;
+            connectEventSource(runId);
+          }, delay);
+        };
       };
 
-      eventSource.addEventListener("done", () => {
-        setRunning(false);
-        eventSource.close();
-      });
-
-      eventSource.onerror = (err) => {
-        console.error("EventSource error:", err);
-        // Don't close immediately - could be a transient error
-      };
+      // Subscribe to events
+      connectEventSource(run.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start run");
       setRunning(false);
@@ -267,7 +332,7 @@ export function BenchmarkRunner() {
               </SelectContent>
             </Select>
             <p className="text-xs text-ink-400">
-              Deterministic sampling ensures reproducible results
+              Deterministic sampling ensures reproducible results. Minimum sample size is 1 item.
             </p>
           </div>
 
@@ -337,7 +402,7 @@ export function BenchmarkRunner() {
 
       {/* Progress Section */}
       {currentRun && (
-        <Card>
+        <Card ref={progressRef}>
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
               <div className="flex items-center gap-3">

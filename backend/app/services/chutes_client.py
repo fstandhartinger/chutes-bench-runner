@@ -1,8 +1,9 @@
 """Chutes API client for model listing and inference."""
-from typing import Any, Optional
+import asyncio
+from typing import Any, Optional, Tuple
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -12,6 +13,39 @@ settings = get_settings()
 
 # IDP endpoint for user token inference
 IDP_INFERENCE_URL = "https://idp.chutes.ai/v1"
+
+
+class InferenceHTTPError(RuntimeError):
+    """Raised when Chutes returns a non-2xx response."""
+
+    def __init__(self, status_code: int, response_text: str, request_id: Optional[str] = None):
+        message = f"HTTP {status_code} from Chutes: {response_text.strip() or 'Empty response body'}"
+        if request_id:
+            message = f"{message} (request_id={request_id})"
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_text = response_text
+        self.request_id = request_id
+
+
+class InferenceNetworkError(RuntimeError):
+    """Raised when network or transport errors occur during inference."""
+
+
+def _truncate_text(value: str, limit: int = 1000) -> str:
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "...(truncated)"
+
+
+def _is_retryable_exception(exc: Exception) -> bool:
+    if isinstance(exc, InferenceHTTPError):
+        return exc.status_code in (408, 429) or exc.status_code >= 500
+    if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    if isinstance(exc, InferenceNetworkError):
+        return True
+    return False
 
 
 class ChutesClient:
@@ -112,7 +146,11 @@ class ChutesClient:
         logger.info("Fetched models", count=len(models))
         return models
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception(_is_retryable_exception),
+    )
     async def run_inference(
         self,
         model_slug: str,
@@ -157,31 +195,47 @@ class ChutesClient:
             user_token_mode=self._is_user_token_mode,
         )
 
-        if self._is_user_token_mode:
-            # Use IDP endpoint with Host header for user token auth
-            # This routes through the IDP which validates the user's token
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(300.0, connect=10.0),
-            ) as client:
+        try:
+            if self._is_user_token_mode:
+                # Use IDP endpoint with Host header for user token auth
+                # This routes through the IDP which validates the user's token
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(300.0, connect=10.0),
+                ) as client:
+                    response = await client.post(
+                        f"{IDP_INFERENCE_URL}/chat/completions",
+                        json=payload,
+                        headers={
+                            "Authorization": f"Bearer {self.user_access_token}",
+                            "Host": "llm.chutes.ai",
+                            "Content-Type": "application/json",
+                        },
+                    )
+            else:
+                # Use standard API with API key
+                client = await self._get_client()
                 response = await client.post(
-                    f"{IDP_INFERENCE_URL}/chat/completions",
+                    f"{self.base_url}/chat/completions",
                     json=payload,
-                    headers={
-                        "Authorization": f"Bearer {self.user_access_token}",
-                        "Host": "llm.chutes.ai",
-                        "Content-Type": "application/json",
-                    },
                 )
-        else:
-            # Use standard API with API key
-            client = await self._get_client()
-            response = await client.post(
-                f"{self.base_url}/chat/completions",
-                json=payload,
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise InferenceNetworkError(f"Network error contacting Chutes: {exc}") from exc
+
+        if response.status_code >= 400:
+            request_id = response.headers.get("x-request-id") or response.headers.get("x-requestid")
+            raise InferenceHTTPError(
+                status_code=response.status_code,
+                response_text=_truncate_text(response.text or ""),
+                request_id=request_id,
             )
-        
-        response.raise_for_status()
-        result = response.json()
+
+        try:
+            result = response.json()
+        except Exception as exc:
+            raise InferenceHTTPError(
+                status_code=response.status_code,
+                response_text=f"Invalid JSON response: {_truncate_text(response.text or '')}",
+            ) from exc
 
         logger.debug(
             "Inference complete",
@@ -189,6 +243,53 @@ class ChutesClient:
             usage=result.get("usage"),
         )
         return result
+
+    def _extract_message_text(self, response: dict[str, Any]) -> Tuple[str, dict[str, Any]]:
+        choices = response.get("choices")
+        metadata: dict[str, Any] = {
+            "choices_count": len(choices) if isinstance(choices, list) else 0,
+        }
+        if not choices or not isinstance(choices, list):
+            metadata["response_error"] = "No choices in response"
+            return "", metadata
+
+        choice = choices[0] if choices else None
+        if not isinstance(choice, dict):
+            metadata["response_error"] = "Choice payload is not a dict"
+            return "", metadata
+
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        content = message.get("content")
+        reasoning = message.get("reasoning") or message.get("analysis")
+        text = ""
+        source = None
+
+        if content:
+            text = content
+            source = "content"
+        elif reasoning:
+            text = reasoning
+            source = "reasoning"
+
+        if not text and isinstance(choice.get("text"), str):
+            text = choice.get("text") or ""
+            source = source or "text"
+
+        metadata.update(
+            {
+                "response_source": source,
+                "content_length": len(content) if isinstance(content, str) else 0,
+                "reasoning_length": len(reasoning) if isinstance(reasoning, str) else 0,
+                "finish_reason": choice.get("finish_reason"),
+            }
+        )
+
+        if not text:
+            metadata["response_error"] = (
+                "Empty response content from Chutes (content and reasoning are missing)"
+            )
+
+        return text or "", metadata
 
     async def get_completion_text(
         self,
@@ -208,36 +309,43 @@ class ChutesClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        attempt = 0
+        max_attempts = kwargs.pop("response_attempts", 3)
+        delay_seconds = 1
+
         # Initialize defaults
-        text = ""
         metadata = {
             "usage": {},
             "model": model_slug,
             "finish_reason": None,
         }
 
-        try:
-            response = await self.run_inference(model_slug, messages, **kwargs)
-            
+        while attempt < max_attempts:
+            attempt += 1
+            try:
+                response = await self.run_inference(model_slug, messages, **kwargs)
+            except Exception as e:
+                logger.error("Inference failed", model=model_slug, error=str(e))
+                raise
+
+            text = ""
+            response_metadata: dict[str, Any] = {}
             if response and isinstance(response, dict):
-                choices = response.get("choices")
-                if choices and len(choices) > 0:
-                    choice = choices[0]
-                    if choice and isinstance(choice, dict):
-                        message = choice.get("message")
-                        if message and isinstance(message, dict):
-                            text = message.get("content") or ""
-                
+                text, response_metadata = self._extract_message_text(response)
                 metadata["usage"] = response.get("usage", {})
                 metadata["model"] = response.get("model")
-                if choices and len(choices) > 0:
-                    metadata["finish_reason"] = choices[0].get("finish_reason")
-        except Exception as e:
-            logger.error("Inference failed", model=model_slug, error=str(e))
-            # Re-raise so adapters can handle it
-            raise
 
-        return text, metadata
+            metadata.update(response_metadata)
+            metadata["response_attempts"] = attempt
+
+            if text:
+                return text, metadata
+
+            if attempt < max_attempts:
+                await asyncio.sleep(delay_seconds)
+                delay_seconds = min(delay_seconds * 2, 10)
+
+        return "", metadata
 
 
 # Singleton client instance for API key mode

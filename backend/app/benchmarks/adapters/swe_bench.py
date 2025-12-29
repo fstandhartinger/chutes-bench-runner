@@ -141,14 +141,20 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
             latency_ms = int((time.time() - start_time) * 1000)
 
             if not response_text:
+                item_metadata = {
+                    **metadata,
+                    "instance_id": item.get("instance_id"),
+                    "repo": item.get("repo"),
+                    "system_prompt": system_prompt,
+                }
                 return ItemResult(
                     item_id=item_id,
                     item_hash=self.compute_item_hash(item["problem_statement"]),
                     prompt=prompt,
                     response="",
-                    error="Model produced empty response",
+                    error=self.format_empty_response_error(metadata),
                     latency_ms=latency_ms,
-                    metadata={"instance_id": item.get("instance_id"), "repo": item.get("repo"), "system_prompt": system_prompt},
+                    metadata=item_metadata,
                 )
 
             # Extract diff robustly
@@ -157,6 +163,12 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
             # Create sandbox
             sandbox_id = await self.sandy.create_sandbox()
             if not sandbox_id:
+                item_metadata = {
+                    **metadata,
+                    "instance_id": item.get("instance_id"),
+                    "repo": item.get("repo"),
+                    "system_prompt": system_prompt,
+                }
                 return ItemResult(
                     item_id=item_id, 
                     item_hash=self.compute_item_hash(item["problem_statement"]),
@@ -164,7 +176,7 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
                     response=response_text.strip(),
                     error="Could not create sandbox",
                     latency_ms=latency_ms,
-                    metadata={"instance_id": item.get("instance_id"), "repo": item.get("repo"), "system_prompt": system_prompt},
+                    metadata=item_metadata,
                 )
             
             try:
@@ -180,6 +192,12 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
                 if not is_correct:
                     error = execution_result.get("stderr") or execution_result.get("error")
 
+                item_metadata = {
+                    **metadata,
+                    "instance_id": item.get("instance_id"),
+                    "repo": item.get("repo"),
+                    "system_prompt": system_prompt,
+                }
                 return ItemResult(
                     item_id=item_id,
                     item_hash=self.compute_item_hash(item["problem_statement"]),
@@ -192,11 +210,7 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
                     input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                     output_tokens=metadata.get("usage", {}).get("completion_tokens"),
                     test_code=f"Patch:\n{extracted_diff}\n\nCommand: patch --dry-run fix.patch",
-                    metadata={
-                        "instance_id": item.get("instance_id"),
-                        "repo": item.get("repo"),
-                        "system_prompt": system_prompt
-                    },
+                    metadata=item_metadata,
                     judge_output={
                         "stdout": execution_result.get("stdout"),
                         "stderr": execution_result.get("stderr"),
@@ -211,12 +225,17 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
             logger.error("SWE-Bench evaluation failed", item_id=item_id, error=str(e))
             # Safely capture what we have
             res = locals().get("response_text", "")
+            meta = locals().get("metadata") or {}
+            item_metadata = {
+                **meta,
+                "instance_id": item.get("instance_id"),
+                "repo": item.get("repo"),
+                "system_prompt": system_prompt,
+            }
             return ItemResult(
                 item_id=item_id, 
                 prompt=prompt, 
                 response=res if res is not None else "", 
                 error=str(e),
-                metadata={"instance_id": item.get("instance_id"), "repo": item.get("repo"), "system_prompt": system_prompt},
+                metadata=item_metadata,
             )
-
-

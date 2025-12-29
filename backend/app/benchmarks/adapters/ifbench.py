@@ -348,14 +348,19 @@ class IFBenchAdapter(BenchmarkAdapter):
 
             # Robust handling of empty or None response
             if not response_text:
+                item_metadata = {
+                    **metadata,
+                    "instruction_ids": item.get("instruction_id_list", []),
+                    "system_prompt": system_prompt,
+                }
                 return ItemResult(
                     item_id=item_id,
                     item_hash=self.compute_item_hash(prompt),
                     prompt=prompt,
                     response="",
-                    error="Model produced empty response",
+                    error=self.format_empty_response_error(metadata),
                     latency_ms=latency_ms,
-                    metadata={"instruction_ids": item.get("instruction_id_list", []), "system_prompt": system_prompt},
+                    metadata=item_metadata,
                 )
 
             instruction_ids = item.get("instruction_id_list", [])
@@ -385,6 +390,11 @@ class IFBenchAdapter(BenchmarkAdapter):
             score = passes / total_instructions if total_instructions > 0 else (1.0 if len(response) > 20 else 0.0)
             is_correct = score == 1.0
             
+            item_metadata = {
+                **metadata,
+                "instruction_ids": instruction_ids,
+                "system_prompt": system_prompt,
+            }
             return ItemResult(
                 item_id=item_id,
                 item_hash=self.compute_item_hash(prompt),
@@ -396,7 +406,7 @@ class IFBenchAdapter(BenchmarkAdapter):
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                metadata={"instruction_ids": instruction_ids, "system_prompt": system_prompt},
+                metadata=item_metadata,
                 judge_output={
                     "instructions_passed": passes,
                     "total_instructions": total_instructions,
@@ -409,10 +419,16 @@ class IFBenchAdapter(BenchmarkAdapter):
             logger.error("IFBench evaluation failed", item_id=item_id, error=str(e))
             # Safely capture what we have
             res = locals().get("response_text", "")
+            meta = locals().get("metadata") or {}
+            item_metadata = {
+                **meta,
+                "instruction_ids": item.get("instruction_id_list", []),
+                "system_prompt": system_prompt,
+            }
             return ItemResult(
                 item_id=item_id, 
                 prompt=prompt, 
                 response=res if res is not None else "", 
                 error=str(e),
-                metadata={"instruction_ids": item.get("instruction_id_list", []), "system_prompt": system_prompt}
+                metadata=item_metadata
             )

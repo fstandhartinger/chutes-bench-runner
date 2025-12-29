@@ -145,14 +145,15 @@ Solution:
             latency_ms = int((time.time() - start_time) * 1000)
 
             if not response_text:
+                item_metadata = {**metadata, "system_prompt": system_prompt}
                 return ItemResult(
                     item_id=item_id,
                     item_hash=self.compute_item_hash(item["problem"]),
                     prompt=prompt,
                     response="",
-                    error="Model produced empty response",
+                    error=self.format_empty_response_error(metadata),
                     latency_ms=latency_ms,
-                    metadata={"system_prompt": system_prompt},
+                    metadata=item_metadata,
                 )
 
             # Extract code from response robustly
@@ -175,6 +176,7 @@ Solution:
             if not is_correct:
                 error = execution_result.get("stderr") or execution_result.get("error")
 
+            item_metadata = {**metadata, "system_prompt": system_prompt}
             return ItemResult(
                 item_id=item_id,
                 item_hash=self.compute_item_hash(item["problem"]),
@@ -194,19 +196,19 @@ Solution:
                     "system_prompt": system_prompt
                 },
                 error=error,
-                metadata={"system_prompt": system_prompt}
+                metadata=item_metadata
             )
 
         except Exception as e:
             logger.error("AA-LCR evaluation failed", item_id=item_id, error=str(e))
             # Safely capture what we have
             res = locals().get("response_text", "")
+            meta = locals().get("metadata") or {}
+            item_metadata = {**meta, "system_prompt": system_prompt}
             return ItemResult(
                 item_id=item_id, 
                 prompt=prompt, 
                 response=res if res is not None else "", 
                 error=str(e),
-                metadata={"system_prompt": system_prompt}
+                metadata=item_metadata
             )
-
-

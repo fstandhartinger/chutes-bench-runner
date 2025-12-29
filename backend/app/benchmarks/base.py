@@ -168,6 +168,26 @@ class BenchmarkAdapter(ABC):
             data_str = json.dumps(item_data, sort_keys=True)
         return hashlib.sha256(data_str.encode()).hexdigest()[:16]
 
+    def format_empty_response_error(self, metadata: Optional[dict[str, Any]] = None) -> str:
+        """Provide a consistent empty-response error with any available metadata."""
+        if metadata:
+            detail = metadata.get("response_error") or metadata.get("error")
+            parts: list[str] = []
+            if detail:
+                parts.append(str(detail))
+            response_source = metadata.get("response_source")
+            finish_reason = metadata.get("finish_reason")
+            attempts = metadata.get("response_attempts")
+            if response_source:
+                parts.append(f"source={response_source}")
+            if finish_reason:
+                parts.append(f"finish_reason={finish_reason}")
+            if attempts:
+                parts.append(f"attempts={attempts}")
+            if parts:
+                return " | ".join(parts)
+        return "Model produced empty response"
+
     def extract_python_code(self, response: Optional[str]) -> str:
         """Extract Python code from model response robustly."""
         if not response:
@@ -252,8 +272,6 @@ class BenchmarkAdapter(ABC):
                 **additional_metrics,
             },
         )
-
-
 
 
 

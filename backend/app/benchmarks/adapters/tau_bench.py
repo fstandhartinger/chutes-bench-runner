@@ -123,12 +123,18 @@ Action:"""
             latency_ms = int((time.time() - start_time) * 1000)
 
             if not response_text:
+                item_metadata = {
+                    **metadata,
+                    "scenario_id": item.get("scenario_id"),
+                }
                 return ItemResult(
                     item_id=item_id,
                     item_hash=self.compute_item_hash(item["scenario"]),
                     prompt=prompt,
-                    error="Model produced empty response",
+                    response="",
+                    error=self.format_empty_response_error(metadata),
                     latency_ms=latency_ms,
+                    metadata=item_metadata,
                 )
 
             # Extract action more robustly
@@ -158,6 +164,10 @@ Action:"""
             expected = item.get("expected_action", "")
             is_correct = expected == response_action or expected in response_action
 
+            item_metadata = {
+                **metadata,
+                "scenario_id": item.get("scenario_id"),
+            }
             return ItemResult(
                 item_id=item_id,
                 item_hash=self.compute_item_hash(item["scenario"]),
@@ -169,19 +179,24 @@ Action:"""
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                metadata=item_metadata,
                 judge_output={"note": "Full evaluation requires τ²-Bench harness"},
             )
 
         except Exception as e:
             logger.error("τ²-Bench evaluation failed", item_id=item_id, error=str(e))
+            meta = locals().get("metadata") or {}
+            item_metadata = {
+                **meta,
+                "scenario_id": item.get("scenario_id"),
+            }
             return ItemResult(
                 item_id=item_id, 
                 prompt=prompt, 
                 response=locals().get("response_text", ""), 
-                error=str(e)
+                error=str(e),
+                metadata=item_metadata,
             )
-
-
 
 
 
