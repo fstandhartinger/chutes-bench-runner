@@ -180,6 +180,7 @@ Solution:
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                test_code=full_code,
                 metadata={
                     "difficulty": item.get("difficulty"), 
                     "system_prompt": system_prompt,
@@ -209,4 +210,3 @@ Solution:
                 error=str(e),
                 metadata={"difficulty": item.get("difficulty"), "system_prompt": system_prompt},
             )
-

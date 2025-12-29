@@ -1,4 +1,5 @@
 """FastAPI application entry point."""
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -20,14 +21,17 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     setup_logging()
     
-    # Sync models from Chutes API on startup
-    logger.info("Syncing models from Chutes API on startup...")
-    try:
-        async with async_session_maker() as db:
-            count = await sync_models(db)
-            logger.info(f"Synced {count} models from Chutes API")
-    except Exception as e:
-        logger.error(f"Failed to sync models on startup: {e}")
+    if settings.skip_model_sync or os.getenv("PYTEST_CURRENT_TEST"):
+        logger.info("Skipping model sync on startup")
+    else:
+        # Sync models from Chutes API on startup
+        logger.info("Syncing models from Chutes API on startup...")
+        try:
+            async with async_session_maker() as db:
+                count = await sync_models(db)
+                logger.info(f"Synced {count} models from Chutes API")
+        except Exception as e:
+            logger.error(f"Failed to sync models on startup: {e}")
     
     yield
 
@@ -66,4 +70,3 @@ async def root():
         "version": "0.1.0",
         "docs": "/docs",
     }
-

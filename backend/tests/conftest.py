@@ -9,12 +9,14 @@ import pytest
 # Set environment variables before importing app modules
 os.environ["DATABASE_URL"] = "postgresql://test:test@localhost/test"
 os.environ["CHUTES_API_KEY"] = "test-key"
+os.environ["SKIP_MODEL_SYNC"] = "true"
 
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.db.session import Base, get_db
+from app.api.deps import get_session
+from app.db.session import Base
 from app.main import app
 
 
@@ -66,7 +68,7 @@ def client(test_session) -> Generator[TestClient, None, None]:
     async def override_get_db():
         yield test_session
 
-    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_session] = override_get_db
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

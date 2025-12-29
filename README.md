@@ -10,7 +10,8 @@ A production-grade LLM benchmark runner for models hosted on [Chutes](https://ch
 - **Deterministic Subsampling**: Run 1%, 5%, 10%, 25%, 50%, or 100% of benchmarks with reproducible results
 - **Live Progress**: Real-time streaming updates via SSE (Server-Sent Events)
 - **Detailed Results**: Per-benchmark and per-item results with metrics, latencies, and scoring
-- **Exports**: Download results as CSV or PDF reports
+- **Exports**: Download results as CSV, PDF, or signed ZIP (JSON + signature)
+- **API Runs**: Start runs via bearer API key and verify signed results
 - **Modern UI**: Dark mode, minimalistic, futuristic Apple-style design
 
 ## Supported Benchmarks
@@ -173,11 +174,14 @@ class MyBenchmarkAdapter(BenchmarkAdapter):
 | GET | `/api/models` | List available Chutes models |
 | GET | `/api/benchmarks` | List available benchmarks |
 | POST | `/api/runs` | Create new benchmark run |
+| POST | `/api/runs/api` | Create run with bearer API key |
 | GET | `/api/runs` | List runs with filters |
 | GET | `/api/runs/{id}` | Get run details |
 | GET | `/api/runs/{id}/events` | SSE stream of run events |
 | POST | `/api/runs/{id}/cancel` | Cancel running/queued run |
-| GET | `/api/runs/{id}/export` | Export as CSV or PDF |
+| GET | `/api/runs/{id}/export` | Export as CSV, PDF, or signed ZIP |
+| GET | `/api/exports/public-key` | Get public key for signed ZIP verification |
+| POST | `/api/exports/verify` | Verify signed ZIP export |
 | POST | `/api/admin/sync-models` | Refresh models from Chutes |
 
 ## Deployment to Render
@@ -195,6 +199,8 @@ class MyBenchmarkAdapter(BenchmarkAdapter):
 3. Configure environment variables in Render:
    - `CHUTES_API_KEY`: Your Chutes API key
    - `ADMIN_SECRET`: Secret for admin endpoints
+   - `BENCH_SIGNING_PRIVATE_KEY`: Base64 or PEM Ed25519 private key (for signed ZIP exports)
+   - `BENCH_SIGNING_PUBLIC_KEY`: Optional public key (derived from private key if omitted)
 
 The `render.yaml` Blueprint will create:
 - Web service for backend API
@@ -238,7 +244,8 @@ npx playwright test
 4. **Click "Run Benchmarks"** to start
 5. **Watch live progress** as benchmarks complete
 6. **View results** in the run detail page
-7. **Export** as CSV or PDF for analysis
+7. **Export** as CSV, PDF, or signed ZIP for analysis
+8. **Verify** signed ZIPs in the Verify Results page
 
 ## Troubleshooting
 
@@ -276,5 +283,4 @@ MIT License - see LICENSE file for details.
 ---
 
 Built with ❤️ for the [Chutes](https://chutes.ai) ecosystem.
-
 

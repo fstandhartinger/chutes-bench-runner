@@ -3,11 +3,13 @@ from datetime import datetime
 from typing import Optional
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, JSON
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
+
+JSON_TYPE = JSONB().with_variant(JSON, "sqlite")
 
 
 class Benchmark(Base):
@@ -25,7 +27,7 @@ class Benchmark(Base):
     supports_subset: Mapped[bool] = mapped_column(Boolean, default=True)
     requires_setup: Mapped[bool] = mapped_column(Boolean, default=False)
     setup_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    config: Mapped[Optional[dict]] = mapped_column(JSON_TYPE, nullable=True)
     total_items: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -46,7 +48,7 @@ class BenchmarkItem(Base):
     benchmark_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("benchmarks.id"), nullable=False)
     item_id: Mapped[str] = mapped_column(String(255), nullable=False)
     item_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    data: Mapped[Optional[dict]] = mapped_column(JSON_TYPE, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -54,7 +56,6 @@ class BenchmarkItem(Base):
 
     def __repr__(self) -> str:
         return f"<BenchmarkItem(benchmark_id={self.benchmark_id}, item_id={self.item_id})>"
-
 
 
 

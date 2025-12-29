@@ -244,7 +244,10 @@ class ChutesClient:
 _client: Optional[ChutesClient] = None
 
 
-def get_chutes_client(user_access_token: Optional[str] = None) -> ChutesClient:
+def get_chutes_client(
+    user_access_token: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> ChutesClient:
     """Get Chutes client.
     
     Args:
@@ -255,13 +258,12 @@ def get_chutes_client(user_access_token: Optional[str] = None) -> ChutesClient:
     Returns:
         ChutesClient configured for the appropriate auth mode.
     """
-    if user_access_token:
-        # Always create a new client for user token mode
-        return ChutesClient(user_access_token=user_access_token)
+    if user_access_token or api_key:
+        # Always create a new client for explicit auth mode
+        return ChutesClient(api_key=api_key, user_access_token=user_access_token)
     
     # Use singleton for API key mode
     global _client
     if _client is None:
         _client = ChutesClient()
     return _client
-

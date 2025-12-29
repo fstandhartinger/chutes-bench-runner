@@ -40,6 +40,9 @@ CHUTES_IDP_URL=https://auth.chutes.ai
     ADMIN_SECRET=<secret for admin endpoints>
     SANDY_BASE_URL=https://sandy.65.109.49.103.nip.io
     SANDY_API_KEY=4e253b301b6934ec824c24565270713007dde805c937599449dc35ee078ca9d0
+    BENCH_SIGNING_PRIVATE_KEY=<base64 or PEM Ed25519 private key>
+    BENCH_SIGNING_PUBLIC_KEY=<optional public key>
+    SKIP_MODEL_SYNC=true
     ```
 
 **API Key Location**: System-wide `$CHUTES_API_KEY` environment variable. Use `echo $CHUTES_API_KEY` to access.
@@ -61,6 +64,16 @@ NEXT_PUBLIC_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 5. Frontend uses proxy routes (`/api/auth/status`, `/api/auth/logout`) to handle cross-origin cookies
 
 **Important**: When user has `chutes:invoke` scope, benchmark inference uses their token via IDP's inference proxy endpoint, not the system API key.
+
+### API-Triggered Runs (Bearer Key)
+
+- `POST /api/runs/api` accepts `Authorization: Bearer <CHUTES_API_KEY>` to run benchmarks with the caller’s key.
+- `BenchmarkRun.auth_mode` and `auth_api_key` determine which credentials the worker uses.
+
+### Signed Result Exports
+
+- `GET /api/runs/{id}/export?format=zip` returns a signed ZIP that includes `results.json`, `manifest.json`, `signature.txt`, and `public_key.txt`.
+- `POST /api/exports/verify` validates the ZIP signature/hash; frontend has `/verify` for uploads.
 
 ### Model Sync from Chutes API
 
@@ -162,6 +175,19 @@ curl https://chutes-bench-runner-api-v2.onrender.com/api/benchmarks
 curl -X POST https://chutes-bench-runner-api-v2.onrender.com/api/runs \
   -H "Content-Type: application/json" \
   -d '{"model_id":"<uuid>","subset_pct":1,"benchmark_names":["mmlu_pro"]}'
+
+# Create run (Bearer API key)
+curl -X POST https://chutes-bench-runner-api-v2.onrender.com/api/runs/api \
+  -H "Authorization: Bearer <CHUTES_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"model_id":"<uuid>","subset_pct":1,"benchmark_names":["mmlu_pro"]}'
+
+# Export signed ZIP
+curl -O "https://chutes-bench-runner-api-v2.onrender.com/api/runs/<run-id>/export?format=zip"
+
+# Verify signed ZIP
+curl -X POST https://chutes-bench-runner-api-v2.onrender.com/api/exports/verify \
+  -F "file=@benchmark_results.zip"
 ```
 
 ## Benchmark Adapter Status
@@ -187,7 +213,7 @@ Each benchmark adapter in `backend/app/benchmarks/adapters/` tries to load data 
 ### Benchmark Scoring Notes
 
 - **Code benchmarks** (livecodebench, scicode, aa_lcr, swe_bench_pro): Use the **Sandy Sandbox** on the Hetzner Server for code execution.
-- **IFBench**: Uses basic heuristic (response length > 20 chars) - full IFEval checker needed for accurate scoring.
+- **IFBench**: Uses full internal IFEval checker for instruction compliance (length fallback only when no instruction IDs).
 - **Terminal-Bench**: Executes commands in the Sandy Sandbox and checks for successful exit codes.
 
 ## File Reference
@@ -198,10 +224,13 @@ Each benchmark adapter in `backend/app/benchmarks/adapters/` tries to load data 
 | `backend/app/services/chutes_client.py` | Chutes API + IDP inference |
 | `backend/app/services/auth_service.py` | OAuth/PKCE flow, session management |
 | `backend/app/services/sandy_service.py` | Sandy Sandbox integration |
+| `backend/app/services/signed_export_service.py` | Signed ZIP export + verification |
 | `backend/app/worker/runner.py` | Benchmark execution loop |
 | `backend/app/benchmarks/adapters/` | Individual benchmark implementations |
 | `frontend/contexts/auth-context.tsx` | Frontend auth state |
 | `frontend/app/api/auth/*/route.ts` | Auth proxy routes for cookies |
+| `frontend/app/api-docs/page.tsx` | API usage guide page |
+| `frontend/app/verify/page.tsx` | Signed ZIP verification UI |
 | `render.yaml` | IaC deployment definition |
 
 ## Debugging Checklist
@@ -212,4 +241,3 @@ Each benchmark adapter in `backend/app/benchmarks/adapters/` tries to load data 
 4. **0% benchmark scores**: Check model response format, review parsing logic
 5. **Frontend not updating**: Verify deploy is `live`, not `update_in_progress`
 6. **CORS errors**: Check allowed origins in backend `main.py`
-

@@ -2,11 +2,11 @@
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
-from app.api.deps import AdminDep, SessionDep
+from app.api.deps import AdminDep, ApiKeyDep, SessionDep
 from app.api.schemas import (
     BenchmarkInfo,
     BenchmarksListResponse,
@@ -16,13 +16,16 @@ from app.api.schemas import (
     ItemResultsResponse,
     ModelResponse,
     ModelsListResponse,
+    PublicKeyResponse,
     RunEventResponse,
     RunResponse,
     RunsListResponse,
+    SignedExportVerifyResponse,
     SyncModelsResponse,
 )
 from app.models.benchmark import Benchmark
 from app.models.run import BenchmarkItemResult, BenchmarkRun, BenchmarkRunBenchmark, RunEvent
+from app.services import auth_service
 from app.services.export_service import generate_csv_export, generate_pdf_export
 from app.services.model_service import get_model_by_id, get_models, sync_models
 from app.services.run_service import (
@@ -33,6 +36,12 @@ from app.services.run_service import (
     get_run,
     get_run_events,
     list_runs,
+)
+from app.services.signed_export_service import (
+    SigningKeyError,
+    generate_signed_zip_export,
+    get_public_key_info,
+    verify_signed_zip_export,
 )
 
 router = APIRouter(prefix="/api")
@@ -92,9 +101,50 @@ async def list_benchmarks(db: SessionDep):
 async def create_benchmark_run(
     db: SessionDep,
     request: CreateRunRequest,
+    http_request: Request,
 ):
     """Create a new benchmark run."""
     # Validate model exists
+    model = await get_model_by_id(db, request.model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    auth_mode = "system"
+    auth_session_id = None
+
+    session_id = http_request.cookies.get(auth_service.SESSION_COOKIE_NAME)
+    if session_id:
+        session = await auth_service.get_session(db, session_id)
+        if session:
+            if not session.can_invoke_chutes():
+                raise HTTPException(status_code=403, detail="Chutes session missing chutes:invoke scope")
+            access_token = await auth_service.get_valid_access_token(db, session)
+            if not access_token:
+                raise HTTPException(status_code=401, detail="Chutes session expired or invalid")
+            auth_mode = "idp"
+            auth_session_id = session_id
+
+    run = await create_run(
+        db,
+        model_id=model.id,
+        model_slug=model.slug,
+        subset_pct=request.subset_pct,
+        selected_benchmarks=request.selected_benchmarks,
+        config=request.config,
+        auth_mode=auth_mode,
+        auth_session_id=auth_session_id,
+    )
+
+    return RunResponse.model_validate(run)
+
+
+@router.post("/runs/api", response_model=RunResponse, status_code=status.HTTP_201_CREATED)
+async def create_benchmark_run_with_api_key(
+    db: SessionDep,
+    request: CreateRunRequest,
+    api_key: ApiKeyDep,
+):
+    """Create a new benchmark run using a bearer API key."""
     model = await get_model_by_id(db, request.model_id)
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -106,6 +156,8 @@ async def create_benchmark_run(
         subset_pct=request.subset_pct,
         selected_benchmarks=request.selected_benchmarks,
         config=request.config,
+        auth_mode="api_key",
+        auth_api_key=api_key,
     )
 
     return RunResponse.model_validate(run)
@@ -263,7 +315,7 @@ async def stream_run_events(
 async def export_run(
     db: SessionDep,
     run_id: str,
-    format: str = Query(default="csv", pattern="^(csv|pdf)$"),
+    format: str = Query(default="csv", pattern="^(csv|pdf|zip)$"),
 ):
     """Export run results as CSV or PDF."""
     run = await get_run(db, run_id)
@@ -279,9 +331,15 @@ async def export_run(
     if format == "csv":
         filename, content = await generate_csv_export(db, run)
         media_type = "text/csv"
-    else:
+    elif format == "pdf":
         filename, content = await generate_pdf_export(db, run)
         media_type = "application/pdf"
+    else:
+        try:
+            filename, content = await generate_signed_zip_export(db, run)
+        except SigningKeyError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        media_type = "application/zip"
 
     return StreamingResponse(
         iter([content]),
@@ -290,9 +348,24 @@ async def export_run(
     )
 
 
+@router.get("/exports/public-key", response_model=PublicKeyResponse)
+async def export_public_key():
+    """Return the public key used to verify signed exports."""
+    try:
+        return get_public_key_info()
+    except SigningKeyError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/exports/verify", response_model=SignedExportVerifyResponse)
+async def verify_signed_export(file: UploadFile = File(...)):
+    """Verify a signed benchmark results zip."""
+    content = await file.read()
+    return SignedExportVerifyResponse.model_validate(verify_signed_zip_export(content))
+
+
 # Health endpoint
 @router.get("/health")
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy"}
-

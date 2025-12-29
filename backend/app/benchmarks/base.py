@@ -24,6 +24,7 @@ class ItemResult:
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     error: Optional[str] = None
+    test_code: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
 
 
@@ -251,7 +252,6 @@ class BenchmarkAdapter(ABC):
                 **additional_metrics,
             },
         )
-
 
 
 

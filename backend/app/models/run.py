@@ -4,11 +4,13 @@ from enum import Enum
 from typing import Optional
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, JSON
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
+
+JSON_TYPE = JSONB().with_variant(JSON, "sqlite")
 
 
 class RunStatus(str, Enum):
@@ -40,8 +42,11 @@ class BenchmarkRun(Base):
     model_slug: Mapped[str] = mapped_column(String(255), nullable=False)
     subset_pct: Mapped[int] = mapped_column(Integer, default=100)
     status: Mapped[str] = mapped_column(String(50), default=RunStatus.QUEUED.value)
-    config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    selected_benchmarks: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    auth_mode: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    auth_session_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    auth_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    config: Mapped[Optional[dict]] = mapped_column(JSON_TYPE, nullable=True)
+    selected_benchmarks: Mapped[Optional[list]] = mapped_column(JSON_TYPE, nullable=True)
     overall_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -76,8 +81,8 @@ class BenchmarkRunBenchmark(Base):
     total_items: Mapped[int] = mapped_column(Integer, default=0)
     completed_items: Mapped[int] = mapped_column(Integer, default=0)
     sampled_items: Mapped[int] = mapped_column(Integer, default=0)
-    sampled_item_ids: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
-    metrics: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    sampled_item_ids: Mapped[Optional[list]] = mapped_column(JSON_TYPE, nullable=True)
+    metrics: Mapped[Optional[dict]] = mapped_column(JSON_TYPE, nullable=True)
     score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -112,13 +117,13 @@ class BenchmarkItemResult(Base):
     expected: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_correct: Mapped[Optional[bool]] = mapped_column(nullable=True)
     score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    judge_output: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    judge_output: Mapped[Optional[dict]] = mapped_column(JSON_TYPE, nullable=True)
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     test_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    item_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    item_metadata: Mapped[Optional[dict]] = mapped_column(JSON_TYPE, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -140,7 +145,7 @@ class RunEvent(Base):
     event_type: Mapped[str] = mapped_column(String(50), nullable=False)
     benchmark_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    data: Mapped[Optional[dict]] = mapped_column(JSON_TYPE, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     # Relationships
@@ -153,4 +158,3 @@ class RunEvent(Base):
 # Import Model to resolve forward reference
 from app.models.model import Model  # noqa: E402, F401
 from app.models.benchmark import Benchmark  # noqa: E402, F401
-

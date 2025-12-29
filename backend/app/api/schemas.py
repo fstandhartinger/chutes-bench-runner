@@ -152,3 +152,24 @@ class SyncModelsResponse(BaseModel):
     synced: int
     message: str
 
+
+class SignedExportVerifyResponse(BaseModel):
+    """Signed export verification response."""
+    valid: bool
+    signature_valid: bool
+    hash_match: bool
+    errors: list[str]
+    run_id: Optional[str] = None
+    model_slug: Optional[str] = None
+    subset_pct: Optional[int] = None
+    overall_score: Optional[float] = None
+    exported_at: Optional[str] = None
+    benchmark_count: Optional[int] = None
+    public_key_fingerprint: Optional[str] = None
+
+
+class PublicKeyResponse(BaseModel):
+    """Public key response."""
+    algorithm: str
+    public_key: str
+    public_key_fingerprint: str

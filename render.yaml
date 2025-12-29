@@ -19,6 +19,10 @@ services:
         sync: false
       - key: ADMIN_SECRET
         sync: false
+      - key: BENCH_SIGNING_PRIVATE_KEY
+        sync: false
+      - key: BENCH_SIGNING_PUBLIC_KEY
+        sync: false
       - key: PYTHON_VERSION
         value: "3.11.6"
     healthCheckPath: /api/v1/health
@@ -64,4 +68,3 @@ databases:
     user: bench
     region: oregon
     plan: free
-

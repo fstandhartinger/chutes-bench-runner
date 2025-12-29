@@ -39,6 +39,7 @@ import {
   Info,
   Code,
   Terminal,
+  Package,
 } from "lucide-react";
 
 // Expandable Item Component
@@ -163,7 +164,7 @@ function ItemDetailCard({ item, index }: { item: ItemResult; index: number }) {
           )}
 
           {/* Model Response */}
-          {item.response && (
+          {(item.response !== undefined || item.error) && (
             <div>
               <div className="flex items-center gap-2 text-sm font-medium text-ink-300 mb-2">
                 <Zap className="h-4 w-4" />
@@ -179,7 +180,7 @@ function ItemDetailCard({ item, index }: { item: ItemResult; index: number }) {
                     : "bg-ink-900 text-ink-200"
                 )}
               >
-                {item.response}
+                {item.response && item.response.length > 0 ? item.response : "No response captured."}
               </div>
             </div>
           )}
@@ -193,6 +194,19 @@ function ItemDetailCard({ item, index }: { item: ItemResult; index: number }) {
               </div>
               <div className="rounded-lg bg-ink-900 p-3 text-sm text-moss font-mono">
                 {item.expected}
+              </div>
+            </div>
+          )}
+
+          {/* System Prompt */}
+          {item.item_metadata?.system_prompt && (
+            <div>
+              <div className="flex items-center gap-2 text-sm font-medium text-ink-300 mb-2">
+                <Info className="h-4 w-4" />
+                System Prompt
+              </div>
+              <div className="rounded-lg bg-ink-900 p-3 text-sm text-ink-200 font-mono whitespace-pre-wrap max-h-64 overflow-y-auto">
+                {String(item.item_metadata.system_prompt)}
               </div>
             </div>
           )}
@@ -476,6 +490,12 @@ export default function RunDetailPage() {
             <a href={getExportUrl(run.id, "pdf")} download>
               <FileText className="mr-2 h-4 w-4" />
               Export PDF Report
+            </a>
+          </Button>
+          <Button variant="secondary" asChild>
+            <a href={getExportUrl(run.id, "zip")} download>
+              <Package className="mr-2 h-4 w-4" />
+              Signed ZIP
             </a>
           </Button>
         </div>

@@ -42,6 +42,18 @@ export function Header() {
             >
               History
             </Link>
+            <Link
+              href="/api-docs"
+              className="text-sm text-ink-300 transition-colors hover:text-ink-100"
+            >
+              API
+            </Link>
+            <Link
+              href="/verify"
+              className="text-sm text-ink-300 transition-colors hover:text-ink-100"
+            >
+              Verify
+            </Link>
           </nav>
           
           <div className="h-6 w-px bg-ink-500" />
@@ -98,7 +110,6 @@ export function Header() {
     </header>
   );
 }
-
 
 
 

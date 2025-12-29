@@ -26,6 +26,9 @@ async def create_run(
     subset_pct: int,
     selected_benchmarks: Optional[list[str]] = None,
     config: Optional[dict[str, Any]] = None,
+    auth_mode: Optional[str] = None,
+    auth_session_id: Optional[str] = None,
+    auth_api_key: Optional[str] = None,
 ) -> BenchmarkRun:
     """
     Create a new benchmark run.
@@ -47,6 +50,9 @@ async def create_run(
         subset_pct=subset_pct,
         selected_benchmarks=selected_benchmarks,
         config=config,
+        auth_mode=auth_mode,
+        auth_session_id=auth_session_id,
+        auth_api_key=auth_api_key,
         status=RunStatus.QUEUED.value,
     )
     db.add(run)
@@ -305,4 +311,3 @@ async def get_run_events(
     query = query.order_by(RunEvent.created_at).limit(limit)
     result = await db.execute(query)
     return list(result.scalars().all())
-

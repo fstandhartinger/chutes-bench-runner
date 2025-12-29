@@ -83,6 +83,26 @@ export interface ItemResult {
   created_at: string;
 }
 
+export interface SignedExportVerification {
+  valid: boolean;
+  signature_valid: boolean;
+  hash_match: boolean;
+  errors: string[];
+  run_id?: string;
+  model_slug?: string;
+  subset_pct?: number;
+  overall_score?: number;
+  exported_at?: string;
+  benchmark_count?: number;
+  public_key_fingerprint?: string;
+}
+
+export interface PublicKeyInfo {
+  algorithm: string;
+  public_key: string;
+  public_key_fingerprint: string;
+}
+
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
   const response = await fetch(url, {
@@ -156,7 +176,7 @@ export async function getBenchmarkDetails(
   return fetchAPI(`/api/runs/${runId}/benchmarks/${benchmarkName}?limit=${limit}&offset=${offset}`);
 }
 
-export function getExportUrl(runId: string, format: "csv" | "pdf"): string {
+export function getExportUrl(runId: string, format: "csv" | "pdf" | "zip"): string {
   return `${API_BASE}/api/runs/${runId}/export?format=${format}`;
 }
 
@@ -164,4 +184,25 @@ export function createEventSource(runId: string): EventSource {
   return new EventSource(`${API_BASE}/api/runs/${runId}/events`);
 }
 
+export async function verifySignedExport(file: File): Promise<SignedExportVerification> {
+  const url = `${API_BASE}/api/exports/verify`;
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await fetch(url, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: "Request failed" }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export async function getPublicKeyInfo(): Promise<PublicKeyInfo> {
+  return fetchAPI("/api/exports/public-key");
+}
 

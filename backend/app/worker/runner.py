@@ -18,6 +18,7 @@ from app.models.run import (
     BenchmarkRunStatus,
     RunStatus,
 )
+from app.services import auth_service
 from app.services.chutes_client import ChutesClient, get_chutes_client
 from app.services.run_service import (
     add_run_event,
@@ -37,6 +38,23 @@ class BenchmarkWorker:
         self.running = False
         self.current_run_id: Optional[str] = None
         self.client = get_chutes_client()
+
+    async def _get_client_for_run(self, db: AsyncSession, run: BenchmarkRun) -> ChutesClient:
+        if run.auth_mode == "idp" and run.auth_session_id:
+            session = await auth_service.get_session(db, run.auth_session_id)
+            if not session:
+                raise Exception("Chutes session not found")
+            if not session.can_invoke_chutes():
+                raise Exception("Chutes session missing chutes:invoke scope")
+            access_token = await auth_service.get_valid_access_token(db, session)
+            if not access_token:
+                raise Exception("Chutes session expired or invalid")
+            return get_chutes_client(user_access_token=access_token)
+
+        if run.auth_mode == "api_key" and run.auth_api_key:
+            return get_chutes_client(api_key=run.auth_api_key)
+
+        return self.client
 
     async def start(self) -> None:
         """Start the worker loop."""
@@ -115,36 +133,41 @@ class BenchmarkWorker:
 
         total_score = 0.0
         completed_benchmarks = 0
+        client = await self._get_client_for_run(db, run)
 
-        for rb in run_benchmarks:
-            # Check for cancellation
-            await db.refresh(run)
-            if run.canceled_at:
-                logger.info("Run canceled", run_id=run.id)
-                await update_run_status(db, run.id, RunStatus.CANCELED)
-                return
+        try:
+            for rb in run_benchmarks:
+                # Check for cancellation
+                await db.refresh(run)
+                if run.canceled_at:
+                    logger.info("Run canceled", run_id=run.id)
+                    await update_run_status(db, run.id, RunStatus.CANCELED)
+                    return
 
-            try:
-                score = await self.execute_benchmark(db, run, rb)
-                if score is not None:
-                    total_score += score
-                    completed_benchmarks += 1
-            except Exception as e:
-                logger.error(
-                    "Benchmark failed",
-                    run_id=run.id,
-                    benchmark=rb.benchmark_name,
-                    error=str(e),
-                )
-                await update_benchmark_status(
-                    db, rb.id, BenchmarkRunStatus.FAILED,
-                    error_message=str(e)
-                )
-                await add_run_event(
-                    db, run.id, "benchmark_failed",
-                    benchmark_name=rb.benchmark_name,
-                    message=f"Benchmark failed: {str(e)}"
-                )
+                try:
+                    score = await self.execute_benchmark(db, run, rb, client)
+                    if score is not None:
+                        total_score += score
+                        completed_benchmarks += 1
+                except Exception as e:
+                    logger.error(
+                        "Benchmark failed",
+                        run_id=run.id,
+                        benchmark=rb.benchmark_name,
+                        error=str(e),
+                    )
+                    await update_benchmark_status(
+                        db, rb.id, BenchmarkRunStatus.FAILED,
+                        error_message=str(e)
+                    )
+                    await add_run_event(
+                        db, run.id, "benchmark_failed",
+                        benchmark_name=rb.benchmark_name,
+                        message=f"Benchmark failed: {str(e)}"
+                    )
+        finally:
+            if client is not self.client:
+                await client.close()
 
         # Compute overall score
         overall_score = total_score / completed_benchmarks if completed_benchmarks > 0 else None
@@ -171,12 +194,13 @@ class BenchmarkWorker:
         db: AsyncSession,
         run: BenchmarkRun,
         rb: BenchmarkRunBenchmark,
+        client: ChutesClient,
     ) -> Optional[float]:
         """Execute a single benchmark."""
         logger.info("Starting benchmark", run_id=run.id, benchmark=rb.benchmark_name)
 
         # Get adapter
-        adapter = get_adapter(rb.benchmark_name, self.client, run.model_slug)
+        adapter = get_adapter(rb.benchmark_name, client, run.model_slug)
         if not adapter:
             await update_benchmark_status(
                 db, rb.id, BenchmarkRunStatus.SKIPPED,
@@ -335,4 +359,3 @@ async def run_worker() -> None:
 
 if __name__ == "__main__":
     asyncio.run(run_worker())
-

@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     worker_poll_interval: int = 5
     worker_max_concurrent: int = 1
 
+    # Startup
+    skip_model_sync: bool = False
+
     # Chutes IDP
     chutes_client_id: Optional[str] = None
     chutes_client_secret: Optional[str] = None
@@ -48,6 +51,10 @@ class Settings(BaseSettings):
     # Sandy Sandbox
     sandy_base_url: str = "https://sandy.65.109.49.103.nip.io"
     sandy_api_key: Optional[str] = None
+
+    # Signed export keys (base64 or PEM)
+    bench_signing_private_key: Optional[str] = None
+    bench_signing_public_key: Optional[str] = None
 
     @property
     def async_database_url(self) -> str:
@@ -79,4 +86,3 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Get cached settings instance."""
     return Settings()
-
