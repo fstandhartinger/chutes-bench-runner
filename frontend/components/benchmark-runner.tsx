@@ -338,6 +338,7 @@ export function BenchmarkRunner() {
 
   const progress = progressData();
   const queueInfo = currentRun ? queueSchedule[currentRun.id] : undefined;
+  const queueDelaySeconds = queueInfo?.startDelaySeconds ?? null;
   const now = new Date();
   const startedAt = currentRun?.started_at ? new Date(currentRun.started_at) : null;
   const elapsedMs =
@@ -503,8 +504,8 @@ export function BenchmarkRunner() {
               <div className="rounded-lg bg-ink-800/60 p-3 text-sm text-ink-300">
                 Run is queued
                 {queueInfo ? ` (position ${queueInfo.queuePosition})` : ""}.{" "}
-                {queueInfo?.startDelaySeconds !== null
-                  ? `Estimated start in ~${formatDurationSeconds(queueInfo.startDelaySeconds)}.`
+                {queueDelaySeconds !== null
+                  ? `Estimated start in ~${formatDurationSeconds(queueDelaySeconds)}.`
                   : "Waiting for a free worker slot."}
               </div>
             )}
