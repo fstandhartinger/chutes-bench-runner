@@ -495,14 +495,15 @@ export default function RunDetailPage() {
   const etaSeconds =
     run.status === "running" ? estimateRunRemainingSeconds(run, now) : null;
   const queueInfo = run.status === "queued" ? queueSchedule[run.id] : undefined;
+  const queueDelaySeconds = queueInfo?.startDelaySeconds ?? null;
   const etaLabel =
     run.status === "running"
       ? etaSeconds !== null
         ? `~${formatDurationSeconds(etaSeconds)}`
         : "Estimating..."
       : run.status === "queued"
-      ? queueInfo?.startDelaySeconds !== null
-        ? `~${formatDurationSeconds(queueInfo.startDelaySeconds)}`
+      ? queueDelaySeconds !== null
+        ? `~${formatDurationSeconds(queueDelaySeconds)}`
         : "Waiting for worker"
       : "-";
 
