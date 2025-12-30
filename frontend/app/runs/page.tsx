@@ -137,10 +137,10 @@ export default function RunsPage() {
 
             return (
               <Card key={run.id} className="overflow-hidden">
-                <div className="flex items-center justify-between p-6">
-                  <div className="space-y-1">
-                  <div className="flex items-center gap-3">
-                    <h3 className="text-lg font-medium">{run.model_slug}</h3>
+              <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0 space-y-1">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <h3 className="text-lg font-medium break-words">{run.model_slug}</h3>
                     <span
                       className={cn(
                         "rounded-full px-2.5 py-0.5 text-xs font-medium",
@@ -182,9 +182,9 @@ export default function RunsPage() {
                     )}
                 </div>
 
-                <div className="flex items-center gap-6">
+                <div className="flex w-full flex-col gap-4 sm:w-auto sm:flex-row sm:items-center sm:gap-6">
                   {run.overall_score !== undefined && run.overall_score !== null && (
-                    <div className="text-right">
+                    <div className="text-left sm:text-right">
                       <div className="text-2xl font-semibold text-moss">
                         {formatPercent(run.overall_score)}
                       </div>
@@ -192,15 +192,15 @@ export default function RunsPage() {
                     </div>
                   )}
 
-                  <div className="flex gap-2">
-                    <Button variant="secondary" size="sm" asChild>
+                  <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
+                    <Button variant="secondary" size="sm" asChild className="w-full sm:w-auto">
                       <Link href={`/runs/${run.id}`}>
                         <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
                         View
                       </Link>
                     </Button>
                     {(run.status === "succeeded" || run.status === "failed") && (
-                      <Button variant="outline" size="sm" asChild>
+                      <Button variant="outline" size="sm" asChild className="w-full sm:w-auto">
                         <a
                           href={`${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"}/api/runs/${run.id}/export?format=csv`}
                           download
@@ -215,7 +215,7 @@ export default function RunsPage() {
               </div>
 
               {/* Benchmark mini summary */}
-              <div className="flex gap-4 border-t border-ink-500 bg-ink-800/30 px-6 py-3">
+              <div className="flex flex-wrap gap-4 border-t border-ink-500 bg-ink-800/30 px-6 py-3">
                 {run.benchmarks.slice(0, 6).map((rb) => (
                   <div key={rb.id} className="flex items-center gap-2 text-sm">
                     <span
@@ -247,4 +247,3 @@ export default function RunsPage() {
     </div>
   );
 }
-

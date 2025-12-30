@@ -1,6 +1,5 @@
 """LiveCodeBench benchmark adapter."""
 import time
-import re
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
@@ -34,7 +33,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         return True
 
     def get_setup_notes(self) -> Optional[str]:
-        return "LiveCodeBench requires a sandbox for code execution."
+        return "LiveCodeBench requires a sandbox for code execution and dataset access (HF_TOKEN if gated)."
 
     async def get_total_items(self) -> int:
         if not self._items:
@@ -74,13 +73,8 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
                     continue
             
             if dataset is None:
-                # Use placeholder coding problems
-                self._items = [
-                    {"id": "0", "question": "Write a function that returns the sum of two integers.", "starter_code": "def add(a, b):", "difficulty": "easy", "test": "assert add(1, 2) == 3\nassert add(-1, 1) == 0"},
-                    {"id": "1", "question": "Write a function that checks if a string is a palindrome.", "starter_code": "def is_palindrome(s):", "difficulty": "easy", "test": "assert is_palindrome('aba') == True\nassert is_palindrome('abc') == False"},
-                    {"id": "2", "question": "Write a function that finds the longest common subsequence of two strings.", "starter_code": "def lcs(s1, s2):", "difficulty": "medium", "test": "assert lcs('abcde', 'ace') == 'ace'"},
-                ]
-                logger.info(f"Using {len(self._items)} placeholder LiveCodeBench items")
+                logger.warning("No LiveCodeBench dataset sources available")
+                self._items = []
                 return
             
             self._items = []
@@ -137,7 +131,7 @@ Solution:
                 self.model_slug,
                 prompt,
                 system_prompt=system_prompt,
-                max_tokens=4096,
+                max_tokens=16384,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
@@ -173,6 +167,7 @@ Solution:
             error = None
             if not is_correct:
                 error = execution_result.get("stderr") or execution_result.get("error")
+            error = self.format_truncation_error(metadata, error)
 
             item_metadata = {
                 **metadata,

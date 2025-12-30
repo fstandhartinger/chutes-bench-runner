@@ -69,6 +69,7 @@ export function BenchmarkRunner() {
   const reconnectTimeoutRef = useRef<number | null>(null);
   const runningRef = useRef(false);
   const workerSlots = getWorkerSlots();
+  const subsetValue = Number(subsetPct);
 
   useEffect(() => {
     runningRef.current = running;
@@ -414,38 +415,63 @@ export function BenchmarkRunner() {
               Benchmarks
             </label>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {benchmarks.map((benchmark) => (
-                <label
-                  key={benchmark.name}
-                  className={cn(
-                    "flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors",
-                    selectedBenchmarks.has(benchmark.name)
-                      ? "border-moss/50 bg-moss/5"
-                      : "border-ink-500 bg-ink-700/50 hover:border-ink-400"
-                  )}
-                >
-                  <Checkbox
-                    checked={selectedBenchmarks.has(benchmark.name)}
-                    onCheckedChange={() => toggleBenchmark(benchmark.name)}
-                    disabled={!benchmark.is_enabled}
-                  />
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{benchmark.display_name}</span>
-                      {benchmark.requires_setup && (
-                        <span className="rounded bg-yellow-500/20 px-1.5 py-0.5 text-xs text-yellow-400">
-                          Setup
-                        </span>
+              {benchmarks.map((benchmark) => {
+                const totalItems = benchmark.total_items || 0;
+                const sampledItems =
+                  totalItems > 0
+                    ? Math.max(1, Math.floor((totalItems * subsetValue) / 100))
+                    : 0;
+                const estSeconds =
+                  benchmark.avg_item_latency_ms && sampledItems > 0
+                    ? (benchmark.avg_item_latency_ms / 1000) * sampledItems
+                    : null;
+
+                return (
+                  <label
+                    key={benchmark.name}
+                    className={cn(
+                      "flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors",
+                      selectedBenchmarks.has(benchmark.name)
+                        ? "border-moss/50 bg-moss/5"
+                        : "border-ink-500 bg-ink-700/50 hover:border-ink-400"
+                    )}
+                  >
+                    <Checkbox
+                      checked={selectedBenchmarks.has(benchmark.name)}
+                      onCheckedChange={() => toggleBenchmark(benchmark.name)}
+                      disabled={!benchmark.is_enabled}
+                    />
+                    <div className="flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{benchmark.display_name}</span>
+                        {benchmark.requires_setup && (
+                          <span className="rounded bg-yellow-500/20 px-1.5 py-0.5 text-xs text-yellow-400">
+                            Setup required
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-xs text-ink-400">
+                        {totalItems > 0
+                          ? `${sampledItems}/${totalItems} tests`
+                          : "Test count unavailable"}
+                        {estSeconds !== null
+                          ? ` · Est. ${formatDurationSeconds(estSeconds)}`
+                          : ""}
+                      </p>
+                      {benchmark.description && (
+                        <p className="mt-1 text-xs text-ink-400 line-clamp-2">
+                          {benchmark.description}
+                        </p>
+                      )}
+                      {benchmark.requires_setup && benchmark.setup_notes && (
+                        <p className="mt-1 text-xs text-yellow-400/90">
+                          {benchmark.setup_notes}
+                        </p>
                       )}
                     </div>
-                    {benchmark.description && (
-                      <p className="mt-1 text-xs text-ink-400 line-clamp-2">
-                        {benchmark.description}
-                      </p>
-                    )}
-                  </div>
-                </label>
-              ))}
+                  </label>
+                );
+              })}
             </div>
           </div>
 

@@ -1,5 +1,4 @@
 """MMLU-Pro benchmark adapter."""
-import re
 import time
 from typing import Any, AsyncIterator, Optional
 
@@ -137,32 +136,13 @@ Answer:"""
                     metadata=item_metadata,
                 )
 
-            # Parse response - handle chain-of-thought models
-            # Ensure response_text is a string
-            answer_text = str(response_text).strip()
-            
-            # If response contains </think>, extract answer after it
-            # Use case-insensitive search for the tag
-            think_match = re.search(r'</think>', answer_text, re.IGNORECASE)
-            if think_match:
-                answer_text = answer_text[think_match.end():].strip()
-            
-            # Extract the first letter (A-J) from the answer
-            answer_letter = ""
-            # Look for patterns like "A", "A.", "(A)", "Answer: A", etc.
-            # Use a more specific pattern to avoid matching letters in words
-            match = re.search(r'(?:^|\s|\*\*|[(\.])([A-J])(?:[)\.]|\s|\*\*|$)', answer_text.upper())
-            if match:
-                answer_letter = match.group(1)
-            else:
-                # Fallback: take first uppercase letter that stands alone
-                for char in answer_text.upper():
-                    if char in "ABCDEFGHIJ":
-                        answer_letter = char
-                        break
-            
+            answer_letter = self.extract_choice_letter(response_text, "ABCDEFGHIJ")
             expected = str(item.get("answer", "")).upper()[:1]
             is_correct = answer_letter == expected
+            error = None
+            if not answer_letter:
+                error = "Could not parse answer letter"
+            error = self.format_truncation_error(metadata, error if not is_correct else error)
 
             item_metadata = {
                 **metadata,
@@ -180,6 +160,7 @@ Answer:"""
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                error=error,
                 metadata=item_metadata,
             )
 

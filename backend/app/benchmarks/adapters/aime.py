@@ -125,7 +125,7 @@ Solution:"""
                 self.model_slug,
                 prompt,
                 system_prompt=system_prompt,
-                max_tokens=8192,  # Increased for complex AIME problems
+                max_tokens=16384,  # Increased for complex AIME problems
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
@@ -187,6 +187,10 @@ Solution:"""
             except (ValueError, TypeError):
                 is_correct = model_answer == expected
 
+            error = None
+            if not is_correct:
+                error = self.format_truncation_error(metadata, None)
+
             item_metadata = {
                 **metadata,
                 "level": item.get("level"),
@@ -203,6 +207,7 @@ Solution:"""
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                error=error,
                 metadata=item_metadata,
             )
 

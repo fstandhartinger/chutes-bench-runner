@@ -1,6 +1,5 @@
 """GPQA Diamond benchmark adapter."""
 import time
-import re
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
@@ -73,13 +72,7 @@ class GPQADiamondAdapter(BenchmarkAdapter):
             logger.info(f"Loaded {len(self._items)} GPQA Diamond items")
         except Exception as e:
             logger.warning(f"Could not load GPQA Diamond dataset: {e}")
-            # Use placeholder graduate-level science questions
-            self._items = [
-                {"id": "0", "question": "What is the primary mechanism by which mRNA vaccines trigger an immune response?", "correct_answer": "They instruct cells to produce viral spike proteins that stimulate antibody production", "incorrect_answers": ["They directly inject weakened viruses", "They modify the host's DNA", "They contain live attenuated pathogens"]},
-                {"id": "1", "question": "In quantum mechanics, what does the Heisenberg uncertainty principle fundamentally state?", "correct_answer": "Position and momentum cannot both be precisely determined simultaneously", "incorrect_answers": ["Energy is always conserved", "Particles move in fixed orbits", "All measurements are equally uncertain"]},
-                {"id": "2", "question": "What is the primary driver of plate tectonics on Earth?", "correct_answer": "Mantle convection driven by heat from the core", "incorrect_answers": ["Gravitational pull from the Moon", "Solar radiation heating", "Ocean currents"]},
-            ]
-            logger.info(f"Using {len(self._items)} placeholder GPQA Diamond items")
+            self._items = []
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         if not self._items:
@@ -143,37 +136,12 @@ Answer:"""
                     metadata=item_metadata,
                 )
 
-            # Parse response - handle chain-of-thought models
-            answer_text = response_text.strip()
-            
-            # If response contains </think>, extract answer after it
-            # Use case-insensitive search for the tag
-            think_match = re.search(r'</think>', answer_text, re.IGNORECASE)
-            if think_match:
-                answer_text = answer_text[think_match.end():].strip()
-            
-            # Extract the first letter (A-D) from the answer
-            answer_letter = ""
-            # Look for patterns like "A", "A.", "(A)", "Answer: A", etc.
-            # Use a more specific pattern to avoid matching letters in words
-            match = re.search(r'(?:^|\s|\*\*|[(\.])([A-D])(?:[)\.]|\s|\*\*|$)', answer_text.upper())
-            if match:
-                answer_letter = match.group(1)
-            else:
-                # Fallback: take first uppercase letter that stands alone
-                for char in answer_text.upper():
-                    if char in "ABCD":
-                        answer_letter = char
-                        break
-            
-            # Detailed logging for debugging
-            logger.info("GPQA evaluation details", 
-                        item_id=item_id, 
-                        correct_letter=correct_letter, 
-                        answer_letter=answer_letter,
-                        extracted_text=answer_text[:50])
-                
+            answer_letter = self.extract_choice_letter(response_text, "ABCD")
             is_correct = answer_letter == correct_letter
+            error = None
+            if not answer_letter:
+                error = "Could not parse answer letter"
+            error = self.format_truncation_error(metadata, error if not is_correct else error)
 
             item_metadata = {
                 **metadata,
@@ -190,6 +158,7 @@ Answer:"""
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                error=error,
                 metadata=item_metadata,
             )
 

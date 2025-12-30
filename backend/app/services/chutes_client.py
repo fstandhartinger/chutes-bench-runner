@@ -49,6 +49,20 @@ def _is_retryable_exception(exc: Exception) -> bool:
     return False
 
 
+def _is_max_tokens_error(exc: InferenceHTTPError) -> bool:
+    text = (exc.response_text or "").lower()
+    return any(
+        phrase in text
+        for phrase in (
+            "max_tokens",
+            "maximum context length",
+            "context length",
+            "max output",
+            "max_output",
+        )
+    )
+
+
 class ChutesClient:
     """Client for Chutes API operations.
     
@@ -213,19 +227,13 @@ class ChutesClient:
 
     def _compute_safe_max_tokens(self, max_output_length: int, input_tokens: int) -> int:
         margin = settings.chutes_max_tokens_margin
-        min_output_tokens = settings.chutes_min_output_tokens
         if max_output_length <= 0:
-            return 0
+            return 1
         margin = max(0, min(margin, max_output_length))
         available = max_output_length - input_tokens - margin
-        if available >= min_output_tokens:
-            return available
-        if max_output_length <= min_output_tokens:
-            return max_output_length
-        fallback = max_output_length - margin
-        if fallback < 1:
-            return max(1, max_output_length - input_tokens)
-        return max(min_output_tokens, fallback)
+        if available <= 0:
+            return 1
+        return max(1, available)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -409,8 +417,9 @@ class ChutesClient:
             if system_prompt:
                 input_tokens += self._estimate_tokens(system_prompt)
             safe_max_tokens = self._compute_safe_max_tokens(max_output_length, input_tokens)
-            applied_max_tokens = safe_max_tokens
-            if requested_max_tokens is None or requested_max_tokens != safe_max_tokens:
+            if requested_max_tokens is None or requested_max_tokens > safe_max_tokens:
+                applied_max_tokens = safe_max_tokens
+                kwargs["max_tokens"] = safe_max_tokens
                 logger.debug(
                     "Adjusting max_tokens for model",
                     model=model_slug,
@@ -418,7 +427,6 @@ class ChutesClient:
                     applied=safe_max_tokens,
                     max_output_length=max_output_length,
                 )
-            kwargs["max_tokens"] = safe_max_tokens
 
         if applied_max_tokens is not None:
             metadata["max_tokens"] = applied_max_tokens
@@ -427,6 +435,29 @@ class ChutesClient:
             attempt += 1
             try:
                 response = await self.run_inference(model_slug, messages, **kwargs)
+            except InferenceHTTPError as e:
+                if (
+                    attempt < max_attempts
+                    and _is_max_tokens_error(e)
+                    and isinstance(kwargs.get("max_tokens"), int)
+                ):
+                    current_max = kwargs.get("max_tokens")
+                    reduced = max(512, int(current_max * 0.5))
+                    if reduced < current_max:
+                        kwargs["max_tokens"] = reduced
+                        applied_max_tokens = reduced
+                        metadata["max_tokens"] = reduced
+                        logger.warning(
+                            "Reducing max_tokens after model limit error",
+                            model=model_slug,
+                            requested=current_max,
+                            applied=reduced,
+                        )
+                        await asyncio.sleep(delay_seconds)
+                        delay_seconds = min(delay_seconds * 2, 10)
+                        continue
+                logger.error("Inference failed", model=model_slug, error=str(e))
+                raise
             except Exception as e:
                 logger.error("Inference failed", model=model_slug, error=str(e))
                 raise

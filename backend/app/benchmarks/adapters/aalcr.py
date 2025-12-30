@@ -1,6 +1,5 @@
 """AA-LCR (Adversarial Attacks on Large Code Reasoners) benchmark adapter."""
 import time
-import re
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
@@ -34,7 +33,7 @@ class AALCRAdapter(BenchmarkAdapter):
         return True
 
     def get_setup_notes(self) -> Optional[str]:
-        return "AA-LCR requires a sandbox for code execution."
+        return "AA-LCR requires a sandbox for code execution and access to a code dataset (HF_TOKEN if gated)."
 
     async def get_total_items(self) -> int:
         if not self._items:
@@ -77,13 +76,8 @@ class AALCRAdapter(BenchmarkAdapter):
                     continue
             
             if dataset is None:
-                # Use placeholder code reasoning problems
-                self._items = [
-                    {"id": "0", "problem": "Write a function to find the maximum subarray sum (Kadane's algorithm).", "solution": "def max_subarray(arr): ...", "test": "assert max_subarray([1, -2, 3, 4, -1, 2, 1, -5, 4]) == 9"},
-                    {"id": "1", "problem": "Implement a function to detect a cycle in a linked list.", "solution": "def has_cycle(head): ...", "test": "class ListNode:\n    def __init__(self, x): self.val = x; self.next = None\nnode1 = ListNode(1); node2 = ListNode(2); node1.next = node2; node2.next = node1\nassert has_cycle(node1) == True"},
-                    {"id": "2", "problem": "Write a function to find the longest increasing subsequence.", "solution": "def lis(arr): ...", "test": "assert lis([10, 9, 2, 5, 3, 7, 101, 18]) == 4"},
-                ]
-                logger.info(f"Using {len(self._items)} placeholder AA-LCR items")
+                logger.warning("No AA-LCR dataset sources available")
+                self._items = []
                 return
             
             self._items = []
@@ -139,7 +133,7 @@ Solution:
                 self.model_slug,
                 prompt,
                 system_prompt=system_prompt,
-                max_tokens=4096,
+                max_tokens=16384,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
@@ -175,6 +169,7 @@ Solution:
             error = None
             if not is_correct:
                 error = execution_result.get("stderr") or execution_result.get("error")
+            error = self.format_truncation_error(metadata, error)
 
             item_metadata = {**metadata, "system_prompt": system_prompt}
             return ItemResult(

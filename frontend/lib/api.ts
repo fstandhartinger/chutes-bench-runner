@@ -25,6 +25,7 @@ export interface Benchmark {
   requires_setup: boolean;
   setup_notes?: string;
   total_items: number;
+  avg_item_latency_ms?: number;
 }
 
 export interface BenchmarkRunBenchmark {

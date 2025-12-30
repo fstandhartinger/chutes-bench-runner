@@ -48,28 +48,8 @@ class TauBenchTelecomAdapter(BenchmarkAdapter):
 
         try:
             logger.info("Loading τ²-Bench Telecom dataset")
-            # Placeholder items - actual dataset requires official setup
-            self._items = [
-                {
-                    "id": "0",
-                    "scenario": "Customer wants to upgrade their mobile plan",
-                    "context": "Current plan: Basic 5GB. Customer asking about unlimited options.",
-                    "expected_action": "offer_plan_upgrade",
-                },
-                {
-                    "id": "1",
-                    "scenario": "Customer reporting network outage",
-                    "context": "Customer in downtown area, no signal since morning.",
-                    "expected_action": "check_network_status",
-                },
-                {
-                    "id": "2",
-                    "scenario": "Customer billing dispute",
-                    "context": "Customer charged for international roaming they didn't use.",
-                    "expected_action": "review_billing",
-                },
-            ]
-            logger.info(f"Loaded {len(self._items)} τ²-Bench Telecom items")
+            logger.warning("τ²-Bench Telecom dataset not configured")
+            self._items = []
         except Exception as e:
             logger.error("Failed to load τ²-Bench Telecom", error=str(e))
             self._items = []
@@ -197,7 +177,6 @@ Action:"""
                 error=str(e),
                 metadata=item_metadata,
             )
-
 
 
 

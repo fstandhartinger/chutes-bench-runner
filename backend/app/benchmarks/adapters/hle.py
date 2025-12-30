@@ -32,7 +32,7 @@ class HLEAdapter(BenchmarkAdapter):
         return True
 
     def get_setup_notes(self) -> Optional[str]:
-        return "HLE dataset may require authentication. Check Hugging Face access."
+        return "HLE dataset may require Hugging Face access (set HF_TOKEN if gated)."
 
     async def get_total_items(self) -> int:
         if not self._items:
@@ -57,30 +57,25 @@ class HLEAdapter(BenchmarkAdapter):
                     dataset = load_dataset("cais/hle", split="test", token=hf_token)
                 else:
                     dataset = load_dataset("cais/hle", split="test")
-                
-                self._items = []
-                for i, item in enumerate(dataset):
-                    # Ensure all fields are strings, not None
-                    question = item.get("question") or ""
-                    answer = item.get("answer") or ""
-                    self._items.append({
-                        "id": str(i),
-                        "question": str(question) if question else "",
-                        "answer": str(answer) if answer else "",
-                        "subject": item.get("subject", ""),
-                        "source": item.get("source", ""),
-                    })
-                
-                logger.info(f"Loaded {len(self._items)} HLE items")
             except Exception as e:
                 logger.warning(f"Could not load HLE dataset: {e}")
-                # Use placeholder challenging questions
-                self._items = [
-                    {"id": "0", "question": "What is the primary mechanism by which CRISPR-Cas9 achieves gene editing specificity?", "answer": "guide RNA complementarity", "subject": "biology"},
-                    {"id": "1", "question": "In quantum computing, what is the key property that allows qubits to be in multiple states simultaneously?", "answer": "superposition", "subject": "physics"},
-                    {"id": "2", "question": "What mathematical constant appears in the Riemann zeta function's non-trivial zeros?", "answer": "1/2", "subject": "mathematics"},
-                ]
-                logger.info(f"Using {len(self._items)} placeholder HLE items")
+                self._items = []
+                return
+
+            self._items = []
+            for i, item in enumerate(dataset):
+                # Ensure all fields are strings, not None
+                question = item.get("question") or ""
+                answer = item.get("answer") or ""
+                self._items.append({
+                    "id": str(i),
+                    "question": str(question) if question else "",
+                    "answer": str(answer) if answer else "",
+                    "subject": item.get("subject", ""),
+                    "source": item.get("source", ""),
+                })
+            
+            logger.info(f"Loaded {len(self._items)} HLE items")
         except Exception as e:
             logger.error("Failed to load HLE", error=str(e))
             self._items = []

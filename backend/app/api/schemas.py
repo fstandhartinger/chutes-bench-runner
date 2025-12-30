@@ -39,6 +39,7 @@ class BenchmarkInfo(BaseModel):
     requires_setup: bool = False
     setup_notes: Optional[str] = None
     total_items: int = 0
+    avg_item_latency_ms: Optional[float] = None
 
 
 class BenchmarksListResponse(BaseModel):

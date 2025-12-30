@@ -1,6 +1,5 @@
 """SciCode benchmark adapter."""
 import time
-import re
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
@@ -34,7 +33,7 @@ class SciCodeAdapter(BenchmarkAdapter):
         return True
 
     def get_setup_notes(self) -> Optional[str]:
-        return "SciCode requires scientific computing libraries (numpy, scipy, etc.) for execution."
+        return "SciCode requires a sandbox with scientific libraries and dataset access (HF_TOKEN if gated)."
 
     async def get_total_items(self) -> int:
         if not self._items:
@@ -72,13 +71,8 @@ class SciCodeAdapter(BenchmarkAdapter):
                     continue
             
             if dataset is None:
-                # Use placeholder scientific computing problems
-                self._items = [
-                    {"id": "0", "problem": "Write a NumPy function to compute the eigenvalues of a symmetric matrix.", "domain": "linear algebra", "context": "import numpy as np", "test": "import numpy as np\nA = np.array([[2, 1], [1, 2]])\nevals = compute_eigenvalues(A)\nassert np.allclose(sorted(evals), [1, 3])"},
-                    {"id": "1", "problem": "Implement numerical integration using Simpson's rule.", "domain": "numerical methods", "context": "import numpy as np", "test": "import numpy as np\nf = lambda x: x**2\nresult = simpsons_rule(f, 0, 1, 100)\nassert np.isclose(result, 1/3, atol=1e-3)"},
-                    {"id": "2", "problem": "Write a function to solve a system of ODEs using Runge-Kutta 4th order method.", "domain": "differential equations", "context": "import numpy as np", "test": "import numpy as np\ndef f(t, y): return -y\ny = solve_ode(f, 0, 1, 0.1, 10)\nassert np.isclose(y[-1], np.exp(-1), atol=1e-2)"},
-                ]
-                logger.info(f"Using {len(self._items)} placeholder SciCode items")
+                logger.warning("No SciCode dataset sources available")
+                self._items = []
                 return
             
             self._items = []
@@ -132,7 +126,7 @@ Solution:
                 self.model_slug,
                 prompt,
                 system_prompt=system_prompt,
-                max_tokens=4096,
+                max_tokens=16384,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
@@ -175,6 +169,7 @@ Solution:
             error = None
             if not is_correct:
                 error = execution_result.get("stderr") or execution_result.get("error")
+            error = self.format_truncation_error(metadata, error)
 
             item_metadata = {
                 **metadata,

@@ -188,6 +188,58 @@ class BenchmarkAdapter(ABC):
                 return " | ".join(parts)
         return "Model produced empty response"
 
+    def format_truncation_error(
+        self,
+        metadata: Optional[dict[str, Any]] = None,
+        error: Optional[str] = None,
+    ) -> Optional[str]:
+        """Annotate an error message if the model response was truncated."""
+        finish_reason = (metadata or {}).get("finish_reason")
+        if finish_reason != "length":
+            return error
+        truncation = "Response truncated (finish_reason=length)"
+        if not error:
+            return truncation
+        return f"{error} | {truncation}"
+
+    def extract_choice_letter(self, response_text: Optional[str], valid_letters: str) -> str:
+        """Extract a multiple-choice answer letter from the response."""
+        if not response_text:
+            return ""
+
+        import re
+
+        cleaned = re.sub(r"(?i)<think>.*?</think>", "", response_text, flags=re.DOTALL).strip()
+        if not cleaned:
+            return ""
+
+        upper_letters = valid_letters.upper()
+        letter_set = f"[{re.escape(upper_letters)}]"
+
+        # Prefer explicit "Answer: X" lines.
+        answer_match = re.search(
+            rf"(?im)^\s*(?:answer|final answer)\s*[:\-]\s*\\(?({letter_set})\\)?\s*$",
+            cleaned,
+        )
+        if answer_match:
+            return answer_match.group(1).upper()
+
+        # Check if any line is just the letter.
+        for line in cleaned.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            line_match = re.match(rf"^\\(?({letter_set})\\)?[\\.\)]?\s*$", line.upper())
+            if line_match:
+                return line_match.group(1).upper()
+
+        # Allow the entire response to be a single letter.
+        full_match = re.match(rf"^\\s*\\(?({letter_set})\\)?[\\.\)]?\s*$", cleaned.upper())
+        if full_match:
+            return full_match.group(1).upper()
+
+        return ""
+
     def extract_python_code(self, response: Optional[str]) -> str:
         """Extract Python code from model response robustly."""
         if not response:
@@ -272,6 +324,5 @@ class BenchmarkAdapter(ABC):
                 **additional_metrics,
             },
         )
-
 
 

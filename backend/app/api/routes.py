@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
 from app.api.deps import AdminDep, ApiKeyDep, SessionDep
+from app.benchmarks import get_adapter
 from app.api.schemas import (
     BenchmarkInfo,
     BenchmarksListResponse,
@@ -27,6 +28,8 @@ from app.models.benchmark import Benchmark
 from app.models.run import BenchmarkItemResult, BenchmarkRun, BenchmarkRunBenchmark, RunEvent
 from app.services import auth_service
 from app.services.export_service import generate_csv_export, generate_pdf_export
+from app.core.config import get_settings
+from app.services.chutes_client import get_chutes_client
 from app.services.model_service import get_model_by_id, get_models, resolve_model_identifier, sync_models
 from app.services.run_service import (
     add_run_event,
@@ -79,6 +82,63 @@ async def list_benchmarks(db: SessionDep):
     """List all available benchmarks."""
     result = await db.execute(select(Benchmark).order_by(Benchmark.name))
     benchmarks = result.scalars().all()
+    # Refresh total_items for benchmarks that haven't been computed yet.
+    settings = get_settings()
+    if not settings.skip_model_sync:
+        client = get_chutes_client()
+        totals_updated = False
+        for benchmark in benchmarks:
+            if benchmark.total_items > 0:
+                continue
+            adapter = get_adapter(benchmark.name, client, "system")
+            if not adapter:
+                continue
+            try:
+                total = await adapter.get_total_items()
+            except Exception:
+                continue
+            if total > 0:
+                benchmark.total_items = total
+                totals_updated = True
+        if totals_updated:
+            await db.commit()
+    # Sync setup metadata from adapters (lightweight).
+    client = get_chutes_client()
+    setup_updated = False
+    for benchmark in benchmarks:
+        adapter = get_adapter(benchmark.name, client, "system")
+        if not adapter:
+            continue
+        requires_setup = adapter.requires_setup()
+        setup_notes = adapter.get_setup_notes()
+        display_name = adapter.get_display_name()
+        if benchmark.requires_setup != requires_setup:
+            benchmark.requires_setup = requires_setup
+            setup_updated = True
+        if (benchmark.setup_notes or "") != (setup_notes or ""):
+            benchmark.setup_notes = setup_notes
+            setup_updated = True
+        if benchmark.display_name != display_name:
+            benchmark.display_name = display_name
+            setup_updated = True
+    if setup_updated:
+        await db.commit()
+    latency_result = await db.execute(
+        select(
+            BenchmarkRunBenchmark.benchmark_id,
+            func.avg(BenchmarkItemResult.latency_ms),
+        )
+        .join(
+            BenchmarkItemResult,
+            BenchmarkItemResult.run_benchmark_id == BenchmarkRunBenchmark.id,
+        )
+        .where(BenchmarkItemResult.latency_ms.is_not(None))
+        .group_by(BenchmarkRunBenchmark.benchmark_id)
+    )
+    avg_latency_by_id = {
+        row[0]: float(row[1]) if row[1] is not None else None
+        for row in latency_result.all()
+    }
     return BenchmarksListResponse(
         benchmarks=[
             BenchmarkInfo(
@@ -90,6 +150,7 @@ async def list_benchmarks(db: SessionDep):
                 requires_setup=b.requires_setup,
                 setup_notes=b.setup_notes,
                 total_items=b.total_items,
+                avg_item_latency_ms=avg_latency_by_id.get(b.id),
             )
             for b in benchmarks
         ]

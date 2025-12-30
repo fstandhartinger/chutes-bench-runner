@@ -35,7 +35,10 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         return True
 
     def get_setup_notes(self) -> Optional[str]:
-        return "Terminal-Bench requires a sandbox for command execution."
+        return (
+            "Terminal-Bench requires a sandbox for command execution and a dataset "
+            "(set TERMINAL_BENCH_DATASET, optional HF_TOKEN if gated)."
+        )
 
     def supports_subset(self) -> bool:
         return True
@@ -52,15 +55,32 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
 
         try:
             logger.info("Loading Terminal-Bench Hard dataset")
-            # Terminal-Bench may need custom loading
-            # Using placeholder items for now
-            self._items = [
-                {"id": "0", "task": "List all files in current directory sorted by size", "expected_cmd": "ls -lS"},
-                {"id": "1", "task": "Find all Python files containing 'import os'", "expected_cmd": "grep -r 'import os' --include='*.py'"},
-                {"id": "2", "task": "Count lines in all .txt files", "expected_cmd": "wc -l *.txt"},
-                {"id": "3", "task": "Show disk usage of current directory", "expected_cmd": "du -sh ."},
-                {"id": "4", "task": "Find processes using port 8080", "expected_cmd": "lsof -i :8080"},
-            ]
+            import os
+            from datasets import load_dataset
+
+            dataset_name = os.environ.get("TERMINAL_BENCH_DATASET")
+            split = os.environ.get("TERMINAL_BENCH_SPLIT", "test")
+            hf_token = os.environ.get("HF_TOKEN")
+
+            if not dataset_name:
+                logger.warning("Terminal-Bench dataset not configured (TERMINAL_BENCH_DATASET)")
+                self._items = []
+                return
+
+            kwargs = {"token": hf_token} if hf_token else {}
+            dataset = load_dataset(dataset_name, split=split, **kwargs)
+
+            self._items = []
+            for i, item in enumerate(dataset):
+                task = item.get("task") or item.get("instruction") or item.get("prompt") or ""
+                expected = item.get("expected_cmd") or item.get("command") or item.get("answer") or ""
+                if task:
+                    self._items.append({
+                        "id": str(i),
+                        "task": str(task),
+                        "expected_cmd": str(expected),
+                    })
+
             logger.info(f"Loaded {len(self._items)} Terminal-Bench Hard items")
         except Exception as e:
             logger.error("Failed to load Terminal-Bench Hard", error=str(e))

@@ -1,6 +1,5 @@
 """SWE-Bench Pro benchmark adapter."""
 import time
-import re
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
@@ -35,7 +34,7 @@ class SWEBenchProAdapter(BenchmarkAdapter):
         return True
 
     def get_setup_notes(self) -> Optional[str]:
-        return "SWE-Bench Pro requires a sandbox with git and Python."
+        return "SWE-Bench Pro requires a sandbox with git/Python and dataset access (HF_TOKEN if gated)."
 
     def supports_subset(self) -> bool:
         return True
@@ -74,12 +73,8 @@ class SWEBenchProAdapter(BenchmarkAdapter):
                     continue
             
             if dataset is None:
-                # Use placeholder SWE items
-                self._items = [
-                    {"id": "0", "instance_id": "example-1", "repo": "example/repo", "problem_statement": "Fix the null pointer exception in the main function", "hints_text": "Check the input validation", "patch": ""},
-                    {"id": "1", "instance_id": "example-2", "repo": "example/repo", "problem_statement": "Add error handling for file operations", "hints_text": "Use try-except blocks", "patch": ""},
-                ]
-                logger.info(f"Using {len(self._items)} placeholder SWE-Bench items")
+                logger.warning("No SWE-Bench dataset sources available")
+                self._items = []
                 return
             
             self._items = []
@@ -135,7 +130,7 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
                 self.model_slug,
                 prompt,
                 system_prompt=system_prompt,
-                max_tokens=4096,
+                max_tokens=16384,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
@@ -191,6 +186,7 @@ Provide a git diff patch that fixes this issue. Format your response as a unifie
                 error = None
                 if not is_correct:
                     error = execution_result.get("stderr") or execution_result.get("error")
+                error = self.format_truncation_error(metadata, error)
 
                 item_metadata = {
                     **metadata,
