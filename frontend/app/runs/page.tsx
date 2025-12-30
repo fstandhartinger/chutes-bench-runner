@@ -133,6 +133,7 @@ export default function RunsPage() {
               run.status === "running" ? estimateRunRemainingSeconds(run, now) : null;
             const queueInfo =
               run.status === "queued" ? queueSchedule[run.id] : undefined;
+            const queueDelaySeconds = queueInfo?.startDelaySeconds ?? null;
 
             return (
               <Card key={run.id} className="overflow-hidden">
@@ -168,8 +169,8 @@ export default function RunsPage() {
                     <p className="text-xs text-ink-400">
                       Queued
                       {queueInfo ? ` (pos ${queueInfo.queuePosition})` : ""}{" "}
-                      {queueInfo?.startDelaySeconds !== null
-                        ? `· start in ~${formatDurationSeconds(queueInfo.startDelaySeconds)}`
+                      {queueDelaySeconds !== null
+                        ? `· start in ~${formatDurationSeconds(queueDelaySeconds)}`
                         : "· waiting for worker"}
                     </p>
                   )}
@@ -246,5 +247,4 @@ export default function RunsPage() {
     </div>
   );
 }
-
 
