@@ -192,29 +192,29 @@ curl -X POST https://chutes-bench-runner-api-v2.onrender.com/api/exports/verify 
 
 ## Benchmark Adapter Status
 
-Each benchmark adapter in `backend/app/benchmarks/adapters/` tries to load data from HuggingFace datasets. If unavailable, they fall back to placeholder data.
+Each benchmark adapter in `backend/app/benchmarks/adapters/` uses official datasets or evaluation harnesses. Gated datasets require an `HF_TOKEN` with access.
 
-| Benchmark | Dataset Source | Fallback |
-|-----------|---------------|----------|
-| `mmlu_pro` | TIGER-Lab/MMLU-Pro | None needed (public) |
-| `gpqa_diamond` | Idavidrein/gpqa (GATED) | 3 placeholder science questions |
-| `aime_2025` | AI-MO/aimo-validation-aime, lighteval/MATH, hendrycks/competition_math | Multiple fallbacks |
-| `ifbench` | google/IFEval | None (public dataset) |
-| `hle` | cais/hle | 3 placeholder expert questions |
-| `livecodebench` | livecodebench/code_generation_lite, codeparrot/apps, openai_humaneval | 3 placeholder coding problems |
-| `scicode` | SciCode-Bench/SciCode, bigcode/humanevalpack | 3 placeholder sci-computing problems |
-| `aa_lcr` | deepmind/code_contests, codeparrot/apps | 3 placeholder code reasoning |
-| `swe_bench_pro` | princeton-nlp/SWE-bench_Lite, princeton-nlp/SWE-bench | 2 placeholder issues |
-| `tau_bench_telecom` | None (hardcoded) | 3 telecom scenarios |
-| `terminal_bench_hard` | None (hardcoded) | 5 shell command tasks |
+| Benchmark | Dataset/Source | Notes |
+|-----------|----------------|-------|
+| `mmlu_pro` | TIGER-Lab/MMLU-Pro | Public dataset |
+| `gpqa_diamond` | Idavidrein/gpqa (GATED) | Requires HF access |
+| `aime_2025` | AI-MO/aimo-validation-aime (fallbacks: lighteval/MATH, hendrycks/competition_math) | Public fallbacks |
+| `ifbench` | google/IFEval | Official IFEval scoring |
+| `hle` | cais/hle (GATED) | Requires HF access |
+| `livecodebench` | livecodebench/code_generation | Runs public + private tests in Sandy |
+| `scicode` | SciCode1/SciCode + Srimadh/Scicode-test-data-h5 | Official stepwise prompts + HDF5 tests |
+| `aa_lcr` | ArtificialAnalysis/AA-LCR | Uses official document bundle + LLM judge |
+| `swe_bench_pro` | ScaleAI/SWE-bench_Pro + SWE-bench_Pro-os scripts | Docker Hub images + official parsers |
+| `tau_bench_telecom` | sierra-research/tau2-bench | Official tau2 simulation framework |
+| `terminal_bench_hard` | ia03/terminal-bench | Docker-based harness per README |
 
-**Note**: To enable gated datasets, set `HF_TOKEN` environment variable in the worker with a HuggingFace access token that has been granted access to the relevant datasets.
+**Note**: To enable gated datasets, set `HF_TOKEN` in the worker environment with access to the datasets.
 
 ### Benchmark Scoring Notes
 
-- **Code benchmarks** (livecodebench, scicode, aa_lcr, swe_bench_pro): Use the **Sandy Sandbox** on the Hetzner Server for code execution.
-- **IFBench**: Uses full internal IFEval checker for instruction compliance (length fallback only when no instruction IDs).
-- **Terminal-Bench**: Executes commands in the Sandy Sandbox and checks for successful exit codes.
+- **Code benchmarks** (livecodebench, scicode, aa_lcr, swe_bench_pro, terminal_bench_hard): Use the **Sandy Sandbox** on the Hetzner Server for execution.
+- **IFBench**: Uses the official IFEval checker.
+- **Terminal-Bench**: Follows the official Docker harness (agent + test phases).
 
 ## File Reference
 

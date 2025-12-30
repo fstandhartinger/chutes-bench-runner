@@ -51,9 +51,18 @@ class Settings(BaseSettings):
     # PDF
     pdf_font_path: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
+    # Benchmark data cache
+    bench_data_dir: str = "/tmp/chutes-bench-data"
+
     # Sandy Sandbox
     sandy_base_url: str = "https://sandy.65.109.49.103.nip.io"
     sandy_api_key: Optional[str] = None
+
+    # AA-LCR judge model (LLM-based equality checker)
+    aa_lcr_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
+
+    # τ²-Bench (optional override for user simulator model)
+    tau2_user_model: Optional[str] = None
 
     # Signed export keys (base64 or PEM)
     bench_signing_private_key: Optional[str] = None

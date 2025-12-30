@@ -29,14 +29,31 @@ class SandyService:
                 logger.error("Failed to create sandbox", error=str(e))
                 return None
 
-    async def execute_command(self, sandbox_id: str, command: str) -> Dict[str, Any]:
+    async def execute_command(
+        self,
+        sandbox_id: str,
+        command: str,
+        cwd: Optional[str] = None,
+        env: Optional[dict[str, str]] = None,
+        timeout_ms: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Execute a command in the sandbox."""
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        timeout_seconds = 60.0
+        if timeout_ms is not None:
+            timeout_seconds = max(timeout_seconds, timeout_ms / 1000 + 30)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=10.0)) as client:
             try:
+                payload: dict[str, Any] = {"command": command}
+                if cwd:
+                    payload["cwd"] = cwd
+                if env:
+                    payload["env"] = env
+                if timeout_ms is not None:
+                    payload["timeoutMs"] = timeout_ms
                 response = await client.post(
                     f"{self.base_url}/api/sandboxes/{sandbox_id}/exec",
                     headers=self.headers,
-                    json={"command": command}
+                    json=payload,
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -79,7 +96,7 @@ class SandyService:
                 logger.error(f"Failed to terminate sandbox {sandbox_id}", error=str(e))
                 return False
 
-    async def run_python_code(self, code: str) -> Dict[str, Any]:
+    async def run_python_code(self, code: str, timeout_ms: Optional[int] = None) -> Dict[str, Any]:
         """Convenience method to create a sandbox, run Python code, and terminate."""
         sandbox_id = await self.create_sandbox()
         if not sandbox_id:
@@ -90,8 +107,11 @@ class SandyService:
             await self.write_file(sandbox_id, "script.py", code)
             
             # Execute the code
-            result = await self.execute_command(sandbox_id, "python3 script.py")
+            result = await self.execute_command(
+                sandbox_id,
+                "python3 script.py",
+                timeout_ms=timeout_ms,
+            )
             return result
         finally:
             await self.terminate_sandbox(sandbox_id)
-

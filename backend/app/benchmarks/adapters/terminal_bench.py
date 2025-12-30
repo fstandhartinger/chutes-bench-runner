@@ -1,8 +1,12 @@
 """Terminal-Bench Hard benchmark adapter."""
-import re
-import shlex
+from __future__ import annotations
+
+import base64
 import time
 from typing import Any, AsyncIterator, Optional
+
+import yaml
+from datasets import load_dataset
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
@@ -16,8 +20,8 @@ logger = get_logger(__name__)
 class TerminalBenchHardAdapter(BenchmarkAdapter):
     """
     Terminal-Bench Hard adapter.
-    
-    Challenging terminal/CLI interaction benchmark.
+
+    Uses the official task archive and docker-based evaluation harness.
     """
 
     def __init__(self, *args: Any, **kwargs: Any):
@@ -35,10 +39,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         return True
 
     def get_setup_notes(self) -> Optional[str]:
-        return (
-            "Terminal-Bench requires a sandbox for command execution and a dataset "
-            "(set TERMINAL_BENCH_DATASET, optional HF_TOKEN if gated)."
-        )
+        return "Terminal-Bench auto-downloads task archives and evaluates them in Sandy."
 
     def supports_subset(self) -> bool:
         return True
@@ -54,36 +55,33 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             return
 
         try:
-            logger.info("Loading Terminal-Bench Hard dataset")
-            import os
-            from datasets import load_dataset
-
-            dataset_name = os.environ.get("TERMINAL_BENCH_DATASET")
-            split = os.environ.get("TERMINAL_BENCH_SPLIT", "test")
-            hf_token = os.environ.get("HF_TOKEN")
-
-            if not dataset_name:
-                logger.warning("Terminal-Bench dataset not configured (TERMINAL_BENCH_DATASET)")
-                self._items = []
-                return
-
-            kwargs = {"token": hf_token} if hf_token else {}
-            dataset = load_dataset(dataset_name, split=split, **kwargs)
-
+            logger.info("Loading Terminal-Bench dataset")
+            dataset = load_dataset("ia03/terminal-bench", split="test")
             self._items = []
             for i, item in enumerate(dataset):
-                task = item.get("task") or item.get("instruction") or item.get("prompt") or ""
-                expected = item.get("expected_cmd") or item.get("command") or item.get("answer") or ""
-                if task:
-                    self._items.append({
+                task_yaml = item.get("task_yaml") or ""
+                instruction = ""
+                try:
+                    parsed_yaml = yaml.safe_load(task_yaml) if task_yaml else {}
+                    instruction = parsed_yaml.get("instruction", "")
+                except Exception:
+                    parsed_yaml = {}
+                self._items.append(
+                    {
                         "id": str(i),
-                        "task": str(task),
-                        "expected_cmd": str(expected),
-                    })
-
-            logger.info(f"Loaded {len(self._items)} Terminal-Bench Hard items")
+                        "task_id": item.get("task_id"),
+                        "task_yaml": task_yaml,
+                        "instruction": instruction,
+                        "archive": item.get("archive"),
+                        "difficulty": item.get("difficulty", ""),
+                        "parsed_yaml": parsed_yaml,
+                        "max_agent_timeout_sec": item.get("max_agent_timeout_sec"),
+                        "max_test_timeout_sec": item.get("max_test_timeout_sec"),
+                    }
+                )
+            logger.info("Loaded %s Terminal-Bench items", len(self._items))
         except Exception as e:
-            logger.error("Failed to load Terminal-Bench Hard", error=str(e))
+            logger.error("Failed to load Terminal-Bench", error=str(e))
             self._items = []
 
     async def enumerate_items(self) -> AsyncIterator[str]:
@@ -91,6 +89,82 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             await self.preload()
         for item in self._items:
             yield item["id"]
+
+    async def _extract_archive(self, sandbox_id: str, archive_bytes: bytes) -> bool:
+        encoded = base64.b64encode(archive_bytes).decode("ascii")
+        if not await self.sandy.write_file(sandbox_id, "archive.b64", encoded):
+            return False
+        result = await self.sandy.execute_command(
+            sandbox_id,
+            "base64 -d archive.b64 > archive.tar",
+        )
+        if result.get("exit_code") != 0:
+            return False
+        result = await self.sandy.execute_command(
+            sandbox_id,
+            "mkdir -p task && tar -xf archive.tar -C task",
+        )
+        return result.get("exit_code") == 0
+
+    async def _run_terminal_bench(self, sandbox_id: str, task_id: str) -> dict[str, Any]:
+        task_dir = "/workspace/task"
+        compose_check = await self.sandy.execute_command(
+            sandbox_id,
+            f"test -f {task_dir}/docker-compose.yaml",
+        )
+        has_compose = compose_check.get("exit_code") == 0
+        image_name = f"tbench_{task_id}".lower()
+        container_name = f"{image_name}_container"
+        cleanup_cmd = None
+
+        if has_compose:
+            logs_dir = f"{task_dir}/logs"
+            await self.sandy.execute_command(sandbox_id, f"mkdir -p {logs_dir}")
+            env = {
+                "T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME": "client",
+                "T_BENCH_TASK_DOCKER_NAME_PREFIX": f"tbench_{task_id}",
+                "T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME": f"tbench_{task_id}_client",
+                "T_BENCH_TASK_LOGS_PATH": logs_dir,
+                "T_BENCH_CONTAINER_LOGS_PATH": "/var/log/tbench",
+                "T_BENCH_TEST_DIR": "/tests",
+            }
+            up_cmd = f"docker-compose -f {task_dir}/docker-compose.yaml up --build -d"
+            up_result = await self.sandy.execute_command(
+                sandbox_id,
+                up_cmd,
+                env=env,
+                timeout_ms=900000,
+            )
+            if up_result.get("exit_code") != 0:
+                return {
+                    "error": up_result.get("stderr") or up_result.get("error"),
+                    "exit_code": up_result.get("exit_code"),
+                }
+            container_name = env["T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME"]
+            cleanup_cmd = f"docker-compose -f {task_dir}/docker-compose.yaml down"
+        else:
+            build_result = await self.sandy.execute_command(
+                sandbox_id,
+                f"docker build -t {image_name} {task_dir}",
+                timeout_ms=900000,
+            )
+            if build_result.get("exit_code") != 0:
+                return {
+                    "error": build_result.get("stderr") or build_result.get("error"),
+                    "exit_code": build_result.get("exit_code"),
+                }
+            run_result = await self.sandy.execute_command(
+                sandbox_id,
+                f"docker run -d --name {container_name} {image_name} sleep infinity",
+            )
+            if run_result.get("exit_code") != 0:
+                return {
+                    "error": run_result.get("stderr") or run_result.get("error"),
+                    "exit_code": run_result.get("exit_code"),
+                }
+            cleanup_cmd = f"docker rm -f {container_name}"
+
+        return {"container_name": container_name, "cleanup_cmd": cleanup_cmd}
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single Terminal-Bench item."""
@@ -101,114 +175,15 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         if not item:
             return ItemResult(item_id=item_id, error=f"Item {item_id} not found")
 
-        prompt = f"""You are a Linux shell expert. Given the task, provide the exact shell command to accomplish it.
-Only output the command within a markdown code block.
-
-Examples:
-Task: List all files
-Command:
-```bash
-ls -a
-```
-
-Task: Find files larger than 100MB
-Command:
-```bash
-find . -size +100M
-```
-
-Task: {item["task"]}
-Command:"""
-
-        def looks_like_command(candidate: str) -> bool:
-            stripped = candidate.strip()
-            if not stripped:
-                return False
-            if stripped.startswith("sudo "):
-                stripped = stripped[5:].lstrip()
-            if stripped.startswith("./"):
-                return True
-            first = stripped.split()[0]
-            common = {
-                "ls", "find", "grep", "wc", "du", "lsof", "ps", "cat", "echo", "awk", "sed",
-                "head", "tail", "sort", "uniq", "chmod", "chown", "mkdir", "rm", "mv", "cp",
-                "tar", "zip", "curl", "wget", "git", "python", "pip", "node", "npm", "yarn",
-                "bash", "sh",
-            }
-            if first in common:
-                return True
-            if "/" in first:
-                return True
-            return False
-
-        def normalize_candidate(candidate: str) -> str:
-            cleaned = candidate.strip().strip("`")
-            cleaned = re.sub(r"^(?:\d+\.|\d+\)|[-*])\s*", "", cleaned)
-            cleaned = re.sub(r"(?i)^(?:command|cmd|shell)\s*[:\-]\s*", "", cleaned)
-            if cleaned.count("`") >= 2:
-                match = re.search(r"`([^`]+)`", cleaned)
-                if match:
-                    cleaned = match.group(1)
-            elif "`" in cleaned:
-                cleaned = cleaned.split("`", 1)[0]
-            cleaned = cleaned.rstrip(" .,:;")
-            return cleaned.strip()
-
-        def extract_command(response_text: str) -> str:
-            cleaned = response_text or ""
-            cleaned = re.sub(r"(?i)<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
-
-            candidates: list[tuple[str, int]] = []
-
-            def add_candidate(raw: str, weight: int) -> None:
-                candidate = normalize_candidate(raw)
-                if candidate:
-                    candidates.append((candidate, weight))
-
-            # Markdown code block or raw code extraction.
-            extracted = self.extract_python_code(cleaned)
-            if extracted:
-                weight = 3 if "```" in cleaned else 1
-                for line in extracted.splitlines():
-                    if line.strip():
-                        add_candidate(line, weight)
-
-            # Inline code blocks.
-            for match in re.findall(r"`([^`]+)`", cleaned):
-                add_candidate(match, 2)
-
-            # "Command:" or similar labels.
-            for match in re.findall(r"(?i)(?:command|run|use|execute|try)\s*[:\-]\s*([^\n]+)", cleaned):
-                add_candidate(match, 2)
-
-            # Raw lines as fallback candidates.
-            for line in cleaned.splitlines():
-                if line.strip():
-                    add_candidate(line, 1)
-
-            best_candidate = ""
-            best_score = -1
-            for idx, (candidate, weight) in enumerate(candidates):
-                if not looks_like_command(candidate):
-                    continue
-                tokens = candidate.split()
-                score = weight * 10
-                if len(tokens) > 1:
-                    score += 4
-                if any(ch in candidate for ch in ("|", ">", "<", "--", "-")):
-                    score += 2
-                score += min(len(candidate), 80) // 4
-                score += idx / 1000
-                if score > best_score:
-                    best_score = score
-                    best_candidate = candidate
-
-            return best_candidate
-
-        system_prompt = (
-            "You are a Linux shell expert. Output ONLY the final shell command "
-            "within a markdown code block. No explanation, no thinking, no prose."
+        instruction = item.get("instruction") or ""
+        task_yaml = item.get("task_yaml") or ""
+        prompt = (
+            "You are solving a terminal task. Provide a bash script that completes the task.\n"
+            "The script will be executed inside the task container.\n\n"
+            f"Task:\n{instruction}\n\n"
+            "Script:\n```bash\n"
         )
+        system_prompt = "Output ONLY the bash script within a markdown code block. No explanations."
 
         try:
             start_time = time.time()
@@ -216,138 +191,141 @@ Command:"""
                 self.model_slug,
                 prompt,
                 system_prompt=system_prompt,
-                max_tokens=512,
+                max_tokens=2048,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
             if not response_text:
-                item_metadata = {**metadata, "system_prompt": system_prompt}
                 return ItemResult(
                     item_id=item_id,
-                    item_hash=self.compute_item_hash(item["task"]),
+                    item_hash=self.compute_item_hash(item.get("task_id")),
                     prompt=prompt,
                     response="",
                     error=self.format_empty_response_error(metadata),
                     latency_ms=latency_ms,
-                    metadata=item_metadata,
+                    metadata={"task_id": item.get("task_id"), "system_prompt": system_prompt},
                 )
 
-            # Extract command robustly
-            response_cmd = extract_command(response_text)
+            script = self.extract_python_code(response_text)
+            if not script.strip().startswith("#!"):
+                script = "#!/usr/bin/env bash\nset -e\n" + script
 
-            if not response_cmd or not looks_like_command(response_cmd):
-                item_metadata = {**metadata, "system_prompt": system_prompt}
-                return ItemResult(
-                    item_id=item_id,
-                    item_hash=self.compute_item_hash(item["task"]),
-                    prompt=prompt,
-                    response=response_text.strip(),
-                    expected=item.get("expected_cmd", ""),
-                    error="Could not extract a shell command from the model response",
-                    latency_ms=latency_ms,
-                    input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
-                    output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                    metadata=item_metadata,
-                )
-            
-            def tokenize_command(command: str) -> tuple[str, set[str], set[str], list[str]]:
-                try:
-                    tokens = shlex.split(command)
-                except ValueError:
-                    tokens = command.split()
-                if not tokens:
-                    return "", set(), set(), []
-                base = tokens[0]
-                short_flags: set[str] = set()
-                long_flags: set[str] = set()
-                args: list[str] = []
-                for token in tokens[1:]:
-                    if token.startswith("--"):
-                        if "=" in token:
-                            flag, value = token.split("=", 1)
-                            long_flags.add(flag)
-                            if value:
-                                args.append(value)
-                            continue
-                        long_flags.add(token)
-                        continue
-                    if token.startswith("-") and len(token) > 1:
-                        if len(token) <= 4:
-                            short_flags.update(token[1:])
-                            continue
-                        if token[1:].islower() and len(token) > 4:
-                            long_flags.add(token)
-                            continue
-                        short_flags.update(token[1:])
-                        continue
-                    args.append(token)
-                return base, short_flags, long_flags, args
+            archive = item.get("archive")
+            if not isinstance(archive, (bytes, bytearray)):
+                return ItemResult(item_id=item_id, error="Missing task archive bytes")
 
-            def commands_match(response_cmd: str, expected_cmd: str) -> bool:
-                resp_base, resp_short, resp_long, resp_args = tokenize_command(response_cmd)
-                exp_base, exp_short, exp_long, exp_args = tokenize_command(expected_cmd)
-                if not resp_base or not exp_base or resp_base != exp_base:
-                    return False
-                if not exp_short.issubset(resp_short):
-                    return False
-                if not exp_long.issubset(resp_long):
-                    return False
-                for arg in exp_args:
-                    if arg not in resp_args:
-                        return False
-                return True
-
-            # Create sandbox and run command
             sandbox_id = await self.sandy.create_sandbox()
             if not sandbox_id:
-                return ItemResult(item_id=item_id, prompt=prompt, error="Could not create sandbox")
-            
+                return ItemResult(item_id=item_id, error="Could not create sandbox")
+
             try:
-                # Basic execution check
-                execution_result = await self.sandy.execute_command(sandbox_id, response_cmd)
-                
-                # In a real benchmark, we'd compare output or state with expected
-                expected_cmd = item.get("expected_cmd", "")
-                is_correct = commands_match(response_cmd, expected_cmd) or commands_match(
-                    response_cmd, f"sudo {expected_cmd}"
+                extracted = await self._extract_archive(sandbox_id, archive)
+                if not extracted:
+                    return ItemResult(item_id=item_id, error="Failed to extract task archive")
+
+                await self.sandy.write_file(sandbox_id, "task/solution.sh", script)
+                await self.sandy.execute_command(
+                    sandbox_id,
+                    "chmod +x task/solution.sh",
                 )
-                
-                item_metadata = {
-                    **metadata,
-                    "expected_cmd": expected_cmd,
-                    "system_prompt": system_prompt,
-                }
-                return ItemResult(
-                    item_id=item_id,
-                    item_hash=self.compute_item_hash(item["task"]),
-                    prompt=prompt,
-                    response=response_cmd,
-                    expected=expected_cmd,
-                    is_correct=is_correct,
-                    score=1.0 if is_correct else 0.0,
-                    latency_ms=latency_ms,
-                    input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
-                    output_tokens=metadata.get("usage", {}).get("completion_tokens"),
-                    test_code=f"Command to execute: {response_cmd}",
-                    metadata=item_metadata,
-                    judge_output={
-                        "stdout": execution_result.get("stdout"),
-                        "stderr": execution_result.get("stderr"),
-                        "exit_code": execution_result.get("exit_code")
-                    }
-                )
+
+                setup_result = await self._run_terminal_bench(sandbox_id, item.get("task_id") or "task")
+                container_name = setup_result.get("container_name")
+                cleanup_cmd = setup_result.get("cleanup_cmd")
+                if not container_name:
+                    return ItemResult(item_id=item_id, error=setup_result.get("error") or "Container setup failed")
+
+                try:
+                    agent_timeout = int((item.get("max_agent_timeout_sec") or 180) * 1000)
+                    test_timeout = int((item.get("max_test_timeout_sec") or 300) * 1000)
+
+                    # Agent phase: execute solution.sh
+                    await self.sandy.execute_command(
+                        sandbox_id,
+                        f"docker cp task/solution.sh {container_name}:/solution.sh",
+                    )
+                    agent_result = await self.sandy.execute_command(
+                        sandbox_id,
+                        f"docker exec {container_name} bash -c 'bash /solution.sh'",
+                        timeout_ms=agent_timeout,
+                    )
+
+                    # Test phase: copy tests and run
+                    await self.sandy.execute_command(
+                        sandbox_id,
+                        f"docker cp task/tests {container_name}:/tests",
+                    )
+                    test_script_check = await self.sandy.execute_command(
+                        sandbox_id,
+                        "test -f task/run-tests.sh",
+                    )
+                    if test_script_check.get("exit_code") == 0:
+                        await self.sandy.execute_command(
+                            sandbox_id,
+                            f"docker cp task/run-tests.sh {container_name}:/run-tests.sh",
+                        )
+                    else:
+                        default_script = (
+                            "#!/bin/bash\n"
+                            "set -e\n"
+                            "cd /tests\n"
+                            "python -m pip install pytest\n"
+                            "python -m pytest test_outputs.py -v\n"
+                        )
+                        await self.sandy.write_file(sandbox_id, "default-run-tests.sh", default_script)
+                        await self.sandy.execute_command(
+                            sandbox_id,
+                            f"docker cp default-run-tests.sh {container_name}:/run-tests.sh",
+                        )
+
+                    test_result = await self.sandy.execute_command(
+                        sandbox_id,
+                        f"docker exec {container_name} bash /run-tests.sh",
+                        timeout_ms=test_timeout,
+                    )
+
+                    is_correct = test_result.get("exit_code") == 0
+                    error = None if is_correct else (test_result.get("stderr") or test_result.get("error"))
+
+                    return ItemResult(
+                        item_id=item_id,
+                        item_hash=self.compute_item_hash(item.get("task_id")),
+                        prompt=prompt,
+                        response=response_text.strip(),
+                        expected="[Tests passed]",
+                        is_correct=is_correct,
+                        score=1.0 if is_correct else 0.0,
+                        latency_ms=latency_ms,
+                        input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
+                        output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                        judge_output={
+                            "agent_exit_code": agent_result.get("exit_code"),
+                            "agent_stderr": agent_result.get("stderr"),
+                            "stdout": test_result.get("stdout"),
+                            "stderr": test_result.get("stderr"),
+                            "exit_code": test_result.get("exit_code"),
+                        },
+                        error=error,
+                        metadata={
+                            "task_id": item.get("task_id"),
+                            "difficulty": item.get("difficulty"),
+                            "system_prompt": system_prompt,
+                            "task_yaml": task_yaml,
+                        },
+                    )
+                finally:
+                    if cleanup_cmd:
+                        await self.sandy.execute_command(sandbox_id, cleanup_cmd)
             finally:
                 await self.sandy.terminate_sandbox(sandbox_id)
 
         except Exception as e:
             logger.error("Terminal-Bench evaluation failed", item_id=item_id, error=str(e))
-            meta = locals().get("metadata") or {}
-            item_metadata = {**meta, "system_prompt": system_prompt}
             return ItemResult(
-                item_id=item_id, 
-                prompt=prompt, 
-                response=locals().get("response_text", ""), 
+                item_id=item_id,
+                prompt=prompt,
+                response=locals().get("response_text", "") or "",
                 error=str(e),
-                metadata=item_metadata,
+                metadata={"task_id": item.get("task_id")},
             )

@@ -350,6 +350,15 @@ class BenchmarkWorker:
 
         except Exception as e:
             raise
+        finally:
+            try:
+                await adapter.cleanup()
+            except Exception as cleanup_error:
+                logger.warning(
+                    "Adapter cleanup failed",
+                    benchmark=rb.benchmark_name,
+                    error=str(cleanup_error),
+                )
 
 
 async def run_worker() -> None:

@@ -126,6 +126,10 @@ class BenchmarkAdapter(ABC):
         """
         return {}
 
+    async def cleanup(self) -> None:
+        """Cleanup any resources allocated by the adapter."""
+        return None
+
     def get_deterministic_subset(
         self,
         item_ids: list[str],
