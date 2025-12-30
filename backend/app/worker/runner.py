@@ -12,6 +12,7 @@ from app.benchmarks.base import ItemResult
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.session import async_session_maker
+from app.models.benchmark import Benchmark
 from app.models.run import (
     BenchmarkRun,
     BenchmarkRunBenchmark,
@@ -238,12 +239,19 @@ class BenchmarkWorker:
                 )
                 return None
 
+            await db.execute(
+                update(Benchmark)
+                .where(Benchmark.id == rb.benchmark_id)
+                .values(total_items=len(all_items))
+            )
+
             # Apply deterministic subset
             seed = f"{run.id}_{rb.benchmark_name}"
             items_to_evaluate = adapter.get_deterministic_subset(all_items, run.subset_pct, seed)
 
             await update_benchmark_status(
                 db, rb.id, BenchmarkRunStatus.RUNNING,
+                total_items=len(all_items),
                 sampled_items=len(items_to_evaluate),
                 sampled_item_ids=items_to_evaluate[:1000],  # Store up to 1000 IDs
             )

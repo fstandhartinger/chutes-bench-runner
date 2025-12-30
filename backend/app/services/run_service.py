@@ -175,6 +175,7 @@ async def update_benchmark_status(
     score: Optional[float] = None,
     error_message: Optional[str] = None,
     completed_items: Optional[int] = None,
+    total_items: Optional[int] = None,
     sampled_items: Optional[int] = None,
     sampled_item_ids: Optional[list[str]] = None,
 ) -> None:
@@ -194,6 +195,8 @@ async def update_benchmark_status(
         update_data["error_message"] = error_message
     if completed_items is not None:
         update_data["completed_items"] = completed_items
+    if total_items is not None:
+        update_data["total_items"] = total_items
     if sampled_items is not None:
         update_data["sampled_items"] = sampled_items
     if sampled_item_ids is not None:
