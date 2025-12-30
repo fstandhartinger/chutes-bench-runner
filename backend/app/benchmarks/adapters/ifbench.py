@@ -150,7 +150,7 @@ class IFBenchAdapter(BenchmarkAdapter):
 
     def _count_highlighted_sections(self, response: str) -> int:
         matches = []
-        for match in re.finditer(r"\\*[^*\\n]+\\*", response):
+        for match in re.finditer(r"\*[^*\n]+\*", response):
             start, end = match.span()
             if start > 0 and response[start - 1] == "*":
                 continue
@@ -198,7 +198,7 @@ class IFBenchAdapter(BenchmarkAdapter):
             return (ok, "Response does not contain two parts separated by ******" if not ok else "Passed")
 
         if inst_id == "detectable_content:number_placeholders":
-            placeholders = re.findall(r"\[[^\\[\\]]+\\]", response)
+            placeholders = re.findall(r"\[[^\[\]]+\]", response)
             target = kwargs.get("num_placeholders") or 0
             ok = len(placeholders) >= target
             return (ok, f"Found {len(placeholders)} placeholders, need at least {target}" if not ok else "Passed")
@@ -284,7 +284,7 @@ class IFBenchAdapter(BenchmarkAdapter):
         if inst_id == "length_constraints:number_words":
             target = kwargs.get("num_words")
             relation = kwargs.get("relation")
-            count = len(re.findall(r"\\b\\w+\\b", response))
+            count = len(re.findall(r"\b\w+\b", response))
             ok = self._compare_relation(count, target, relation, default_relation="exactly")
             return (ok, f"Word count {count} does not satisfy {relation} {target}" if not ok else "Passed")
 

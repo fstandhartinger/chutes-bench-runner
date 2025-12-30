@@ -98,12 +98,17 @@ find . -size +100M
 Task: {item["task"]}
 Command:"""
 
+        system_prompt = (
+            "You are a Linux shell expert. Output ONLY the final shell command "
+            "within a markdown code block. No explanation, no thinking, no prose."
+        )
+
         try:
             start_time = time.time()
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are a Linux shell expert. Output ONLY the final shell command within a markdown code block. No explanation, no thinking, no prose.",
+                system_prompt=system_prompt,
                 max_tokens=512,
                 temperature=0.0,
             )
@@ -191,7 +196,6 @@ Command:"""
                 error=str(e),
                 metadata=item_metadata,
             )
-
 
 
 
