@@ -318,6 +318,7 @@ async def get_run_benchmark_details(
             "total_items": rb.total_items,
             "sampled_items": rb.sampled_items,
             "completed_items": rb.completed_items,
+            "error_message": rb.error_message,
         },
         "items": ItemResultsResponse(
             items=[ItemResultResponse.model_validate(i) for i in items],
