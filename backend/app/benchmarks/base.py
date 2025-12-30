@@ -216,6 +216,8 @@ class BenchmarkAdapter(ABC):
         cleaned = re.sub(r"\*\*([A-Za-z])\*\*", r"\1", cleaned)
         cleaned = re.sub(r"\*([A-Za-z])\*", r"\1", cleaned)
         cleaned = re.sub(r"`([A-Za-z])`", r"\1", cleaned)
+        cleaned = re.sub(r"\\\\boxed\{\\s*([A-Za-z])\\s*\}", r"\1", cleaned)
+        cleaned = re.sub(r"\\$\\s*([A-Za-z])\\s*\\$", r"\1", cleaned)
 
         upper_letters = valid_letters.upper()
         letter_set = f"[{re.escape(upper_letters)}]"
