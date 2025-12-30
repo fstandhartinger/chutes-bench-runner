@@ -226,19 +226,17 @@ class BenchmarkAdapter(ABC):
         upper_letters = valid_letters.upper()
         letter_set = f"[{re.escape(upper_letters)}]"
 
-        # Prefer explicit "Answer: X" lines.
-        answer_match = re.search(
+        # Prefer the last explicit "Answer: X" line if present.
+        answer_matches = re.findall(
             rf"(?im)^\s*(?:answer|final answer)\s*[:\-]\s*\(?({letter_set})\)?\s*$",
             cleaned,
         )
-        if answer_match:
-            return answer_match.group(1).upper()
+        if answer_matches:
+            return answer_matches[-1].upper()
 
-        # Check if any line is just the letter.
-        for line in cleaned.splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        # Check lines from bottom to top for a standalone letter.
+        lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+        for line in reversed(lines):
             line_match = re.match(rf"^\(?({letter_set})\)?[\\.\)]?\s*$", line.upper())
             if line_match:
                 return line_match.group(1).upper()

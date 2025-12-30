@@ -45,7 +45,7 @@ class SciCodeAdapter(BenchmarkAdapter):
         return "SciCode"
 
     def requires_setup(self) -> bool:
-        return True
+        return False
 
     def get_setup_notes(self) -> Optional[str]:
         return "SciCode auto-downloads the official dataset and numeric test data before running."

@@ -17,6 +17,7 @@ import {
   formatPercent,
   getStatusColor,
   getStatusBgColor,
+  parseDateValue,
   cn,
 } from "@/lib/utils";
 import { Loader2, ExternalLink, Download, Search } from "lucide-react";
@@ -123,8 +124,8 @@ export default function RunsPage() {
         <div className="space-y-4">
           {filteredRuns.map((run) => {
             const now = new Date();
-            const startedAt = run.started_at ? new Date(run.started_at) : null;
-            const completedAt = run.completed_at ? new Date(run.completed_at) : null;
+            const startedAt = parseDateValue(run.started_at);
+            const completedAt = parseDateValue(run.completed_at);
             const elapsedMs =
               startedAt &&
               (completedAt ? completedAt.getTime() : now.getTime()) -

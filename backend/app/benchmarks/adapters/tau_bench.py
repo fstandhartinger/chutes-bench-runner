@@ -40,7 +40,7 @@ class TauBenchTelecomAdapter(BenchmarkAdapter):
         return "τ²-Bench Telecom"
 
     def requires_setup(self) -> bool:
-        return True
+        return False
 
     def get_setup_notes(self) -> Optional[str]:
         return "τ²-Bench auto-downloads the official tau2 repo and data for evaluation."

@@ -5,6 +5,15 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+export function parseDateValue(value?: string | null): Date | null {
+  if (!value) return null;
+  const hasTimezone = /[zZ]|[+-]\d{2}:\d{2}$/.test(value);
+  const normalized = hasTimezone ? value : `${value}Z`;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+}
+
 export function formatDuration(ms: number): string {
   if (ms < 1000) {
     return `${Math.round(ms)}ms`;
@@ -33,7 +42,7 @@ export function formatPercent(value: number | undefined | null): string {
 }
 
 export function formatDate(dateStr: string): string {
-  const date = new Date(dateStr);
+  const date = parseDateValue(dateStr) ?? new Date(dateStr);
   return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -81,7 +90,6 @@ export function getStatusBgColor(status: string): string {
       return "bg-ink-600";
   }
 }
-
 
 
 

@@ -36,7 +36,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         return "Terminal-Bench Hard"
 
     def requires_setup(self) -> bool:
-        return True
+        return False
 
     def get_setup_notes(self) -> Optional[str]:
         return "Terminal-Bench auto-downloads task archives and evaluates them in Sandy."
@@ -191,7 +191,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 self.model_slug,
                 prompt,
                 system_prompt=system_prompt,
-                max_tokens=2048,
+                max_tokens=4096,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)

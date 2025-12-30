@@ -86,21 +86,13 @@ class MMLUProAdapter(BenchmarkAdapter):
             )
 
         # Format prompt - explicitly request no reasoning/thinking
-        options_str = "\n".join(
-            f"{chr(65 + i)}. {opt}" for i, opt in enumerate(item["options"])
+        options_str = "\n".join(f"{chr(65 + i)}. {opt}" for i, opt in enumerate(item["options"]))
+        prompt = (
+            "Answer the following multiple-choice question by replying with only the letter.\n\n"
+            f"Question: {item['question']}\n\n"
+            f"{options_str}\n\n"
+            "Answer:"
         )
-        prompt = f"""Question: {item["question"]}
-
-{options_str}
-
-Examples:
-Question: What is 2+2?
-A. 3
-B. 4
-Answer: B
-
-Question: {item["question"]}
-Answer:"""
 
         system_prompt = "You are a test-taking assistant. Output ONLY the answer letter (A-J). No explanation, no reasoning, no thinking. Just the letter."
         try:
@@ -109,7 +101,7 @@ Answer:"""
                 self.model_slug,
                 prompt,
                 system_prompt=system_prompt,
-                max_tokens=1024,  # Account for potential <think> blocks
+                max_tokens=4096,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)

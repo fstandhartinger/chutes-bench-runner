@@ -33,12 +33,6 @@ class AIME2025Adapter(BenchmarkAdapter):
             await self.preload()
         return len(self._items)
 
-    def requires_setup(self) -> bool:
-        return True
-
-    def get_setup_notes(self) -> Optional[str]:
-        return "AIME dataset requires access to competition math datasets. Set HF_TOKEN if using gated datasets."
-
     async def preload(self) -> None:
         """Load AIME 2025 dataset."""
         if self._items:
@@ -46,32 +40,9 @@ class AIME2025Adapter(BenchmarkAdapter):
 
         try:
             from datasets import load_dataset
-            import os
 
             logger.info("Loading AIME/Competition Math dataset")
-            hf_token = os.environ.get("HF_TOKEN")
-            dataset = None
-            
-            # Try multiple sources in order of preference
-            sources = [
-                ("AI-MO/aimo-validation-aime", "train", {"token": hf_token} if hf_token else {}),
-                ("lighteval/MATH", "test", {}),
-                ("hendrycks/competition_math", "test", {}),
-            ]
-            
-            for source_name, split, kwargs in sources:
-                try:
-                    logger.info(f"Trying to load from {source_name}")
-                    dataset = load_dataset(source_name, split=split, **kwargs)
-                    break
-                except Exception as e:
-                    logger.warning(f"Could not load {source_name}: {e}")
-                    continue
-            
-            if dataset is None:
-                logger.error("No AIME dataset source available")
-                self._items = []
-                return
+            dataset = load_dataset("AI-MO/aimo-validation-aime", split="train")
             
             self._items = []
             for i, item in enumerate(dataset):
@@ -105,18 +76,12 @@ class AIME2025Adapter(BenchmarkAdapter):
         if not item:
             return ItemResult(item_id=item_id, error=f"Item {item_id} not found")
 
-        prompt = f"""Solve the following math competition problem. AIME answers are always integers from 0 to 999.
-Show your reasoning step by step, then provide your final answer as a single integer on a new line prefixed with "ANSWER:".
-
-Example:
-Problem: What is 2+2?
-Solution:
-2+2 is 4.
-ANSWER: 4
-
-Problem: {item["problem"]}
-
-Solution:"""
+        prompt = (
+            "Solve the following math competition problem. AIME answers are always integers from 0 to 999.\n"
+            "Provide your final answer as a single integer on a new line prefixed with \"ANSWER:\".\n\n"
+            f"Problem: {item['problem']}\n\n"
+            "Solution:"
+        )
 
         system_prompt = "You are an expert mathematician. Solve the problem step by step. Always end your response with 'ANSWER: ' followed by the integer result."
         try:
@@ -151,25 +116,19 @@ Solution:"""
                     metadata=item_metadata,
                 )
 
-            # Extract answer - try multiple patterns
-            # Ensure response_text is a string
             response_str = str(response_text)
             model_answer = ""
-            
-            # 1. Look for ANSWER: XXX
-            answer_match = re.search(r"ANSWER:\s*(\d+)", response_str, re.IGNORECASE)
-            if answer_match:
-                model_answer = answer_match.group(1)
-            
-            # 2. Look for \boxed{XXX}
+
+            answer_matches = re.findall(r"ANSWER:\s*(\d+)", response_str, re.IGNORECASE)
+            if answer_matches:
+                model_answer = answer_matches[-1]
+
             if not model_answer:
                 boxed_match = re.search(r"\\boxed\{(\d+)\}", response_str)
                 if boxed_match:
                     model_answer = boxed_match.group(1)
-            
-            # 3. Look for the last integer in the response if it's short
+
             if not model_answer:
-                # Clean response of thinking tags for better extraction
                 clean_text = re.sub(r"(?i)<think>.*?</think>", "", response_str, flags=re.DOTALL).strip()
                 numbers = re.findall(r"\b\d+\b", clean_text)
                 if numbers:

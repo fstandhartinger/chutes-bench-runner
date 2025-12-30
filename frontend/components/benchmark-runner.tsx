@@ -37,6 +37,7 @@ import {
   formatDurationSeconds,
   formatPercent,
   getStatusColor,
+  parseDateValue,
 } from "@/lib/utils";
 import { Play, Loader2, AlertCircle, CheckCircle2, XCircle } from "lucide-react";
 
@@ -341,7 +342,7 @@ export function BenchmarkRunner() {
   const queueInfo = currentRun ? queueSchedule[currentRun.id] : undefined;
   const queueDelaySeconds = queueInfo?.startDelaySeconds ?? null;
   const now = new Date();
-  const startedAt = currentRun?.started_at ? new Date(currentRun.started_at) : null;
+  const startedAt = parseDateValue(currentRun?.started_at);
   const elapsedMs =
     startedAt &&
     (currentRun?.completed_at
@@ -444,11 +445,6 @@ export function BenchmarkRunner() {
                     <div className="flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium">{benchmark.display_name}</span>
-                        {benchmark.requires_setup && (
-                          <span className="rounded bg-yellow-500/20 px-1.5 py-0.5 text-xs text-yellow-400">
-                            Setup required
-                          </span>
-                        )}
                       </div>
                       <p className="mt-1 text-xs text-ink-400">
                         {totalItems > 0
@@ -461,11 +457,6 @@ export function BenchmarkRunner() {
                       {benchmark.description && (
                         <p className="mt-1 text-xs text-ink-400 line-clamp-2">
                           {benchmark.description}
-                        </p>
-                      )}
-                      {benchmark.requires_setup && benchmark.setup_notes && (
-                        <p className="mt-1 text-xs text-yellow-400/90">
-                          {benchmark.setup_notes}
                         </p>
                       )}
                     </div>

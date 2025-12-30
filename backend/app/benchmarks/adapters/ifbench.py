@@ -95,7 +95,7 @@ class IFBenchAdapter(BenchmarkAdapter):
                 self.model_slug,
                 prompt,
                 temperature=0.0,
-                max_tokens=1024,
+                max_tokens=4096,
             )
             latency_ms = int((time.time() - start_time) * 1000)
 

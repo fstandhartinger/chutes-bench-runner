@@ -27,6 +27,7 @@ import {
   formatPercent,
   getStatusColor,
   getStatusBgColor,
+  parseDateValue,
   cn,
 } from "@/lib/utils";
 import {
@@ -487,8 +488,8 @@ export default function RunDetailPage() {
       ? (selectedRb.sampled_items / selectedRb.total_items) * 100
       : 0;
   const now = new Date();
-  const startedAt = run.started_at ? new Date(run.started_at) : null;
-  const completedAt = run.completed_at ? new Date(run.completed_at) : null;
+  const startedAt = parseDateValue(run.started_at);
+  const completedAt = parseDateValue(run.completed_at);
   const elapsedMs =
     startedAt &&
     (completedAt ? completedAt.getTime() : now.getTime()) - startedAt.getTime();

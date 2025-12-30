@@ -34,6 +34,12 @@ class HLEAdapter(BenchmarkAdapter):
     def get_setup_notes(self) -> Optional[str]:
         return "HLE dataset may require Hugging Face access (set HF_TOKEN if gated)."
 
+    def _normalize_answer(self, text: str) -> str:
+        text = text.lower()
+        text = re.sub(r"\b(a|an|the)\b", " ", text)
+        text = re.sub(r"[^a-z0-9\s]", " ", text)
+        return " ".join(text.split())
+
     async def get_total_items(self) -> int:
         if not self._items:
             await self.preload()
@@ -108,7 +114,7 @@ Answer:"""
                 self.model_slug,
                 prompt,
                 system_prompt=system_prompt,
-                max_tokens=512,
+                max_tokens=4096,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
@@ -137,15 +143,11 @@ Answer:"""
 
             # HLE uses exact match or semantic similarity
             # Ensure answer is not None
-            expected = str(item.get("answer", "")).strip().lower()
-            response_clean = str(response_text).strip().lower()
-            
-            # Simple flexible match
-            expected_words = set(re.findall(r'\w+', expected))
-            response_words = set(re.findall(r'\w+', response_clean))
-            
-            # If all expected words are in response, it's correct
-            is_correct = expected_words.issubset(response_words) or expected in response_clean or response_clean in expected
+            expected_raw = str(item.get("answer", "")).strip()
+            response_raw = str(response_text).strip()
+            expected = self._normalize_answer(expected_raw)
+            response_clean = self._normalize_answer(response_raw)
+            is_correct = expected == response_clean
 
             item_metadata = {
                 **metadata,
@@ -157,7 +159,7 @@ Answer:"""
                 item_hash=self.compute_item_hash(item["question"]),
                 prompt=prompt,
                 response=response_text.strip(),
-                expected=item["answer"],
+                expected=expected_raw,
                 is_correct=is_correct,
                 score=1.0 if is_correct else 0.0,
                 latency_ms=latency_ms,

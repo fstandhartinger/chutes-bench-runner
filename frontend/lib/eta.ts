@@ -1,4 +1,5 @@
 import type { BenchmarkRunBenchmark, Run } from "./api";
+import { parseDateValue } from "./utils";
 
 export interface QueueEstimate {
   queuePosition: number;
@@ -16,10 +17,7 @@ export function getWorkerSlots(): number {
 }
 
 function parseDate(value?: string | null): Date | null {
-  if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return date;
+  return parseDateValue(value);
 }
 
 function expectedItems(rb: BenchmarkRunBenchmark, subsetPct: number): number {

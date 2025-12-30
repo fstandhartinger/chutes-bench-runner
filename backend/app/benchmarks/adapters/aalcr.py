@@ -36,12 +36,6 @@ class AALCRAdapter(BenchmarkAdapter):
     def get_display_name(self) -> str:
         return "AA-LCR"
 
-    def requires_setup(self) -> bool:
-        return True
-
-    def get_setup_notes(self) -> Optional[str]:
-        return "AA-LCR requires the extracted document bundle from the official dataset."
-
     async def get_total_items(self) -> int:
         if not self._items:
             await self.preload()
@@ -192,7 +186,7 @@ class AALCRAdapter(BenchmarkAdapter):
                 self.model_slug,
                 prompt,
                 system_prompt=system_prompt,
-                max_tokens=1024,
+                max_tokens=4096,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)

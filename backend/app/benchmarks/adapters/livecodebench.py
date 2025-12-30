@@ -34,10 +34,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         return "LiveCodeBench"
 
     def requires_setup(self) -> bool:
-        return True
-
-    def get_setup_notes(self) -> Optional[str]:
-        return "LiveCodeBench requires a sandbox for code execution and dataset access (HF_TOKEN if gated)."
+        return False
 
     async def get_total_items(self) -> int:
         if not self._items:
