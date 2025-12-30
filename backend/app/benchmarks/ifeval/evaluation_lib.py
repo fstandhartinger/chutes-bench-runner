@@ -85,7 +85,13 @@ def test_instruction_following_strict(
     instruction_cls = instructions_registry.INSTRUCTION_DICT[instruction_id]
     instruction = instruction_cls(instruction_id)
 
-    instruction.build_description(**inp.kwargs[index])
+    kwargs = inp.kwargs[index] if inp.kwargs else {}
+    keys = instruction.get_instruction_args_keys()
+    if keys:
+      filtered_kwargs = {key: kwargs.get(key) for key in keys if key in kwargs}
+      instruction.build_description(**filtered_kwargs)
+    else:
+      instruction.build_description()
     args = instruction.get_instruction_args()
     if args and "prompt" in args:
       instruction.build_description(prompt=inp.prompt)
@@ -135,7 +141,13 @@ def test_instruction_following_loose(
     instruction_cls = instructions_registry.INSTRUCTION_DICT[instruction_id]
     instruction = instruction_cls(instruction_id)
 
-    instruction.build_description(**inp.kwargs[index])
+    kwargs = inp.kwargs[index] if inp.kwargs else {}
+    keys = instruction.get_instruction_args_keys()
+    if keys:
+      filtered_kwargs = {key: kwargs.get(key) for key in keys if key in kwargs}
+      instruction.build_description(**filtered_kwargs)
+    else:
+      instruction.build_description()
     args = instruction.get_instruction_args()
     if args and "prompt" in args:
       instruction.build_description(prompt=inp.prompt)
@@ -217,4 +229,3 @@ def print_report(outputs):
   for instruction_id in sorted(tier1_total.keys()):
     accuracy = tier1_correct[instruction_id] / tier1_total[instruction_id]
     print(f"{instruction_id} {accuracy}")
-
