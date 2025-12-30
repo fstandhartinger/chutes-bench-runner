@@ -1,4 +1,5 @@
 """IFBench (Instruction Following) benchmark adapter."""
+import os
 import time
 from typing import Any, AsyncIterator, Optional
 
@@ -44,6 +45,10 @@ class IFBenchAdapter(BenchmarkAdapter):
             nltk.data.find("tokenizers/punkt")
         except LookupError:
             nltk.download("punkt", quiet=True)
+        try:
+            nltk.data.find("tokenizers/punkt_tab/english")
+        except LookupError:
+            nltk.download("punkt_tab", quiet=True)
         self._nltk_ready = True
 
     async def preload(self) -> None:
@@ -53,7 +58,8 @@ class IFBenchAdapter(BenchmarkAdapter):
 
         try:
             logger.info("Loading IFBench dataset")
-            dataset = load_dataset("google/IFEval", split="train")
+            hf_token = os.environ.get("HF_TOKEN")
+            dataset = load_dataset("google/IFEval", split="train", token=hf_token)
             self._items = []
             for i, item in enumerate(dataset):
                 self._items.append(

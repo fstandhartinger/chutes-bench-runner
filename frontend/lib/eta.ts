@@ -108,7 +108,11 @@ export function computeQueueSchedule(
   const runningRuns = runs.filter((run) => run.status === "running");
   const queuedRuns = runs
     .filter((run) => run.status === "queued")
-    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    .sort((a, b) => {
+      const aTime = parseDate(a.created_at)?.getTime() ?? 0;
+      const bTime = parseDate(b.created_at)?.getTime() ?? 0;
+      return aTime - bTime;
+    });
 
   const avgPerItem = averagePerItemSeconds(runs, now);
   const runningSlotTimes = runningRuns

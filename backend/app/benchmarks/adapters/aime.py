@@ -40,9 +40,11 @@ class AIME2025Adapter(BenchmarkAdapter):
 
         try:
             from datasets import load_dataset
+            import os
 
             logger.info("Loading AIME/Competition Math dataset")
-            dataset = load_dataset("AI-MO/aimo-validation-aime", split="train")
+            hf_token = os.environ.get("HF_TOKEN")
+            dataset = load_dataset("AI-MO/aimo-validation-aime", split="train", token=hf_token)
             
             self._items = []
             for i, item in enumerate(dataset):
@@ -83,14 +85,17 @@ class AIME2025Adapter(BenchmarkAdapter):
             "Solution:"
         )
 
-        system_prompt = "You are an expert mathematician. Solve the problem step by step. Always end your response with 'ANSWER: ' followed by the integer result."
+        system_prompt = (
+            "You are an expert mathematician. Keep your reasoning concise and focused. "
+            "Always end your response with 'ANSWER: ' followed by the integer result."
+        )
         try:
             start_time = time.time()
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
                 system_prompt=system_prompt,
-                max_tokens=16384,  # Increased for complex AIME problems
+                max_tokens=65536,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
@@ -154,6 +159,7 @@ class AIME2025Adapter(BenchmarkAdapter):
                 **metadata,
                 "level": item.get("level"),
                 "system_prompt": system_prompt,
+                "parsed_answer": model_answer or None,
             }
             return ItemResult(
                 item_id=item_id,

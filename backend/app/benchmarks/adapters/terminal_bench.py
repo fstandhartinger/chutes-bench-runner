@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import time
 from typing import Any, AsyncIterator, Optional
 
@@ -56,7 +57,11 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
 
         try:
             logger.info("Loading Terminal-Bench dataset")
-            dataset = load_dataset("ia03/terminal-bench", split="test")
+            dataset = load_dataset(
+                "ia03/terminal-bench",
+                split="test",
+                token=os.environ.get("HF_TOKEN"),
+            )
             self._items = []
             for i, item in enumerate(dataset):
                 task_yaml = item.get("task_yaml") or ""
@@ -136,9 +141,12 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 timeout_ms=900000,
             )
             if up_result.get("exit_code") != 0:
+                error_detail = up_result.get("stderr") or up_result.get("stdout") or up_result.get("error")
                 return {
-                    "error": up_result.get("stderr") or up_result.get("error"),
+                    "error": error_detail,
                     "exit_code": up_result.get("exit_code"),
+                    "stdout": up_result.get("stdout"),
+                    "stderr": up_result.get("stderr"),
                 }
             container_name = env["T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME"]
             cleanup_cmd = f"docker-compose -f {task_dir}/docker-compose.yaml down"
@@ -149,18 +157,24 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 timeout_ms=900000,
             )
             if build_result.get("exit_code") != 0:
+                error_detail = build_result.get("stderr") or build_result.get("stdout") or build_result.get("error")
                 return {
-                    "error": build_result.get("stderr") or build_result.get("error"),
+                    "error": error_detail,
                     "exit_code": build_result.get("exit_code"),
+                    "stdout": build_result.get("stdout"),
+                    "stderr": build_result.get("stderr"),
                 }
             run_result = await self.sandy.execute_command(
                 sandbox_id,
                 f"docker run -d --name {container_name} {image_name} sleep infinity",
             )
             if run_result.get("exit_code") != 0:
+                error_detail = run_result.get("stderr") or run_result.get("stdout") or run_result.get("error")
                 return {
-                    "error": run_result.get("stderr") or run_result.get("error"),
+                    "error": error_detail,
                     "exit_code": run_result.get("exit_code"),
+                    "stdout": run_result.get("stdout"),
+                    "stderr": run_result.get("stderr"),
                 }
             cleanup_cmd = f"docker rm -f {container_name}"
 
@@ -234,7 +248,12 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 container_name = setup_result.get("container_name")
                 cleanup_cmd = setup_result.get("cleanup_cmd")
                 if not container_name:
-                    return ItemResult(item_id=item_id, error=setup_result.get("error") or "Container setup failed")
+                    return ItemResult(
+                        item_id=item_id,
+                        error=setup_result.get("error") or "Container setup failed",
+                        judge_output={"setup": setup_result},
+                        metadata={"task_id": item.get("task_id"), "system_prompt": system_prompt},
+                    )
 
                 try:
                     agent_timeout = int((item.get("max_agent_timeout_sec") or 180) * 1000)

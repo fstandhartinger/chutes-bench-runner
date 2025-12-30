@@ -62,7 +62,11 @@ class SciCodeAdapter(BenchmarkAdapter):
 
         try:
             logger.info("Loading SciCode dataset")
-            dataset = load_dataset("SciCode1/SciCode", split="test")
+            dataset = load_dataset(
+                "SciCode1/SciCode",
+                split="test",
+                token=os.environ.get("HF_TOKEN"),
+            )
             self._items = []
             for i, item in enumerate(dataset):
                 self._items.append(

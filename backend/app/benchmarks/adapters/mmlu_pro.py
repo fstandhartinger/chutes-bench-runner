@@ -41,9 +41,11 @@ class MMLUProAdapter(BenchmarkAdapter):
 
         try:
             from datasets import load_dataset
+            import os
 
             logger.info("Loading MMLU-Pro dataset")
-            dataset = load_dataset("TIGER-Lab/MMLU-Pro", split="test")
+            hf_token = os.environ.get("HF_TOKEN")
+            dataset = load_dataset("TIGER-Lab/MMLU-Pro", split="test", token=hf_token)
             
             self._items = []
             for i, item in enumerate(dataset):
@@ -140,6 +142,7 @@ class MMLUProAdapter(BenchmarkAdapter):
                 **metadata,
                 "category": item.get("category"),
                 "system_prompt": system_prompt,
+                "parsed_answer": answer_letter or None,
             }
             return ItemResult(
                 item_id=item_id,

@@ -146,6 +146,8 @@ Answer:"""
             item_metadata = {
                 **metadata,
                 "subject": item.get("subject"),
+                "parsed_answer": answer_letter or None,
+                "correct_answer_letter": correct_letter,
             }
             return ItemResult(
                 item_id=item_id,

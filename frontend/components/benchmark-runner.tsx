@@ -343,12 +343,10 @@ export function BenchmarkRunner() {
   const queueDelaySeconds = queueInfo?.startDelaySeconds ?? null;
   const now = new Date();
   const startedAt = parseDateValue(currentRun?.started_at);
+  const completedAt = parseDateValue(currentRun?.completed_at);
   const elapsedMs =
     startedAt &&
-    (currentRun?.completed_at
-      ? new Date(currentRun.completed_at).getTime()
-      : now.getTime()) -
-      startedAt.getTime();
+    (completedAt ? completedAt.getTime() : now.getTime()) - startedAt.getTime();
   const etaSeconds =
     currentRun && currentRun.status === "running"
       ? estimateRunRemainingSeconds(currentRun, now)
@@ -590,15 +588,19 @@ export function BenchmarkRunner() {
             <div className="space-y-2">
               <h4 className="text-sm font-medium text-ink-200">Log</h4>
               <div className="max-h-48 overflow-y-auto rounded-lg bg-ink-900 p-3 font-mono text-xs">
-                {events.slice(-20).map((event) => (
-                  <div key={event.id} className="text-ink-400">
-                    <span className="text-ink-500">
-                      {new Date(event.created_at).toLocaleTimeString()}
-                    </span>{" "}
-                    <span className="text-moss">[{event.event_type}]</span>{" "}
-                    {event.message}
-                  </div>
-                ))}
+                {events.slice(-20).map((event) => {
+                  const eventTime =
+                    parseDateValue(event.created_at) ?? new Date(event.created_at);
+                  return (
+                    <div key={event.id} className="text-ink-400">
+                      <span className="text-ink-500">
+                        {eventTime.toLocaleTimeString()}
+                      </span>{" "}
+                      <span className="text-moss">[{event.event_type}]</span>{" "}
+                      {event.message}
+                    </div>
+                  );
+                })}
                 {events.length === 0 && (
                   <span className="text-ink-500">Waiting for events...</span>
                 )}

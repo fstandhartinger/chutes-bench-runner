@@ -100,12 +100,13 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         sandbox_id: str,
         code: str,
         tests: list[dict[str, Any]],
-    ) -> tuple[bool, Optional[dict[str, Any]]]:
+    ) -> tuple[bool, Optional[dict[str, Any]], list[dict[str, Any]]]:
         if not tests:
-            return True, None
+            return True, None, []
 
         await self.sandy.write_file(sandbox_id, "main.py", code)
 
+        test_runs: list[dict[str, Any]] = []
         for idx, test in enumerate(tests, start=1):
             input_text = test.get("input", "")
             expected = (test.get("output", "") or "").strip()
@@ -116,18 +117,34 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
                 timeout_ms=60000,
             )
             stdout = (result.get("stdout") or "").strip()
+            stderr = (result.get("stderr") or "").strip()
+            test_log = {
+                "test_index": idx,
+                "input": input_text,
+                "expected": expected,
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": result.get("exit_code"),
+            }
             if result.get("exit_code") != 0:
+                test_log["status"] = "error"
+                test_runs.append(test_log)
                 return False, {
                     "test_index": idx,
                     "error": result.get("stderr") or result.get("error"),
-                }
+                }, test_runs
             if stdout != expected:
+                test_log["status"] = "failed"
+                test_log["received"] = stdout
+                test_runs.append(test_log)
                 return False, {
                     "test_index": idx,
                     "expected": expected,
                     "received": stdout,
-                }
-        return True, None
+                }, test_runs
+            test_log["status"] = "passed"
+            test_runs.append(test_log)
+        return True, None, test_runs
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single LiveCodeBench item."""
@@ -197,7 +214,7 @@ Solution:
 
             try:
                 tests = list(item.get("public_tests", [])) + list(item.get("private_tests", []))
-                is_correct, failure = await self._run_io_tests(sandbox_id, extracted_code, tests)
+                is_correct, failure, test_runs = await self._run_io_tests(sandbox_id, extracted_code, tests)
                 error = None
                 if not is_correct:
                     if failure:
@@ -212,6 +229,8 @@ Solution:
                     "difficulty": item.get("difficulty"),
                     "system_prompt": system_prompt,
                     "test_count": len(tests),
+                    "public_test_count": len(item.get("public_tests", [])),
+                    "private_test_count": len(item.get("private_tests", [])),
                     "metadata": item.get("metadata"),
                 }
                 return ItemResult(
@@ -229,6 +248,7 @@ Solution:
                     judge_output={
                         "failure": failure,
                         "test_count": len(tests),
+                        "test_runs": test_runs,
                     },
                     error=error,
                     metadata=item_metadata,

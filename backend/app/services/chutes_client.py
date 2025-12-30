@@ -339,6 +339,14 @@ class ChutesClient:
         metadata: dict[str, Any] = {
             "choices_count": len(choices) if isinstance(choices, list) else 0,
         }
+        if isinstance(response.get("error"), dict):
+            error_payload = response.get("error") or {}
+            error_message = error_payload.get("message") or str(error_payload)
+            metadata["response_error"] = f"Chutes error: {error_message}"
+            if error_payload.get("type"):
+                metadata["response_error_type"] = error_payload.get("type")
+            if error_payload.get("code"):
+                metadata["response_error_code"] = error_payload.get("code")
         if not choices or not isinstance(choices, list):
             metadata["response_error"] = "No choices in response"
             return "", metadata
@@ -412,25 +420,36 @@ class ChutesClient:
             "finish_reason": None,
         }
 
+        min_output_tokens = settings.chutes_min_output_tokens
         max_output_length = await self.get_model_max_output_length(model_slug)
+        desired_max_tokens = requested_max_tokens
+        if desired_max_tokens is None or desired_max_tokens < min_output_tokens:
+            desired_max_tokens = min_output_tokens
+
         if max_output_length:
             input_tokens = self._estimate_tokens(prompt)
             if system_prompt:
                 input_tokens += self._estimate_tokens(system_prompt)
             safe_max_tokens = self._compute_safe_max_tokens(max_output_length, input_tokens)
-            if requested_max_tokens is None or requested_max_tokens > safe_max_tokens:
-                applied_max_tokens = safe_max_tokens
-                kwargs["max_tokens"] = safe_max_tokens
+            metadata["max_output_length"] = max_output_length
+            if safe_max_tokens > 0 and desired_max_tokens is not None:
+                applied_max_tokens = min(desired_max_tokens, safe_max_tokens)
+            else:
+                applied_max_tokens = safe_max_tokens or desired_max_tokens
+        else:
+            applied_max_tokens = desired_max_tokens
+
+        if applied_max_tokens is not None:
+            kwargs["max_tokens"] = applied_max_tokens
+            metadata["max_tokens"] = applied_max_tokens
+            if applied_max_tokens != requested_max_tokens:
                 logger.debug(
                     "Adjusting max_tokens for model",
                     model=model_slug,
                     requested=requested_max_tokens,
-                    applied=safe_max_tokens,
+                    applied=applied_max_tokens,
                     max_output_length=max_output_length,
                 )
-
-        if applied_max_tokens is not None:
-            metadata["max_tokens"] = applied_max_tokens
 
         while attempt < max_attempts:
             attempt += 1
