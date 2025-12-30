@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     chutes_api_key: str
     chutes_api_base_url: str = "https://llm.chutes.ai/v1"
     chutes_models_api_url: str = "https://api.chutes.ai"
+    chutes_models_cache_ttl_seconds: int = 600
+    chutes_max_tokens_margin: int = 2048
+    chutes_min_output_tokens: int = 512
 
     # Backend
     backend_host: str = "0.0.0.0"

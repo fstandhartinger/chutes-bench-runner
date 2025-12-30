@@ -1,5 +1,6 @@
 """Chutes API client for model listing and inference."""
 import asyncio
+import time
 from typing import Any, Optional, Tuple
 
 import httpx
@@ -73,6 +74,8 @@ class ChutesClient:
         self.models_api_url = settings.chutes_models_api_url
         self._client: Optional[httpx.AsyncClient] = None
         self._is_user_token_mode = user_access_token is not None
+        self._llm_models_cache: Optional[dict[str, int]] = None
+        self._llm_models_cache_at: float = 0.0
 
     @property
     def using_user_token(self) -> bool:
@@ -149,6 +152,80 @@ class ChutesClient:
 
         logger.info("Fetched models", count=len(models))
         return models
+
+    async def _fetch_llm_models(self) -> dict[str, int]:
+        url = f"{self.base_url}/models"
+        headers = None
+        auth_token = self.user_access_token or self.api_key
+        if auth_token:
+            headers = {"Authorization": f"Bearer {auth_token}"}
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+        except Exception as exc:
+            logger.warning("Failed to fetch LLM model limits", error=str(exc))
+            return {}
+
+        items = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return {}
+
+        limits: dict[str, int] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            max_output_length = item.get("max_output_length")
+            if not isinstance(max_output_length, int):
+                continue
+            model_id = item.get("id")
+            if isinstance(model_id, str) and model_id:
+                limits[model_id] = max_output_length
+            chute_id = item.get("chute_id")
+            if isinstance(chute_id, str) and chute_id:
+                limits[chute_id] = max_output_length
+        return limits
+
+    async def _get_llm_model_limits(self) -> dict[str, int]:
+        ttl_seconds = settings.chutes_models_cache_ttl_seconds
+        now = time.monotonic()
+        if self._llm_models_cache and (now - self._llm_models_cache_at) < ttl_seconds:
+            return self._llm_models_cache
+
+        limits = await self._fetch_llm_models()
+        if limits:
+            self._llm_models_cache = limits
+            self._llm_models_cache_at = now
+            return limits
+        return self._llm_models_cache or {}
+
+    async def get_model_max_output_length(self, model_identifier: str) -> Optional[int]:
+        limits = await self._get_llm_model_limits()
+        if not limits:
+            return None
+        return limits.get(model_identifier)
+
+    def _estimate_tokens(self, text: str) -> int:
+        if not text:
+            return 0
+        return max(1, len(text) // 4)
+
+    def _compute_safe_max_tokens(self, max_output_length: int, input_tokens: int) -> int:
+        margin = settings.chutes_max_tokens_margin
+        min_output_tokens = settings.chutes_min_output_tokens
+        if max_output_length <= 0:
+            return 0
+        margin = max(0, min(margin, max_output_length))
+        available = max_output_length - input_tokens - margin
+        if available >= min_output_tokens:
+            return available
+        if max_output_length <= min_output_tokens:
+            return max_output_length
+        fallback = max_output_length - margin
+        if fallback < 1:
+            return max(1, max_output_length - input_tokens)
+        return max(min_output_tokens, fallback)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -316,6 +393,8 @@ class ChutesClient:
         attempt = 0
         max_attempts = kwargs.pop("response_attempts", 3)
         delay_seconds = 1
+        requested_max_tokens = kwargs.get("max_tokens")
+        applied_max_tokens = requested_max_tokens
 
         # Initialize defaults
         metadata = {
@@ -323,6 +402,26 @@ class ChutesClient:
             "model": model_slug,
             "finish_reason": None,
         }
+
+        max_output_length = await self.get_model_max_output_length(model_slug)
+        if max_output_length:
+            input_tokens = self._estimate_tokens(prompt)
+            if system_prompt:
+                input_tokens += self._estimate_tokens(system_prompt)
+            safe_max_tokens = self._compute_safe_max_tokens(max_output_length, input_tokens)
+            applied_max_tokens = safe_max_tokens
+            if requested_max_tokens is None or requested_max_tokens != safe_max_tokens:
+                logger.debug(
+                    "Adjusting max_tokens for model",
+                    model=model_slug,
+                    requested=requested_max_tokens,
+                    applied=safe_max_tokens,
+                    max_output_length=max_output_length,
+                )
+            kwargs["max_tokens"] = safe_max_tokens
+
+        if applied_max_tokens is not None:
+            metadata["max_tokens"] = applied_max_tokens
 
         while attempt < max_attempts:
             attempt += 1
