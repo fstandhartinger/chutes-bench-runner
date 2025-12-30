@@ -27,7 +27,7 @@ from app.models.benchmark import Benchmark
 from app.models.run import BenchmarkItemResult, BenchmarkRun, BenchmarkRunBenchmark, RunEvent
 from app.services import auth_service
 from app.services.export_service import generate_csv_export, generate_pdf_export
-from app.services.model_service import get_model_by_id, get_models, sync_models
+from app.services.model_service import get_model_by_id, get_models, resolve_model_identifier, sync_models
 from app.services.run_service import (
     add_run_event,
     cancel_run,
@@ -145,9 +145,15 @@ async def create_benchmark_run_with_api_key(
     api_key: ApiKeyDep,
 ):
     """Create a new benchmark run using a bearer API key."""
-    model = await get_model_by_id(db, request.model_id)
+    model = await resolve_model_identifier(db, request.model_id)
     if not model:
-        raise HTTPException(status_code=404, detail="Model not found")
+        await sync_models(db)
+        model = await resolve_model_identifier(db, request.model_id)
+    if not model:
+        raise HTTPException(
+            status_code=404,
+            detail="Model not found. Provide a bench runner model UUID, Chutes chute_id, or model slug.",
+        )
 
     run = await create_run(
         db,

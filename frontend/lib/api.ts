@@ -11,6 +11,7 @@ export interface Model {
   tagline?: string;
   user?: string;
   logo?: string;
+  chute_id?: string;
   instance_count: number;
   is_active: boolean;
 }

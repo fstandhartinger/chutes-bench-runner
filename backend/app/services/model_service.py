@@ -1,5 +1,6 @@
 """Model synchronization service."""
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -10,6 +11,16 @@ from app.models.model import Model
 from app.services.chutes_client import get_chutes_client
 
 logger = get_logger(__name__)
+
+
+def _is_valid_uuid(value: Optional[str]) -> bool:
+    if not value:
+        return False
+    try:
+        UUID(value)
+    except ValueError:
+        return False
+    return True
 
 
 async def sync_models(db: AsyncSession) -> int:
@@ -38,6 +49,7 @@ async def sync_models(db: AsyncSession) -> int:
     # Use PostgreSQL upsert (INSERT ... ON CONFLICT UPDATE)
     for model_data in unique_models:
         slug = model_data.get("slug")
+        is_llm = bool(model_data.get("is_llm", True))
         stmt = pg_insert(Model).values(
             slug=slug,
             name=model_data.get("name", slug),
@@ -46,7 +58,7 @@ async def sync_models(db: AsyncSession) -> int:
             logo=model_data.get("logo"),
             chute_id=model_data.get("chute_id"),
             instance_count=model_data.get("instance_count", 0),
-            is_active=True,
+            is_active=is_llm,
         ).on_conflict_do_update(
             index_elements=["slug"],
             set_={
@@ -56,7 +68,7 @@ async def sync_models(db: AsyncSession) -> int:
                 "logo": model_data.get("logo"),
                 "chute_id": model_data.get("chute_id"),
                 "instance_count": model_data.get("instance_count", 0),
-                "is_active": True,
+                "is_active": is_llm,
             }
         )
         await db.execute(stmt)
@@ -91,6 +103,8 @@ async def get_models(
 
 async def get_model_by_id(db: AsyncSession, model_id: str) -> Optional[Model]:
     """Get a model by ID."""
+    if not _is_valid_uuid(model_id):
+        return None
     result = await db.execute(select(Model).where(Model.id == model_id))
     return result.scalar_one_or_none()
 
@@ -100,3 +114,23 @@ async def get_model_by_slug(db: AsyncSession, slug: str) -> Optional[Model]:
     result = await db.execute(select(Model).where(Model.slug == slug))
     return result.scalar_one_or_none()
 
+
+async def get_model_by_chute_id(db: AsyncSession, chute_id: str) -> Optional[Model]:
+    """Get a model by its Chutes chute_id."""
+    result = await db.execute(select(Model).where(Model.chute_id == chute_id))
+    return result.scalar_one_or_none()
+
+
+async def resolve_model_identifier(db: AsyncSession, identifier: str) -> Optional[Model]:
+    """Resolve a model by internal UUID, slug/name, or Chutes chute_id."""
+    if _is_valid_uuid(identifier):
+        model = await get_model_by_id(db, identifier)
+        if model:
+            return model
+        model = await get_model_by_chute_id(db, identifier)
+        if model:
+            return model
+    model = await get_model_by_slug(db, identifier)
+    if model:
+        return model
+    return await get_model_by_chute_id(db, identifier)

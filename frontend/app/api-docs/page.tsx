@@ -29,11 +29,30 @@ export default function ApiDocsPage() {
             Send your Chutes API key in the Authorization header. The run will execute using
             that key, not the system key.
           </p>
+          <div className="space-y-2 text-sm text-ink-300">
+            <p className="font-medium text-ink-200">Request fields</p>
+            <ul className="space-y-1">
+              <li>
+                <span className="text-ink-100">model_id</span>: bench runner model UUID,
+                Chutes <span className="text-ink-100">chute_id</span>, or the model slug/name
+                (e.g. <span className="text-ink-100">zai-org/GLM-4.7-TEE</span>).
+              </li>
+              <li>
+                <span className="text-ink-100">subset_pct</span>: integer 1–100 (common values:
+                1, 5, 10, 25, 50, 100). Minimum sample size is 1 item.
+              </li>
+              <li>
+                <span className="text-ink-100">selected_benchmarks</span>: optional list of
+                benchmark names (use <span className="text-ink-100">/api/benchmarks</span> to
+                discover valid values).
+              </li>
+            </ul>
+          </div>
           <CodeBlock>{`curl -X POST ${BACKEND_URL}/api/runs/api \\
   -H "Authorization: Bearer <CHUTES_API_KEY>" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model_id": "<model-uuid>",
+    "model_id": "<model-uuid | chute_id | model-slug>",
     "subset_pct": 1,
     "selected_benchmarks": ["mmlu_pro", "ifbench"]
   }'`}</CodeBlock>

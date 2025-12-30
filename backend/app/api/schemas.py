@@ -14,6 +14,7 @@ class ModelResponse(BaseModel):
     tagline: Optional[str] = None
     user: Optional[str] = None
     logo: Optional[str] = None
+    chute_id: Optional[str] = None
     instance_count: int = 0
     is_active: bool = True
 

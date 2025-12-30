@@ -130,18 +130,22 @@ class ChutesClient:
                 page += 1
 
         # Transform to consistent format
-        models = [
-            {
-                "slug": item.get("name"),
-                "name": item.get("name"),
-                "tagline": item.get("tagline"),
-                "user": item.get("user", {}).get("username") if item.get("user") else None,
-                "logo": item.get("logo"),
-                "chute_id": item.get("chute_id"),
-                "instance_count": len(item.get("instances", [])),
-            }
-            for item in all_items
-        ]
+        models = []
+        for item in all_items:
+            pricing = item.get("current_estimated_price") or {}
+            per_million_tokens = pricing.get("per_million_tokens") if isinstance(pricing, dict) else None
+            models.append(
+                {
+                    "slug": item.get("name"),
+                    "name": item.get("name"),
+                    "tagline": item.get("tagline"),
+                    "user": item.get("user", {}).get("username") if item.get("user") else None,
+                    "logo": item.get("logo"),
+                    "chute_id": item.get("chute_id"),
+                    "instance_count": len(item.get("instances", [])),
+                    "is_llm": per_million_tokens is not None,
+                }
+            )
 
         logger.info("Fetched models", count=len(models))
         return models
