@@ -218,7 +218,7 @@ class BenchmarkAdapter(ABC):
 
         # Prefer explicit "Answer: X" lines.
         answer_match = re.search(
-            rf"(?im)^\s*(?:answer|final answer)\s*[:\-]\s*\\(?({letter_set})\\)?\s*$",
+            rf"(?im)^\s*(?:answer|final answer)\s*[:\-]\s*\(?({letter_set})\)?\s*$",
             cleaned,
         )
         if answer_match:
@@ -229,12 +229,12 @@ class BenchmarkAdapter(ABC):
             line = line.strip()
             if not line:
                 continue
-            line_match = re.match(rf"^\\(?({letter_set})\\)?[\\.\)]?\s*$", line.upper())
+            line_match = re.match(rf"^\(?({letter_set})\)?[\\.\)]?\s*$", line.upper())
             if line_match:
                 return line_match.group(1).upper()
 
         # Allow the entire response to be a single letter.
-        full_match = re.match(rf"^\\s*\\(?({letter_set})\\)?[\\.\)]?\s*$", cleaned.upper())
+        full_match = re.match(rf"^\s*\(?({letter_set})\)?[\\.\)]?\s*$", cleaned.upper())
         if full_match:
             return full_match.group(1).upper()
 
@@ -324,5 +324,4 @@ class BenchmarkAdapter(ABC):
                 **additional_metrics,
             },
         )
-
 
