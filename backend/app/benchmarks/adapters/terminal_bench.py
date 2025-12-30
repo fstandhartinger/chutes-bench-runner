@@ -1,4 +1,6 @@
 """Terminal-Bench Hard benchmark adapter."""
+import re
+import shlex
 import time
 from typing import Any, AsyncIterator, Optional
 
@@ -98,6 +100,91 @@ find . -size +100M
 Task: {item["task"]}
 Command:"""
 
+        def looks_like_command(candidate: str) -> bool:
+            stripped = candidate.strip()
+            if not stripped:
+                return False
+            if stripped.startswith("sudo "):
+                stripped = stripped[5:].lstrip()
+            if stripped.startswith("./"):
+                return True
+            first = stripped.split()[0]
+            common = {
+                "ls", "find", "grep", "wc", "du", "lsof", "ps", "cat", "echo", "awk", "sed",
+                "head", "tail", "sort", "uniq", "chmod", "chown", "mkdir", "rm", "mv", "cp",
+                "tar", "zip", "curl", "wget", "git", "python", "pip", "node", "npm", "yarn",
+                "bash", "sh",
+            }
+            if first in common:
+                return True
+            if "/" in first:
+                return True
+            return False
+
+        def normalize_candidate(candidate: str) -> str:
+            cleaned = candidate.strip().strip("`")
+            cleaned = re.sub(r"^(?:\d+\.|\d+\)|[-*])\s*", "", cleaned)
+            cleaned = re.sub(r"(?i)^(?:command|cmd|shell)\s*[:\-]\s*", "", cleaned)
+            if cleaned.count("`") >= 2:
+                match = re.search(r"`([^`]+)`", cleaned)
+                if match:
+                    cleaned = match.group(1)
+            elif "`" in cleaned:
+                cleaned = cleaned.split("`", 1)[0]
+            cleaned = cleaned.rstrip(" .,:;")
+            return cleaned.strip()
+
+        def extract_command(response_text: str) -> str:
+            cleaned = response_text or ""
+            cleaned = re.sub(r"(?i)<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
+
+            candidates: list[tuple[str, int]] = []
+
+            def add_candidate(raw: str, weight: int) -> None:
+                candidate = normalize_candidate(raw)
+                if candidate:
+                    candidates.append((candidate, weight))
+
+            # Markdown code block or raw code extraction.
+            extracted = self.extract_python_code(cleaned)
+            if extracted:
+                weight = 3 if "```" in cleaned else 1
+                for line in extracted.splitlines():
+                    if line.strip():
+                        add_candidate(line, weight)
+
+            # Inline code blocks.
+            for match in re.findall(r"`([^`]+)`", cleaned):
+                add_candidate(match, 2)
+
+            # "Command:" or similar labels.
+            for match in re.findall(r"(?i)(?:command|run|use|execute|try)\s*[:\-]\s*([^\n]+)", cleaned):
+                add_candidate(match, 2)
+
+            # Raw lines as fallback candidates.
+            for line in cleaned.splitlines():
+                if line.strip():
+                    add_candidate(line, 1)
+
+            best_candidate = ""
+            best_score = -1
+            for idx, (candidate, weight) in enumerate(candidates):
+                if not looks_like_command(candidate):
+                    continue
+                tokens = candidate.split()
+                score = weight * 10
+                if len(tokens) > 1:
+                    score += 4
+                if any(ch in candidate for ch in ("|", ">", "<", "--", "-")):
+                    score += 2
+                score += min(len(candidate), 80) // 4
+                score += idx / 1000
+                if score > best_score:
+                    best_score = score
+                    best_candidate = candidate
+
+            return best_candidate
+
         system_prompt = (
             "You are a Linux shell expert. Output ONLY the final shell command "
             "within a markdown code block. No explanation, no thinking, no prose."
@@ -127,23 +214,70 @@ Command:"""
                 )
 
             # Extract command robustly
-            response_cmd = self.extract_python_code(response_text)
+            response_cmd = extract_command(response_text)
+
+            if not response_cmd or not looks_like_command(response_cmd):
+                item_metadata = {**metadata, "system_prompt": system_prompt}
+                return ItemResult(
+                    item_id=item_id,
+                    item_hash=self.compute_item_hash(item["task"]),
+                    prompt=prompt,
+                    response=response_text.strip(),
+                    expected=item.get("expected_cmd", ""),
+                    error="Could not extract a shell command from the model response",
+                    latency_ms=latency_ms,
+                    input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
+                    output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                    metadata=item_metadata,
+                )
             
-            # If the extracted "code" still looks like prose (e.g. no command-like symbols or too many words)
-            # try to find the last line that actually looks like a command
-            if len(response_cmd.split()) > 10 and "```" not in response_text:
-                # Heuristic: models sometimes put the command on the last line or after some prose
-                lines = [l.strip() for l in response_cmd.split("\n") if l.strip()]
-                for line in reversed(lines):
-                    # Basic command heuristic: starts with common utility or doesn't look like a sentence
-                    if any(line.startswith(cmd) for cmd in ["ls", "find", "grep", "wc", "du", "lsof", "ps", "cat", "echo"]):
-                        response_cmd = line
-                        break
-                else:
-                    # If still not found, take the first non-empty line
-                    if lines:
-                        response_cmd = lines[0]
-            
+            def tokenize_command(command: str) -> tuple[str, set[str], set[str], list[str]]:
+                try:
+                    tokens = shlex.split(command)
+                except ValueError:
+                    tokens = command.split()
+                if not tokens:
+                    return "", set(), set(), []
+                base = tokens[0]
+                short_flags: set[str] = set()
+                long_flags: set[str] = set()
+                args: list[str] = []
+                for token in tokens[1:]:
+                    if token.startswith("--"):
+                        if "=" in token:
+                            flag, value = token.split("=", 1)
+                            long_flags.add(flag)
+                            if value:
+                                args.append(value)
+                            continue
+                        long_flags.add(token)
+                        continue
+                    if token.startswith("-") and len(token) > 1:
+                        if len(token) <= 4:
+                            short_flags.update(token[1:])
+                            continue
+                        if token[1:].islower() and len(token) > 4:
+                            long_flags.add(token)
+                            continue
+                        short_flags.update(token[1:])
+                        continue
+                    args.append(token)
+                return base, short_flags, long_flags, args
+
+            def commands_match(response_cmd: str, expected_cmd: str) -> bool:
+                resp_base, resp_short, resp_long, resp_args = tokenize_command(response_cmd)
+                exp_base, exp_short, exp_long, exp_args = tokenize_command(expected_cmd)
+                if not resp_base or not exp_base or resp_base != exp_base:
+                    return False
+                if not exp_short.issubset(resp_short):
+                    return False
+                if not exp_long.issubset(resp_long):
+                    return False
+                for arg in exp_args:
+                    if arg not in resp_args:
+                        return False
+                return True
+
             # Create sandbox and run command
             sandbox_id = await self.sandy.create_sandbox()
             if not sandbox_id:
@@ -154,9 +288,10 @@ Command:"""
                 execution_result = await self.sandy.execute_command(sandbox_id, response_cmd)
                 
                 # In a real benchmark, we'd compare output or state with expected
-                # For now, we'll use a mix of execution success and string matching
                 expected_cmd = item.get("expected_cmd", "")
-                is_correct = response_cmd.lower() == expected_cmd.lower() or (execution_result.get("success", False) and execution_result.get("exit_code") == 0)
+                is_correct = commands_match(response_cmd, expected_cmd) or commands_match(
+                    response_cmd, f"sudo {expected_cmd}"
+                )
                 
                 item_metadata = {
                     **metadata,
@@ -196,6 +331,3 @@ Command:"""
                 error=str(e),
                 metadata=item_metadata,
             )
-
-
-
