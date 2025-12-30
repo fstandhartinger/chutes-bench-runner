@@ -16,6 +16,7 @@ describe("formatPercent", () => {
 
 describe("formatDuration", () => {
   it("formats seconds", () => {
+    expect(formatDuration(500)).toBe("500ms");
     expect(formatDuration(5000)).toBe("5s");
     expect(formatDuration(45000)).toBe("45s");
   });
@@ -44,7 +45,6 @@ describe("getStatusColor", () => {
     expect(getStatusColor("unknown")).toBe("text-ink-300");
   });
 });
-
 
 
 

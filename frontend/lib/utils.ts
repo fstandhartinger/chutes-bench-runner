@@ -6,6 +6,9 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatDuration(ms: number): string {
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`;
+  }
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
@@ -17,6 +20,11 @@ export function formatDuration(ms: number): string {
     return `${minutes}m ${seconds % 60}s`;
   }
   return `${seconds}s`;
+}
+
+export function formatDurationSeconds(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined) return "-";
+  return formatDuration(Math.max(0, Math.round(seconds * 1000)));
 }
 
 export function formatPercent(value: number | undefined | null): string {
@@ -73,7 +81,6 @@ export function getStatusBgColor(status: string): string {
       return "bg-ink-600";
   }
 }
-
 
 
 

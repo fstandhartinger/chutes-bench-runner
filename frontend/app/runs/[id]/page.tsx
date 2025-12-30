@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
+  getRuns,
   getRun,
   getBenchmarkDetails,
   getExportUrl,
@@ -14,7 +15,15 @@ import {
   type BenchmarkRunBenchmark,
 } from "@/lib/api";
 import {
+  computeQueueSchedule,
+  estimateRunRemainingSeconds,
+  getWorkerSlots,
+  type QueueEstimate,
+} from "@/lib/eta";
+import {
   formatDate,
+  formatDuration,
+  formatDurationSeconds,
   formatPercent,
   getStatusColor,
   getStatusBgColor,
@@ -105,7 +114,7 @@ function ItemDetailCard({ item, index }: { item: ItemResult; index: number }) {
               {item.latency_ms !== undefined && (
                 <span className="flex items-center gap-1">
                   <Clock className="h-3 w-3" />
-                  {item.latency_ms}ms
+                  {formatDuration(item.latency_ms)}
                 </span>
               )}
               {(item.input_tokens || item.output_tokens) && (
@@ -224,7 +233,7 @@ function ItemDetailCard({ item, index }: { item: ItemResult; index: number }) {
             <div className="rounded bg-ink-800 p-2">
               <div className="text-xs text-ink-400">Latency</div>
               <div className="text-sm font-medium">
-                {item.latency_ms ? `${item.latency_ms}ms` : "-"}
+                {item.latency_ms !== undefined ? formatDuration(item.latency_ms) : "-"}
               </div>
             </div>
             <div className="rounded bg-ink-800 p-2">
@@ -338,6 +347,8 @@ export default function RunDetailPage() {
   const [itemsMode, setItemsMode] = useState<"paged" | "all">("paged");
   const [showAllLoading, setShowAllLoading] = useState(false);
   const [exportingMarkdown, setExportingMarkdown] = useState(false);
+  const [queueSchedule, setQueueSchedule] = useState<Record<string, QueueEstimate>>({});
+  const workerSlots = getWorkerSlots();
 
   const fetchAllItems = useCallback(async () => {
     if (!selectedBenchmark) return [];
@@ -358,22 +369,52 @@ export default function RunDetailPage() {
     return allItems;
   }, [runId, selectedBenchmark, totalItems]);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const data = await getRun(runId);
-        setRun(data);
-        if (data.benchmarks.length > 0) {
-          setSelectedBenchmark(data.benchmarks[0].benchmark_name);
-        }
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load run");
-      } finally {
-        setLoading(false);
+  const loadRun = useCallback(async () => {
+    try {
+      const data = await getRun(runId);
+      setRun(data);
+      if (data.benchmarks.length > 0) {
+        setSelectedBenchmark((prev) => prev ?? data.benchmarks[0].benchmark_name);
       }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load run");
+    } finally {
+      setLoading(false);
     }
-    load();
   }, [runId]);
+
+  useEffect(() => {
+    loadRun();
+  }, [loadRun]);
+
+  useEffect(() => {
+    if (!run || !["queued", "running"].includes(run.status)) return;
+    const interval = window.setInterval(loadRun, 15000);
+    return () => window.clearInterval(interval);
+  }, [run, loadRun]);
+
+  const loadQueueStatus = useCallback(async () => {
+    try {
+      const [runningRes, queuedRes] = await Promise.all([
+        getRuns("running", 200),
+        getRuns("queued", 200),
+      ]);
+      const schedule = computeQueueSchedule(
+        [...runningRes.runs, ...queuedRes.runs],
+        workerSlots
+      );
+      setQueueSchedule(schedule);
+    } catch (e) {
+      console.warn("Failed to load queue status", e);
+    }
+  }, [workerSlots]);
+
+  useEffect(() => {
+    if (!run || !["queued", "running"].includes(run.status)) return;
+    loadQueueStatus();
+    const interval = window.setInterval(loadQueueStatus, 20000);
+    return () => window.clearInterval(interval);
+  }, [run, loadQueueStatus]);
 
   useEffect(() => {
     if (!selectedBenchmark) return;
@@ -431,7 +472,7 @@ export default function RunDetailPage() {
   const correctCount = items.filter((i) => i.is_correct === true).length;
   const incorrectCount = items.filter((i) => i.is_correct === false).length;
   const errorCount = items.filter((i) => i.error).length;
-  const avgLatency =
+  const avgLatencyMs =
     items.length > 0
       ? Math.round(
           items.reduce((sum, i) => sum + (i.latency_ms || 0), 0) / items.length
@@ -445,6 +486,25 @@ export default function RunDetailPage() {
     selectedRb && selectedRb.total_items > 0
       ? (selectedRb.sampled_items / selectedRb.total_items) * 100
       : 0;
+  const now = new Date();
+  const startedAt = run.started_at ? new Date(run.started_at) : null;
+  const completedAt = run.completed_at ? new Date(run.completed_at) : null;
+  const elapsedMs =
+    startedAt &&
+    (completedAt ? completedAt.getTime() : now.getTime()) - startedAt.getTime();
+  const etaSeconds =
+    run.status === "running" ? estimateRunRemainingSeconds(run, now) : null;
+  const queueInfo = run.status === "queued" ? queueSchedule[run.id] : undefined;
+  const etaLabel =
+    run.status === "running"
+      ? etaSeconds !== null
+        ? `~${formatDurationSeconds(etaSeconds)}`
+        : "Estimating..."
+      : run.status === "queued"
+      ? queueInfo?.startDelaySeconds !== null
+        ? `~${formatDurationSeconds(queueInfo.startDelaySeconds)}`
+        : "Waiting for worker"
+      : "-";
 
   const handleShowAll = async () => {
     if (!selectedBenchmark || items.length >= totalItems) return;
@@ -487,7 +547,9 @@ export default function RunDetailPage() {
         lines.push(`- Correct: ${item.is_correct === true ? "true" : item.is_correct === false ? "false" : "-"}`);
         lines.push(`- Score: ${item.score ?? "-"}`);
         lines.push(`- Error: ${item.error || "-"}`);
-        lines.push(`- Latency: ${item.latency_ms ?? "-"} ms`);
+        lines.push(
+          `- Latency: ${item.latency_ms !== undefined ? formatDuration(item.latency_ms) : "-"}`
+        );
         lines.push(`- Input Tokens: ${item.input_tokens ?? "-"}`);
         lines.push(`- Output Tokens: ${item.output_tokens ?? "-"}`);
         lines.push(``);
@@ -610,7 +672,7 @@ export default function RunDetailPage() {
 
       {/* Summary Card */}
       <Card className="mb-8">
-        <CardContent className="grid gap-6 p-6 sm:grid-cols-4">
+        <CardContent className="grid gap-6 p-6 sm:grid-cols-2 lg:grid-cols-6">
           <div>
             <div className="text-sm text-ink-400">Subset</div>
             <div className="text-xl font-medium">{run.subset_pct}%</div>
@@ -630,6 +692,23 @@ export default function RunDetailPage() {
             <div className="text-xl font-medium">
               {run.completed_at ? formatDate(run.completed_at) : "-"}
             </div>
+          </div>
+          <div>
+            <div className="text-sm text-ink-400">Elapsed</div>
+            <div className="text-xl font-medium">
+              {elapsedMs !== null ? formatDuration(elapsedMs) : "-"}
+            </div>
+          </div>
+          <div>
+            <div className="text-sm text-ink-400">
+              {run.status === "queued" ? "Queue ETA" : "ETA"}
+            </div>
+            <div className="text-xl font-medium">{etaLabel}</div>
+            {run.status === "queued" && queueInfo?.queuePosition && (
+              <div className="text-xs text-ink-400">
+                Position {queueInfo.queuePosition}
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -751,7 +830,7 @@ export default function RunDetailPage() {
                   <div className="rounded-lg bg-ink-700/50 p-4">
                     <div className="text-sm text-ink-400">Avg Latency</div>
                     <div className="text-2xl font-semibold">
-                      {avgLatency}ms
+                      {formatDuration(avgLatencyMs)}
                     </div>
                   </div>
                   <div className="rounded-lg bg-ink-700/50 p-4">

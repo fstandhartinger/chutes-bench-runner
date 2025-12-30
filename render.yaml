@@ -32,7 +32,8 @@ services:
     name: chutes-bench-runner-worker
     runtime: python
     region: oregon
-    plan: starter
+    plan: standard
+    numInstances: 2
     buildCommand: cd backend && pip install -r requirements.txt
     startCommand: cd backend && python -m app.worker.runner
     envVars:
@@ -59,6 +60,8 @@ services:
     envVars:
       - key: NEXT_PUBLIC_BACKEND_URL
         value: https://chutes-bench-runner-api-v2.onrender.com
+      - key: NEXT_PUBLIC_WORKER_SLOTS
+        value: "2"
       - key: NODE_VERSION
         value: "20"
 

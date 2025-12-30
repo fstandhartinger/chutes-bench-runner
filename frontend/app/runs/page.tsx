@@ -1,12 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { getRuns, type Run } from "@/lib/api";
 import {
+  computeQueueSchedule,
+  estimateRunRemainingSeconds,
+  getWorkerSlots,
+} from "@/lib/eta";
+import {
   formatDate,
+  formatDuration,
+  formatDurationSeconds,
   formatPercent,
   getStatusColor,
   getStatusBgColor,
@@ -21,22 +28,38 @@ export default function RunsPage() {
   const [error, setError] = useState<string | null>(null);
   const [modelFilter, setModelFilter] = useState("");
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const data = await getRuns(undefined, 100); // Fetch more runs
-        setRuns(data.runs);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load runs");
-      } finally {
-        setLoading(false);
-      }
+  const loadRuns = useCallback(async () => {
+    try {
+      const data = await getRuns(undefined, 100);
+      setRuns(data.runs);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load runs");
+    } finally {
+      setLoading(false);
     }
-    load();
   }, []);
+
+  useEffect(() => {
+    loadRuns();
+  }, [loadRuns]);
+
+  useEffect(() => {
+    if (!runs.some((run) => ["queued", "running"].includes(run.status))) return;
+    const interval = window.setInterval(loadRuns, 15000);
+    return () => window.clearInterval(interval);
+  }, [runs, loadRuns]);
 
   const filteredRuns = runs.filter((run) =>
     run.model_slug.toLowerCase().includes(modelFilter.toLowerCase())
+  );
+  const workerSlots = getWorkerSlots();
+  const queueSchedule = useMemo(
+    () =>
+      computeQueueSchedule(
+        runs.filter((run) => ["queued", "running"].includes(run.status)),
+        workerSlots
+      ),
+    [runs, workerSlots]
   );
 
   if (loading) {
@@ -98,10 +121,23 @@ export default function RunsPage() {
         </Card>
       ) : (
         <div className="space-y-4">
-          {filteredRuns.map((run) => (
-            <Card key={run.id} className="overflow-hidden">
-              <div className="flex items-center justify-between p-6">
-                <div className="space-y-1">
+          {filteredRuns.map((run) => {
+            const now = new Date();
+            const startedAt = run.started_at ? new Date(run.started_at) : null;
+            const completedAt = run.completed_at ? new Date(run.completed_at) : null;
+            const elapsedMs =
+              startedAt &&
+              (completedAt ? completedAt.getTime() : now.getTime()) -
+                startedAt.getTime();
+            const etaSeconds =
+              run.status === "running" ? estimateRunRemainingSeconds(run, now) : null;
+            const queueInfo =
+              run.status === "queued" ? queueSchedule[run.id] : undefined;
+
+            return (
+              <Card key={run.id} className="overflow-hidden">
+                <div className="flex items-center justify-between p-6">
+                  <div className="space-y-1">
                   <div className="flex items-center gap-3">
                     <h3 className="text-lg font-medium">{run.model_slug}</h3>
                     <span
@@ -118,6 +154,31 @@ export default function RunsPage() {
                     {run.subset_pct}% subset · {run.benchmarks.length} benchmarks ·{" "}
                     {formatDate(run.created_at)}
                   </p>
+                  {run.status === "running" && (
+                    <p className="text-xs text-ink-400">
+                      {elapsedMs !== null
+                        ? `Elapsed ${formatDuration(elapsedMs)}`
+                        : "Elapsed -"}{" "}
+                      {etaSeconds !== null
+                        ? `· ETA ~ ${formatDurationSeconds(etaSeconds)}`
+                        : "· ETA estimating..."}
+                    </p>
+                  )}
+                  {run.status === "queued" && (
+                    <p className="text-xs text-ink-400">
+                      Queued
+                      {queueInfo ? ` (pos ${queueInfo.queuePosition})` : ""}{" "}
+                      {queueInfo?.startDelaySeconds !== null
+                        ? `· start in ~${formatDurationSeconds(queueInfo.startDelaySeconds)}`
+                        : "· waiting for worker"}
+                    </p>
+                  )}
+                  {["succeeded", "failed", "canceled"].includes(run.status) &&
+                    elapsedMs !== null && (
+                      <p className="text-xs text-ink-400">
+                        Duration {formatDuration(elapsedMs)}
+                      </p>
+                    )}
                 </div>
 
                 <div className="flex items-center gap-6">
@@ -178,15 +239,12 @@ export default function RunsPage() {
                 )}
               </div>
             </Card>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
-
-
-
-
 
 

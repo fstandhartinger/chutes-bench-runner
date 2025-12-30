@@ -17,13 +17,27 @@ import {
   getModels,
   getBenchmarks,
   createRun,
+  getRun,
+  getRuns,
   createEventSource,
   type Model,
   type Benchmark,
   type Run,
   type RunEvent,
 } from "@/lib/api";
-import { cn, formatPercent, getStatusColor } from "@/lib/utils";
+import {
+  computeQueueSchedule,
+  estimateRunRemainingSeconds,
+  getWorkerSlots,
+  type QueueEstimate,
+} from "@/lib/eta";
+import {
+  cn,
+  formatDuration,
+  formatDurationSeconds,
+  formatPercent,
+  getStatusColor,
+} from "@/lib/utils";
 import { Play, Loader2, AlertCircle, CheckCircle2, XCircle } from "lucide-react";
 
 const SUBSET_OPTIONS = [
@@ -46,12 +60,15 @@ export function BenchmarkRunner() {
   const [currentRun, setCurrentRun] = useState<Run | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [queueStats, setQueueStats] = useState<{ running: number; queued: number } | null>(null);
+  const [queueSchedule, setQueueSchedule] = useState<Record<string, QueueEstimate>>({});
   const progressRef = useRef<HTMLDivElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const lastEventIdRef = useRef<string | null>(null);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const runningRef = useRef(false);
+  const workerSlots = getWorkerSlots();
 
   useEffect(() => {
     runningRef.current = running;
@@ -77,6 +94,46 @@ export function BenchmarkRunner() {
       }
     };
   }, []);
+
+  const loadQueueStatus = useCallback(async () => {
+    try {
+      const [runningRes, queuedRes] = await Promise.all([
+        getRuns("running", 200),
+        getRuns("queued", 200),
+      ]);
+      setQueueStats({
+        running: runningRes.runs.length,
+        queued: queuedRes.runs.length,
+      });
+      setQueueSchedule(
+        computeQueueSchedule(
+          [...runningRes.runs, ...queuedRes.runs],
+          workerSlots
+        )
+      );
+    } catch (e) {
+      console.warn("Failed to load queue status", e);
+    }
+  }, [workerSlots]);
+
+  useEffect(() => {
+    loadQueueStatus();
+    const interval = window.setInterval(loadQueueStatus, 15000);
+    return () => window.clearInterval(interval);
+  }, [loadQueueStatus]);
+
+  useEffect(() => {
+    if (!currentRun || !["queued", "running"].includes(currentRun.status)) return;
+    const interval = window.setInterval(async () => {
+      try {
+        const updated = await getRun(currentRun.id);
+        setCurrentRun(updated);
+      } catch (e) {
+        console.warn("Failed to refresh run", e);
+      }
+    }, 15000);
+    return () => window.clearInterval(interval);
+  }, [currentRun?.id, currentRun?.status]);
 
   // Load models and benchmarks
   useEffect(() => {
@@ -280,6 +337,19 @@ export function BenchmarkRunner() {
   }
 
   const progress = progressData();
+  const queueInfo = currentRun ? queueSchedule[currentRun.id] : undefined;
+  const now = new Date();
+  const startedAt = currentRun?.started_at ? new Date(currentRun.started_at) : null;
+  const elapsedMs =
+    startedAt &&
+    (currentRun?.completed_at
+      ? new Date(currentRun.completed_at).getTime()
+      : now.getTime()) -
+      startedAt.getTime();
+  const etaSeconds =
+    currentRun && currentRun.status === "running"
+      ? estimateRunRemainingSeconds(currentRun, now)
+      : null;
 
   return (
     <div className="space-y-8">
@@ -379,6 +449,13 @@ export function BenchmarkRunner() {
           </div>
 
           {/* Start Button */}
+          {queueStats && queueStats.running >= workerSlots && !currentRun && (
+            <div className="rounded-lg bg-ink-800/70 p-3 text-sm text-ink-300">
+              All worker slots are busy ({queueStats.running}/{workerSlots}). New runs
+              will queue until a slot is free.
+            </div>
+          )}
+
           <div className="flex justify-end pt-4">
             <Button
               onClick={startRun}
@@ -422,6 +499,26 @@ export function BenchmarkRunner() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-6">
+            {currentRun.status === "queued" && (
+              <div className="rounded-lg bg-ink-800/60 p-3 text-sm text-ink-300">
+                Run is queued
+                {queueInfo ? ` (position ${queueInfo.queuePosition})` : ""}.{" "}
+                {queueInfo?.startDelaySeconds !== null
+                  ? `Estimated start in ~${formatDurationSeconds(queueInfo.startDelaySeconds)}.`
+                  : "Waiting for a free worker slot."}
+              </div>
+            )}
+            {currentRun.status === "running" && (
+              <div className="rounded-lg bg-ink-800/60 p-3 text-sm text-ink-300">
+                {elapsedMs !== null
+                  ? `Elapsed ${formatDuration(elapsedMs)}`
+                  : "Elapsed -"}{" "}
+                {etaSeconds !== null
+                  ? `· ETA ~ ${formatDurationSeconds(etaSeconds)}`
+                  : "· ETA estimating..."}
+              </div>
+            )}
+
             {/* Overall Progress */}
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
