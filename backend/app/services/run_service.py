@@ -206,6 +206,16 @@ async def update_benchmark_status(
     await db.execute(
         update(BenchmarkRunBenchmark).where(BenchmarkRunBenchmark.id == run_benchmark_id).values(**update_data)
     )
+    await db.execute(
+        update(BenchmarkRun)
+        .where(
+            BenchmarkRun.id
+            == select(BenchmarkRunBenchmark.run_id)
+            .where(BenchmarkRunBenchmark.id == run_benchmark_id)
+            .scalar_subquery()
+        )
+        .values(updated_at=datetime.utcnow())
+    )
     await db.commit()
 
 

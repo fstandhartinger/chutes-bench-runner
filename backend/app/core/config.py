@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     # Worker
     worker_poll_interval: int = 5
     worker_max_concurrent: int = 1
+    worker_stale_run_minutes: int = 60
+    worker_stale_check_interval: int = 300
 
     # Startup
     skip_model_sync: bool = False

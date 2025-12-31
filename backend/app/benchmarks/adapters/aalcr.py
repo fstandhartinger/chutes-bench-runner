@@ -92,6 +92,7 @@ class AALCRAdapter(BenchmarkAdapter):
         except Exception as e:
             logger.error("Failed to load AA-LCR", error=str(e))
             self._items = []
+            raise
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         if not self._items:

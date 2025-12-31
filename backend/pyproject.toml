@@ -24,6 +24,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "aiosqlite>=0.20.0",
     "pytest>=7.4.4",
     "pytest-asyncio>=0.23.3",
     "pytest-cov>=4.1.0",
@@ -64,4 +65,3 @@ filterwarnings = ["ignore::DeprecationWarning"]
 python_version = "3.11"
 strict = true
 ignore_missing_imports = true
-

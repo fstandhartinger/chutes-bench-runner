@@ -60,10 +60,24 @@ class BenchmarksListResponse(BaseModel):
 # Run schemas
 class CreateRunRequest(BaseModel):
     """Create run request schema."""
-    model_id: str
-    subset_pct: int = Field(default=100, ge=1, le=100)
-    selected_benchmarks: Optional[list[str]] = None
-    config: Optional[dict[str, Any]] = None
+    model_id: str = Field(
+        ...,
+        description="Bench runner model UUID, Chutes chute_id, or model slug (e.g. zai-org/GLM-4.7-TEE).",
+    )
+    subset_pct: int = Field(
+        default=100,
+        ge=1,
+        le=100,
+        description="Percentage of items to sample (1-100). Common values: 1, 5, 10, 25, 50, 100.",
+    )
+    selected_benchmarks: Optional[list[str]] = Field(
+        default=None,
+        description="Optional list of benchmark names; use /api/benchmarks to discover valid values.",
+    )
+    config: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Optional per-run configuration overrides.",
+    )
 
 
 class BenchmarkRunBenchmarkResponse(APIModel):

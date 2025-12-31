@@ -1,4 +1,5 @@
 """Humanity's Last Exam (HLE) benchmark adapter."""
+import os
 import time
 import re
 from typing import Any, AsyncIterator, Optional
@@ -52,21 +53,14 @@ class HLEAdapter(BenchmarkAdapter):
 
         try:
             from datasets import load_dataset
-            import os
 
             logger.info("Loading Humanity's Last Exam dataset")
             hf_token = os.environ.get("HF_TOKEN")
-            
-            # Try to load HLE dataset (may be gated)
-            try:
-                if hf_token:
-                    dataset = load_dataset("cais/hle", split="test", token=hf_token)
-                else:
-                    dataset = load_dataset("cais/hle", split="test")
-            except Exception as e:
-                logger.warning(f"Could not load HLE dataset: {e}")
-                self._items = []
-                return
+
+            if hf_token:
+                dataset = load_dataset("cais/hle", split="test", token=hf_token)
+            else:
+                dataset = load_dataset("cais/hle", split="test")
 
             self._items = []
             for i, item in enumerate(dataset):
@@ -83,8 +77,12 @@ class HLEAdapter(BenchmarkAdapter):
             
             logger.info(f"Loaded {len(self._items)} HLE items")
         except Exception as e:
-            logger.error("Failed to load HLE", error=str(e))
+            detail = str(e)
+            if not os.environ.get("HF_TOKEN"):
+                detail = f"HF_TOKEN is required for HLE (gated dataset). {detail}"
+            logger.error("Failed to load HLE", error=detail)
             self._items = []
+            raise RuntimeError(detail) from e
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         if not self._items:

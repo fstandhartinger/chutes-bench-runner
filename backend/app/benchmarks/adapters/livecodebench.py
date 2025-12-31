@@ -135,6 +135,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         except Exception as e:
             logger.error("Failed to load LiveCodeBench", error=str(e))
             self._items = []
+            raise
 
     def _ensure_jsonl(self) -> Optional[Path]:
         if self._jsonl_path:

@@ -1,6 +1,7 @@
 """Background worker for running benchmarks."""
 import asyncio
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import select, update
@@ -39,6 +40,7 @@ class BenchmarkWorker:
         self.running = False
         self.current_run_id: Optional[str] = None
         self.client = get_chutes_client()
+        self._last_stale_check = 0.0
 
     async def _get_client_for_run(self, db: AsyncSession, run: BenchmarkRun) -> ChutesClient:
         if run.auth_mode == "idp" and run.auth_session_id:
@@ -64,6 +66,10 @@ class BenchmarkWorker:
 
         while self.running:
             try:
+                now = time.monotonic()
+                if now - self._last_stale_check >= settings.worker_stale_check_interval:
+                    await self.fail_stale_runs()
+                    self._last_stale_check = now
                 await self.process_next_run()
             except Exception as e:
                 logger.error("Worker error", error=str(e))
@@ -123,6 +129,62 @@ class BenchmarkWorker:
                 self.current_run_id = None
 
             return True
+
+    async def fail_stale_runs(self) -> None:
+        """Mark stale running runs as failed after a worker restart or stall."""
+        cutoff = datetime.utcnow() - timedelta(minutes=settings.worker_stale_run_minutes)
+        async with async_session_maker() as db:
+            result = await db.execute(
+                select(BenchmarkRun)
+                .options(noload(BenchmarkRun.model))
+                .where(BenchmarkRun.status == RunStatus.RUNNING.value)
+                .where(BenchmarkRun.updated_at < cutoff)
+            )
+            stale_runs = list(result.scalars().all())
+            if not stale_runs:
+                return
+
+            now = datetime.utcnow()
+            for run in stale_runs:
+                if run.id == self.current_run_id:
+                    continue
+                logger.warning(
+                    "Failing stale run",
+                    run_id=run.id,
+                    updated_at=run.updated_at,
+                )
+                await db.execute(
+                    update(BenchmarkRunBenchmark)
+                    .where(BenchmarkRunBenchmark.run_id == run.id)
+                    .where(
+                        BenchmarkRunBenchmark.status.in_(
+                            [BenchmarkRunStatus.PENDING.value, BenchmarkRunStatus.RUNNING.value]
+                        )
+                    )
+                    .values(
+                        status=BenchmarkRunStatus.FAILED.value,
+                        error_message="Run stalled while worker was offline",
+                        completed_at=now,
+                        updated_at=now,
+                    )
+                )
+                await db.execute(
+                    update(BenchmarkRun)
+                    .where(BenchmarkRun.id == run.id)
+                    .values(
+                        status=RunStatus.FAILED.value,
+                        error_message="Run stalled while worker was offline",
+                        completed_at=now,
+                        updated_at=now,
+                    )
+                )
+                await db.commit()
+                await add_run_event(
+                    db,
+                    run.id,
+                    "run_failed",
+                    message="Run failed: worker restart or stall detected",
+                )
 
     async def execute_run(self, db: AsyncSession, run: BenchmarkRun) -> None:
         """Execute all benchmarks in a run."""

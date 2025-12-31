@@ -71,8 +71,13 @@ class GPQADiamondAdapter(BenchmarkAdapter):
             
             logger.info(f"Loaded {len(self._items)} GPQA Diamond items")
         except Exception as e:
-            logger.warning(f"Could not load GPQA Diamond dataset: {e}")
+            detail = str(e)
+            import os
+            if not os.environ.get("HF_TOKEN"):
+                detail = f"HF_TOKEN is required for GPQA (gated dataset). {detail}"
+            logger.error("Failed to load GPQA Diamond", error=detail)
             self._items = []
+            raise RuntimeError(detail) from e
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         if not self._items:
