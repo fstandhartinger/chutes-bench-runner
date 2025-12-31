@@ -82,12 +82,12 @@ class AIME2025Adapter(BenchmarkAdapter):
             "Solve the following math competition problem. AIME answers are always integers from 0 to 999.\n"
             "Provide your final answer as a single integer on a new line prefixed with \"ANSWER:\".\n\n"
             f"Problem: {item['problem']}\n\n"
-            "Solution:"
+            "Answer:"
         )
 
         system_prompt = (
-            "You are an expert mathematician. Keep your reasoning concise and focused. "
-            "Always end your response with 'ANSWER: ' followed by the integer result."
+            "You are a test-taking assistant. Output ONLY the final answer line in the format "
+            "'ANSWER: <integer>' with no extra text."
         )
         try:
             start_time = time.time()
