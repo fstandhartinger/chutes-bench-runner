@@ -236,6 +236,7 @@ Solution:
 
         system_prompt = (
             "Output ONLY the final Python code within a markdown code block. "
+            "Close the code block with ``` and stop immediately. "
             "Do NOT use <think> tags. Do NOT provide any explanations or prose. Just the code."
         )
         try:
@@ -245,6 +246,7 @@ Solution:
                 prompt,
                 system_prompt=system_prompt,
                 max_tokens=16384,
+                stop=["```"],
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
