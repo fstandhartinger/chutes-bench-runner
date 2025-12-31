@@ -227,12 +227,11 @@ class BenchmarkWorker:
         )
 
         try:
-            # Get all items and apply subset
-            all_items: list[str] = []
-            async for item_id in adapter.enumerate_items():
-                all_items.append(item_id)
+            # Get items and apply subset
+            seed = f"{run.id}_{rb.benchmark_name}"
+            total_items, items_to_evaluate = await adapter.get_items_for_evaluation(run.subset_pct, seed)
 
-            if not all_items:
+            if total_items <= 0 or not items_to_evaluate:
                 await update_benchmark_status(
                     db, rb.id, BenchmarkRunStatus.NEEDS_SETUP,
                     error_message="No items found - dataset may require setup"
@@ -242,16 +241,12 @@ class BenchmarkWorker:
             await db.execute(
                 update(Benchmark)
                 .where(Benchmark.id == rb.benchmark_id)
-                .values(total_items=len(all_items))
+                .values(total_items=total_items)
             )
-
-            # Apply deterministic subset
-            seed = f"{run.id}_{rb.benchmark_name}"
-            items_to_evaluate = adapter.get_deterministic_subset(all_items, run.subset_pct, seed)
 
             await update_benchmark_status(
                 db, rb.id, BenchmarkRunStatus.RUNNING,
-                total_items=len(all_items),
+                total_items=total_items,
                 sampled_items=len(items_to_evaluate),
                 sampled_item_ids=items_to_evaluate[:1000],  # Store up to 1000 IDs
             )

@@ -130,6 +130,13 @@ class BenchmarkAdapter(ABC):
         """Cleanup any resources allocated by the adapter."""
         return None
 
+    async def get_items_for_evaluation(self, subset_pct: int, seed: str) -> tuple[int, list[str]]:
+        all_items: list[str] = []
+        async for item_id in self.enumerate_items():
+            all_items.append(item_id)
+        total_items = len(all_items)
+        return total_items, self.get_deterministic_subset(all_items, subset_pct, seed)
+
     def get_deterministic_subset(
         self,
         item_ids: list[str],

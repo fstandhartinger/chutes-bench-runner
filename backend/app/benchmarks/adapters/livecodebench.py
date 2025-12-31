@@ -12,6 +12,8 @@ from app.services.sandy_service import SandyService
 
 logger = get_logger(__name__)
 
+LIVECODEBENCH_TOTAL_ITEMS = 164
+
 
 @register_adapter("livecodebench")
 class LiveCodeBenchAdapter(BenchmarkAdapter):
@@ -38,9 +40,54 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         return False
 
     async def get_total_items(self) -> int:
-        if not self._items:
+        if self._items:
+            return len(self._items)
+        return LIVECODEBENCH_TOTAL_ITEMS
+
+    async def get_items_for_evaluation(self, subset_pct: int, seed: str) -> tuple[int, list[str]]:
+        total_items = await self.get_total_items()
+        if subset_pct >= 100:
             await self.preload()
-        return len(self._items)
+            return len(self._items), [item["id"] for item in self._items]
+
+        target = max(1, int(total_items * subset_pct / 100))
+        self._items = []
+        try:
+            from datasets import load_dataset
+
+            dataset = load_dataset("livecodebench/code_generation", split="test", streaming=True)
+            for i, item in enumerate(dataset):
+                if len(self._items) >= target:
+                    break
+                question = item.get("question_content") or ""
+                public_tests = item.get("public_test_cases") or "[]"
+                private_tests = item.get("private_test_cases") or "[]"
+                try:
+                    public_cases = json.loads(public_tests) if isinstance(public_tests, str) else public_tests
+                except json.JSONDecodeError:
+                    public_cases = []
+                try:
+                    private_cases = json.loads(private_tests) if isinstance(private_tests, str) else private_tests
+                except json.JSONDecodeError:
+                    private_cases = []
+
+                if question:
+                    self._items.append(
+                        {
+                            "id": str(i),
+                            "question": question,
+                            "starter_code": item.get("starter_code") or "",
+                            "difficulty": item.get("difficulty") or "",
+                            "public_tests": public_cases,
+                            "private_tests": private_cases,
+                            "metadata": item.get("metadata") or {},
+                        }
+                    )
+        except Exception as e:
+            logger.error("Failed to stream LiveCodeBench subset", error=str(e))
+            self._items = []
+
+        return total_items, [item["id"] for item in self._items]
 
     async def preload(self) -> None:
         """Load LiveCodeBench dataset."""
