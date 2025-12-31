@@ -1,12 +1,12 @@
 """LiveCodeBench benchmark adapter."""
 import json
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator, Optional
-
-from datasets import load_dataset
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
+from app.benchmarks.utils import download_hf_file
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -25,6 +25,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []
+        self._jsonl_path: Optional[Path] = None
         self.sandy = SandyService()
 
     def get_name(self) -> str:
@@ -47,48 +48,64 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             return
 
         try:
-            import os
-
             logger.info("Loading LiveCodeBench dataset")
-            hf_token = os.environ.get("HF_TOKEN")
-            dataset = load_dataset(
-                "livecodebench/code_generation",
-                split="test",
-                token=hf_token,
-                streaming=True,
-            )
+            jsonl_path = self._ensure_jsonl()
+            if not jsonl_path:
+                raise RuntimeError("Could not download LiveCodeBench dataset file")
 
             self._items = []
-            for i, item in enumerate(dataset):
-                question = item.get("question_content") or ""
-                public_tests = item.get("public_test_cases") or "[]"
-                private_tests = item.get("private_test_cases") or "[]"
-                try:
-                    public_cases = json.loads(public_tests) if isinstance(public_tests, str) else public_tests
-                except json.JSONDecodeError:
-                    public_cases = []
-                try:
-                    private_cases = json.loads(private_tests) if isinstance(private_tests, str) else private_tests
-                except json.JSONDecodeError:
-                    private_cases = []
+            with jsonl_path.open("r", encoding="utf-8") as handle:
+                for i, line in enumerate(handle):
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    question = item.get("question_content") or ""
+                    public_tests = item.get("public_test_cases") or "[]"
+                    private_tests = item.get("private_test_cases") or "[]"
+                    try:
+                        public_cases = json.loads(public_tests) if isinstance(public_tests, str) else public_tests
+                    except json.JSONDecodeError:
+                        public_cases = []
+                    try:
+                        private_cases = json.loads(private_tests) if isinstance(private_tests, str) else private_tests
+                    except json.JSONDecodeError:
+                        private_cases = []
 
-                if question:
-                    self._items.append(
-                        {
-                            "id": str(i),
-                            "question": question,
-                            "starter_code": item.get("starter_code") or "",
-                            "difficulty": item.get("difficulty") or "",
-                            "public_tests": public_cases,
-                            "private_tests": private_cases,
-                            "metadata": item.get("metadata") or {},
-                        }
-                    )
+                    if question:
+                        self._items.append(
+                            {
+                                "id": str(i),
+                                "question": question,
+                                "starter_code": item.get("starter_code") or "",
+                                "difficulty": item.get("difficulty") or "",
+                                "public_tests": public_cases,
+                                "private_tests": private_cases,
+                                "metadata": item.get("metadata") or {},
+                            }
+                        )
 
             logger.info("Loaded %s LiveCodeBench items", len(self._items))
         except Exception as e:
             logger.error("Failed to load LiveCodeBench", error=str(e))
             self._items = []
+
+    def _ensure_jsonl(self) -> Optional[Path]:
+        if self._jsonl_path:
+            return self._jsonl_path
+        try:
+            import os
+
+            hf_token = os.environ.get("HF_TOKEN")
+            self._jsonl_path = download_hf_file(
+                repo_id="livecodebench/code_generation",
+                filename="test.jsonl",
+                token=hf_token,
+                cache_subdir="livecodebench",
+            )
+            return self._jsonl_path
+        except Exception as e:
+            logger.error("Failed to download LiveCodeBench JSONL", error=str(e))
+            return None
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         if not self._items:
