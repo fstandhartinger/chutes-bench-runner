@@ -90,8 +90,9 @@ class ChutesClient:
         self.models_api_url = settings.chutes_models_api_url
         self._client: Optional[httpx.AsyncClient] = None
         self._is_user_token_mode = user_access_token is not None
-        self._llm_models_cache: Optional[dict[str, int]] = None
-        self._llm_models_cache_at: float = 0.0
+        self._llm_output_cache: Optional[dict[str, int]] = None
+        self._llm_context_cache: Optional[dict[str, int]] = None
+        self._llm_cache_at: float = 0.0
 
     @property
     def using_user_token(self) -> bool:
@@ -169,7 +170,7 @@ class ChutesClient:
         logger.info("Fetched models", count=len(models))
         return models
 
-    async def _fetch_llm_models(self) -> dict[str, int]:
+    async def _fetch_llm_models(self) -> tuple[dict[str, int], dict[str, int]]:
         url = f"{self.base_url}/models"
         headers = None
         auth_token = self.user_access_token or self.api_key
@@ -182,45 +183,64 @@ class ChutesClient:
                 data = response.json()
         except Exception as exc:
             logger.warning("Failed to fetch LLM model limits", error=str(exc))
-            return {}
+            return {}, {}
 
         items = data.get("data") if isinstance(data, dict) else None
         if not isinstance(items, list):
-            return {}
+            return {}, {}
 
-        limits: dict[str, int] = {}
+        output_limits: dict[str, int] = {}
+        context_limits: dict[str, int] = {}
         for item in items:
             if not isinstance(item, dict):
                 continue
             max_output_length = item.get("max_output_length")
+            context_length = item.get("max_model_len") or item.get("context_length")
             if not isinstance(max_output_length, int):
-                continue
+                max_output_length = None
+            if not isinstance(context_length, int):
+                context_length = None
             model_id = item.get("id")
             if isinstance(model_id, str) and model_id:
-                limits[model_id] = max_output_length
+                if max_output_length is not None:
+                    output_limits[model_id] = max_output_length
+                if context_length is not None:
+                    context_limits[model_id] = context_length
             chute_id = item.get("chute_id")
             if isinstance(chute_id, str) and chute_id:
-                limits[chute_id] = max_output_length
-        return limits
+                if max_output_length is not None:
+                    output_limits[chute_id] = max_output_length
+                if context_length is not None:
+                    context_limits[chute_id] = context_length
+        return output_limits, context_limits
 
     async def _get_llm_model_limits(self) -> dict[str, int]:
         ttl_seconds = settings.chutes_models_cache_ttl_seconds
         now = time.monotonic()
-        if self._llm_models_cache and (now - self._llm_models_cache_at) < ttl_seconds:
-            return self._llm_models_cache
+        if self._llm_output_cache and (now - self._llm_cache_at) < ttl_seconds:
+            return self._llm_output_cache
 
-        limits = await self._fetch_llm_models()
-        if limits:
-            self._llm_models_cache = limits
-            self._llm_models_cache_at = now
-            return limits
-        return self._llm_models_cache or {}
+        output_limits, context_limits = await self._fetch_llm_models()
+        if output_limits or context_limits:
+            if output_limits:
+                self._llm_output_cache = output_limits
+            if context_limits:
+                self._llm_context_cache = context_limits
+            self._llm_cache_at = now
+            return self._llm_output_cache or {}
+        return self._llm_output_cache or {}
 
     async def get_model_max_output_length(self, model_identifier: str) -> Optional[int]:
         limits = await self._get_llm_model_limits()
         if not limits:
             return None
         return limits.get(model_identifier)
+
+    async def get_model_context_length(self, model_identifier: str) -> Optional[int]:
+        await self._get_llm_model_limits()
+        if not self._llm_context_cache:
+            return None
+        return self._llm_context_cache.get(model_identifier)
 
     def _estimate_tokens(self, text: str) -> int:
         if not text:
@@ -425,19 +445,30 @@ class ChutesClient:
         min_output_tokens = settings.chutes_min_output_tokens
         max_tokens_cap = settings.chutes_max_output_tokens_cap
         max_output_length = await self.get_model_max_output_length(model_slug)
+        context_length = await self.get_model_context_length(model_slug)
         safe_max_tokens: Optional[int] = None
         desired_max_tokens = requested_max_tokens
         if desired_max_tokens is None or desired_max_tokens < min_output_tokens:
             desired_max_tokens = min_output_tokens
 
+        input_tokens = self._estimate_tokens(prompt)
+        if system_prompt:
+            input_tokens += self._estimate_tokens(system_prompt)
+        if context_length and input_tokens >= context_length:
+            metadata["response_error"] = (
+                f"Prompt length {input_tokens} exceeds model context length {context_length}"
+            )
+            metadata["context_length"] = context_length
+            metadata["input_tokens_estimate"] = input_tokens
+            return "", metadata
+
         if max_output_length:
-            input_tokens = self._estimate_tokens(prompt)
-            if system_prompt:
-                input_tokens += self._estimate_tokens(system_prompt)
             safe_max_tokens = self._compute_safe_max_tokens(max_output_length, input_tokens)
             if max_tokens_cap:
                 safe_max_tokens = min(safe_max_tokens, max_tokens_cap)
             metadata["max_output_length"] = max_output_length
+            if context_length:
+                metadata["context_length"] = context_length
             if safe_max_tokens > 0 and desired_max_tokens is not None:
                 applied_max_tokens = min(desired_max_tokens, safe_max_tokens)
             else:
