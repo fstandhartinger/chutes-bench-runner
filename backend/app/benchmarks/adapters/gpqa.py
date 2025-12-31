@@ -33,10 +33,10 @@ class GPQADiamondAdapter(BenchmarkAdapter):
         return len(self._items)
 
     def requires_setup(self) -> bool:
-        return True
+        return False
 
     def get_setup_notes(self) -> Optional[str]:
-        return "GPQA Diamond is a gated dataset. Request access at https://huggingface.co/datasets/Idavidrein/gpqa and set HF_TOKEN env var."
+        return None
 
     async def preload(self) -> None:
         """Load GPQA Diamond dataset."""

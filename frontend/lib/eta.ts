@@ -25,7 +25,7 @@ function expectedItems(rb: BenchmarkRunBenchmark, subsetPct: number): number {
     return rb.sampled_items;
   }
   if (rb.total_items && rb.total_items > 0) {
-    return Math.max(1, Math.round((rb.total_items * subsetPct) / 100));
+    return Math.max(1, Math.floor((rb.total_items * subsetPct) / 100));
   }
   return 0;
 }

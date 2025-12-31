@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -134,7 +134,7 @@ async def update_run_status(
     update_data: dict[str, Any] = {"status": status.value, "updated_at": datetime.utcnow()}
 
     if status == RunStatus.RUNNING:
-        update_data["started_at"] = datetime.utcnow()
+        update_data["started_at"] = func.coalesce(BenchmarkRun.started_at, datetime.utcnow())
     elif status in (RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELED):
         update_data["completed_at"] = datetime.utcnow()
 
@@ -184,7 +184,7 @@ async def update_benchmark_status(
     update_data: dict[str, Any] = {"status": status.value, "updated_at": datetime.utcnow()}
 
     if status == BenchmarkRunStatus.RUNNING:
-        update_data["started_at"] = datetime.utcnow()
+        update_data["started_at"] = func.coalesce(BenchmarkRunBenchmark.started_at, datetime.utcnow())
     elif status in (BenchmarkRunStatus.SUCCEEDED, BenchmarkRunStatus.FAILED, BenchmarkRunStatus.SKIPPED):
         update_data["completed_at"] = datetime.utcnow()
 

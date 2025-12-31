@@ -344,9 +344,9 @@ export function BenchmarkRunner() {
   const now = new Date();
   const startedAt = parseDateValue(currentRun?.started_at);
   const completedAt = parseDateValue(currentRun?.completed_at);
-  const elapsedMs =
-    startedAt &&
-    (completedAt ? completedAt.getTime() : now.getTime()) - startedAt.getTime();
+  const elapsedMs = startedAt
+    ? Math.max(0, (completedAt ? completedAt.getTime() : now.getTime()) - startedAt.getTime())
+    : null;
   const etaSeconds =
     currentRun && currentRun.status === "running"
       ? estimateRunRemainingSeconds(currentRun, now)

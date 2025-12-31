@@ -1,12 +1,25 @@
 """API request/response schemas."""
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+def _serialize_datetime(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
+
+
+class APIModel(BaseModel):
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={datetime: _serialize_datetime},
+    )
 
 
 # Model schemas
-class ModelResponse(BaseModel):
+class ModelResponse(APIModel):
     """Model response schema."""
     id: str
     slug: str
@@ -18,9 +31,6 @@ class ModelResponse(BaseModel):
     instance_count: int = 0
     is_active: bool = True
 
-    class Config:
-        from_attributes = True
-
 
 class ModelsListResponse(BaseModel):
     """List of models response."""
@@ -29,7 +39,7 @@ class ModelsListResponse(BaseModel):
 
 
 # Benchmark schemas
-class BenchmarkInfo(BaseModel):
+class BenchmarkInfo(APIModel):
     """Benchmark info schema."""
     name: str
     display_name: str
@@ -56,7 +66,7 @@ class CreateRunRequest(BaseModel):
     config: Optional[dict[str, Any]] = None
 
 
-class BenchmarkRunBenchmarkResponse(BaseModel):
+class BenchmarkRunBenchmarkResponse(APIModel):
     """Benchmark within a run response."""
     id: str
     benchmark_name: str
@@ -70,11 +80,8 @@ class BenchmarkRunBenchmarkResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
 
-
-class RunResponse(BaseModel):
+class RunResponse(APIModel):
     """Run response schema."""
     id: str
     model_id: str
@@ -89,9 +96,6 @@ class RunResponse(BaseModel):
     created_at: datetime
     benchmarks: list[BenchmarkRunBenchmarkResponse] = []
 
-    class Config:
-        from_attributes = True
-
 
 class RunsListResponse(BaseModel):
     """List of runs response."""
@@ -99,7 +103,7 @@ class RunsListResponse(BaseModel):
     total: int
 
 
-class ItemResultResponse(BaseModel):
+class ItemResultResponse(APIModel):
     """Item result response schema."""
     id: str
     item_id: str
@@ -118,9 +122,6 @@ class ItemResultResponse(BaseModel):
     item_metadata: Optional[dict[str, Any]] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 class ItemResultsResponse(BaseModel):
     """Paginated item results response."""
@@ -130,7 +131,7 @@ class ItemResultsResponse(BaseModel):
     offset: int
 
 
-class RunEventResponse(BaseModel):
+class RunEventResponse(APIModel):
     """Run event response schema."""
     id: str
     event_type: str
@@ -138,9 +139,6 @@ class RunEventResponse(BaseModel):
     message: Optional[str] = None
     data: Optional[dict[str, Any]] = None
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class CancelRunResponse(BaseModel):

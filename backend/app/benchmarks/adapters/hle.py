@@ -29,10 +29,10 @@ class HLEAdapter(BenchmarkAdapter):
         return "Humanity's Last Exam"
 
     def requires_setup(self) -> bool:
-        return True
+        return False
 
     def get_setup_notes(self) -> Optional[str]:
-        return "HLE dataset may require Hugging Face access (set HF_TOKEN if gated)."
+        return None
 
     def _normalize_answer(self, text: str) -> str:
         text = text.lower()

@@ -43,7 +43,7 @@ class TauBenchTelecomAdapter(BenchmarkAdapter):
         return False
 
     def get_setup_notes(self) -> Optional[str]:
-        return "τ²-Bench auto-downloads the official tau2 repo and data for evaluation."
+        return None
 
     def supports_subset(self) -> bool:
         return True

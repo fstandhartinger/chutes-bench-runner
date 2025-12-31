@@ -490,9 +490,9 @@ export default function RunDetailPage() {
   const now = new Date();
   const startedAt = parseDateValue(run.started_at);
   const completedAt = parseDateValue(run.completed_at);
-  const elapsedMs =
-    startedAt &&
-    (completedAt ? completedAt.getTime() : now.getTime()) - startedAt.getTime();
+  const elapsedMs = startedAt
+    ? Math.max(0, (completedAt ? completedAt.getTime() : now.getTime()) - startedAt.getTime())
+    : null;
   const etaSeconds =
     run.status === "running" ? estimateRunRemainingSeconds(run, now) : null;
   const queueInfo = run.status === "queued" ? queueSchedule[run.id] : undefined;

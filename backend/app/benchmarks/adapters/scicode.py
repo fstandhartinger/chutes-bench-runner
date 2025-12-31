@@ -48,7 +48,7 @@ class SciCodeAdapter(BenchmarkAdapter):
         return False
 
     def get_setup_notes(self) -> Optional[str]:
-        return "SciCode auto-downloads the official dataset and numeric test data before running."
+        return None
 
     async def get_total_items(self) -> int:
         if not self._items:

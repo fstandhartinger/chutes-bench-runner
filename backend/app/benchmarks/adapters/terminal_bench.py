@@ -40,7 +40,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         return False
 
     def get_setup_notes(self) -> Optional[str]:
-        return "Terminal-Bench auto-downloads task archives and evaluates them in Sandy."
+        return None
 
     def supports_subset(self) -> bool:
         return True

@@ -43,7 +43,7 @@ class SWEBenchProAdapter(BenchmarkAdapter):
         return False
 
     def get_setup_notes(self) -> Optional[str]:
-        return "SWE-Bench Pro auto-downloads official scripts and uses Docker Hub images."
+        return None
 
     def supports_subset(self) -> bool:
         return True
