@@ -65,6 +65,11 @@ def _is_max_tokens_error(exc: InferenceHTTPError) -> bool:
     )
 
 
+def _is_context_length_error(exc: InferenceHTTPError) -> bool:
+    text = (exc.response_text or "").lower()
+    return "context length" in text and "input" in text and "longer" in text
+
+
 class ChutesClient:
     """Client for Chutes API operations.
     
@@ -496,6 +501,11 @@ class ChutesClient:
             try:
                 response = await self.run_inference(model_slug, messages, **kwargs)
             except InferenceHTTPError as e:
+                if _is_context_length_error(e):
+                    metadata["response_error"] = "Prompt exceeds model context length"
+                    metadata["response_error_code"] = e.status_code
+                    metadata["response_error_detail"] = e.response_text
+                    return "", metadata
                 if (
                     attempt < max_attempts
                     and _is_max_tokens_error(e)
