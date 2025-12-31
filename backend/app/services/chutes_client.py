@@ -55,6 +55,8 @@ def _is_max_tokens_error(exc: InferenceHTTPError) -> bool:
         phrase in text
         for phrase in (
             "max_tokens",
+            "max_completion_tokens",
+            "completion tokens",
             "maximum context length",
             "context length",
             "max output",
