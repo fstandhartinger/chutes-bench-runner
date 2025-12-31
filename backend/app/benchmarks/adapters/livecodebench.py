@@ -224,20 +224,17 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         starter = item.get("starter_code") or ""
         starter_section = f"Starter code:\n{starter}" if starter else ""
         prompt = f"""Solve the following coding problem. Provide a complete Python solution.
+Return ONLY Python code (no markdown, no explanations).
 
 Problem:
 {item["question"]}
 
 {starter_section}
-
-Solution:
-```python
 """
 
         system_prompt = (
-            "Output ONLY the final Python code within a markdown code block. "
-            "Close the code block with ``` and stop immediately. "
-            "Do NOT use <think> tags. Do NOT provide any explanations or prose. Just the code."
+            "Output ONLY Python code. No markdown, no explanations, no prose. "
+            "Do NOT use <think> tags."
         )
         try:
             start_time = time.time()
@@ -246,7 +243,6 @@ Solution:
                 prompt,
                 system_prompt=system_prompt,
                 max_tokens=16384,
-                stop=["```"],
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
