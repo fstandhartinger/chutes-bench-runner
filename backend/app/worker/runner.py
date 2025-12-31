@@ -342,6 +342,8 @@ class BenchmarkWorker:
                     await db.refresh(run)
                     if run.canceled_at:
                         raise Exception("Run canceled")
+                if db.in_transaction():
+                    await db.commit()
 
                 result = await adapter.evaluate_item(item_id)
                 results.append(result)
