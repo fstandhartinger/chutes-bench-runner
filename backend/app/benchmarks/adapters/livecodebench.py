@@ -39,6 +39,12 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
     def requires_setup(self) -> bool:
         return False
 
+    def _looks_like_code(self, code: str) -> bool:
+        if not code:
+            return False
+        markers = ("def ", "class ", "import ", "from ", "if __name__")
+        return any(marker in code for marker in markers)
+
     async def get_total_items(self) -> int:
         if self._items:
             return len(self._items)
@@ -265,6 +271,30 @@ Problem:
                 )
 
             extracted_code = self.extract_python_code(response_text)
+            if not self._looks_like_code(extracted_code):
+                item_metadata = {
+                    **metadata,
+                    "difficulty": item.get("difficulty"),
+                    "system_prompt": system_prompt,
+                }
+                error = self.format_truncation_error(
+                    metadata,
+                    "Model response did not contain Python code",
+                )
+                return ItemResult(
+                    item_id=item_id,
+                    item_hash=self.compute_item_hash(item["question"]),
+                    prompt=prompt,
+                    response=response_text.strip(),
+                    expected="[All tests passed]",
+                    is_correct=False,
+                    score=0.0,
+                    latency_ms=latency_ms,
+                    input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
+                    output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                    error=error,
+                    metadata=item_metadata,
+                )
             sandbox_id = await self.sandy.create_sandbox()
             if not sandbox_id:
                 return ItemResult(
