@@ -424,6 +424,7 @@ class ChutesClient:
 
         min_output_tokens = settings.chutes_min_output_tokens
         max_output_length = await self.get_model_max_output_length(model_slug)
+        safe_max_tokens: Optional[int] = None
         desired_max_tokens = requested_max_tokens
         if desired_max_tokens is None or desired_max_tokens < min_output_tokens:
             desired_max_tokens = min_output_tokens
@@ -493,6 +494,32 @@ class ChutesClient:
 
             metadata.update(response_metadata)
             metadata["response_attempts"] = attempt
+
+            finish_reason = metadata.get("finish_reason")
+            if (
+                finish_reason == "length"
+                and attempt < max_attempts
+                and isinstance(kwargs.get("max_tokens"), int)
+            ):
+                current_max = kwargs["max_tokens"]
+                bumped: Optional[int] = None
+                if safe_max_tokens and safe_max_tokens > current_max:
+                    bumped = min(current_max * 2, safe_max_tokens)
+                elif safe_max_tokens is None:
+                    bumped = current_max * 2
+                if bumped and bumped > current_max:
+                    kwargs["max_tokens"] = bumped
+                    applied_max_tokens = bumped
+                    metadata["max_tokens"] = bumped
+                    logger.info(
+                        "Retrying after truncation",
+                        model=model_slug,
+                        previous=current_max,
+                        applied=bumped,
+                    )
+                    await asyncio.sleep(delay_seconds)
+                    delay_seconds = min(delay_seconds * 2, 10)
+                    continue
 
             if text:
                 return text, metadata
