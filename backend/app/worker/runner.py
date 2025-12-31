@@ -374,7 +374,7 @@ class BenchmarkWorker:
 
             metrics = {
                 "accuracy": score,
-                "total_items": len(all_items),
+                "total_items": total_items,
                 "sampled_items": len(items_to_evaluate),
                 "sampled_pct": run.subset_pct,
                 "correct": correct,
