@@ -123,6 +123,10 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         cleanup_cmd = None
 
         if has_compose:
+            compose_cmd = "docker-compose"
+            compose_check = await self.sandy.execute_command(sandbox_id, "docker-compose version")
+            if compose_check.get("exit_code") != 0:
+                compose_cmd = "docker compose"
             logs_dir = f"{task_dir}/logs"
             await self.sandy.execute_command(sandbox_id, f"mkdir -p {logs_dir}")
             env = {
@@ -133,7 +137,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 "T_BENCH_CONTAINER_LOGS_PATH": "/var/log/tbench",
                 "T_BENCH_TEST_DIR": "/tests",
             }
-            up_cmd = f"docker-compose -f {task_dir}/docker-compose.yaml up --build -d"
+            up_cmd = f"{compose_cmd} -f {task_dir}/docker-compose.yaml up --build -d"
             up_result = await self.sandy.execute_command(
                 sandbox_id,
                 up_cmd,
@@ -149,7 +153,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     "stderr": up_result.get("stderr"),
                 }
             container_name = env["T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME"]
-            cleanup_cmd = f"docker-compose -f {task_dir}/docker-compose.yaml down"
+            cleanup_cmd = f"{compose_cmd} -f {task_dir}/docker-compose.yaml down"
         else:
             build_result = await self.sandy.execute_command(
                 sandbox_id,

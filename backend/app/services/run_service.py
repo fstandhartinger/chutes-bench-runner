@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -245,7 +246,16 @@ async def save_item_result(
         item_metadata=item_metadata,
     )
     db.add(result)
-    await db.flush()
+    try:
+        await db.flush()
+    except DBAPIError as exc:
+        await db.rollback()
+        if getattr(exc, "connection_invalidated", False):
+            logger.warning("DB connection invalidated while saving item result; retrying", error=str(exc))
+            db.add(result)
+            await db.flush()
+        else:
+            raise
     return result
 
 

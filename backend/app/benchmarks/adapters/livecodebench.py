@@ -55,6 +55,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
                 "livecodebench/code_generation",
                 split="test",
                 token=hf_token,
+                streaming=True,
             )
 
             self._items = []
