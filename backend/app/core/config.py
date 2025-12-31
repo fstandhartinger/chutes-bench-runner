@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     chutes_models_cache_ttl_seconds: int = 600
     chutes_max_tokens_margin: int = 2048
     chutes_min_output_tokens: int = 16384
+    chutes_max_output_tokens_cap: Optional[int] = 32768
 
     # Backend
     backend_host: str = "0.0.0.0"

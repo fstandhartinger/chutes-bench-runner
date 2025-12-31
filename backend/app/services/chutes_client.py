@@ -423,6 +423,7 @@ class ChutesClient:
         }
 
         min_output_tokens = settings.chutes_min_output_tokens
+        max_tokens_cap = settings.chutes_max_output_tokens_cap
         max_output_length = await self.get_model_max_output_length(model_slug)
         safe_max_tokens: Optional[int] = None
         desired_max_tokens = requested_max_tokens
@@ -434,6 +435,8 @@ class ChutesClient:
             if system_prompt:
                 input_tokens += self._estimate_tokens(system_prompt)
             safe_max_tokens = self._compute_safe_max_tokens(max_output_length, input_tokens)
+            if max_tokens_cap:
+                safe_max_tokens = min(safe_max_tokens, max_tokens_cap)
             metadata["max_output_length"] = max_output_length
             if safe_max_tokens > 0 and desired_max_tokens is not None:
                 applied_max_tokens = min(desired_max_tokens, safe_max_tokens)
@@ -441,6 +444,9 @@ class ChutesClient:
                 applied_max_tokens = safe_max_tokens or desired_max_tokens
         else:
             applied_max_tokens = desired_max_tokens
+
+        if max_tokens_cap and applied_max_tokens is not None:
+            applied_max_tokens = min(applied_max_tokens, max_tokens_cap)
 
         if applied_max_tokens is not None:
             kwargs["max_tokens"] = applied_max_tokens
@@ -502,10 +508,16 @@ class ChutesClient:
                 and isinstance(kwargs.get("max_tokens"), int)
             ):
                 current_max = kwargs["max_tokens"]
+                max_tokens_ceiling = safe_max_tokens
+                if max_tokens_cap:
+                    if max_tokens_ceiling:
+                        max_tokens_ceiling = min(max_tokens_ceiling, max_tokens_cap)
+                    else:
+                        max_tokens_ceiling = max_tokens_cap
                 bumped: Optional[int] = None
-                if safe_max_tokens and safe_max_tokens > current_max:
-                    bumped = min(current_max * 2, safe_max_tokens)
-                elif safe_max_tokens is None:
+                if max_tokens_ceiling and max_tokens_ceiling > current_max:
+                    bumped = min(current_max * 2, max_tokens_ceiling)
+                elif max_tokens_ceiling is None:
                     bumped = current_max * 2
                 if bumped and bumped > current_max:
                     kwargs["max_tokens"] = bumped
