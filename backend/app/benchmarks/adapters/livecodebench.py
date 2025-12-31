@@ -42,8 +42,13 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
     def _looks_like_code(self, code: str) -> bool:
         if not code:
             return False
-        markers = ("def ", "class ", "import ", "from ", "if __name__")
-        return any(marker in code for marker in markers)
+        for line in code.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("if __name__"):
+                return True
+            if stripped.startswith(("def ", "class ", "import ", "from ")):
+                return True
+        return False
 
     async def get_total_items(self) -> int:
         if self._items:
