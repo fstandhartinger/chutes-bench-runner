@@ -196,6 +196,7 @@ class BenchmarkWorker:
 
         total_score = 0.0
         completed_benchmarks = 0
+        failed_benchmarks = 0
         client = await self._get_client_for_run(db, run)
 
         try:
@@ -228,11 +229,29 @@ class BenchmarkWorker:
                         benchmark_name=rb.benchmark_name,
                         message=f"Benchmark failed: {str(e)}"
                     )
+                    failed_benchmarks += 1
         finally:
             if client is not self.client:
                 await client.close()
 
         # Compute overall score
+        if completed_benchmarks == 0 and failed_benchmarks > 0:
+            await update_run_status(
+                db,
+                run.id,
+                RunStatus.FAILED,
+                error_message="All benchmarks failed",
+            )
+            await add_run_event(
+                db,
+                run.id,
+                "run_failed",
+                message="Run failed: all benchmarks failed",
+                data={"failed_benchmarks": failed_benchmarks},
+            )
+            logger.error("Run failed", run_id=run.id, failed=failed_benchmarks)
+            return
+
         overall_score = total_score / completed_benchmarks if completed_benchmarks > 0 else None
 
         await update_run_status(
