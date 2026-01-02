@@ -85,6 +85,22 @@ export interface ItemResult {
   created_at: string;
 }
 
+export interface BenchmarkSummary {
+  total_items: number;
+  correct: number;
+  incorrect: number;
+  errors: number;
+  avg_latency_ms?: number | null;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  input_cost_usd?: number | null;
+  output_cost_usd?: number | null;
+  total_cost_usd?: number | null;
+  pricing_input_per_million_usd?: number | null;
+  pricing_output_per_million_usd?: number | null;
+}
+
 export interface SignedExportVerification {
   valid: boolean;
   signature_valid: boolean;
@@ -179,6 +195,7 @@ export async function getBenchmarkDetails(
 ): Promise<{
   benchmark: BenchmarkRunBenchmark;
   items: { items: ItemResult[]; total: number };
+  summary: BenchmarkSummary;
 }> {
   return fetchAPI(`/api/runs/${runId}/benchmarks/${benchmarkName}?limit=${limit}&offset=${offset}`);
 }

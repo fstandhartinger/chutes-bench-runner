@@ -97,6 +97,7 @@ class ChutesClient:
         self._is_user_token_mode = user_access_token is not None
         self._llm_output_cache: Optional[dict[str, int]] = None
         self._llm_context_cache: Optional[dict[str, int]] = None
+        self._llm_pricing_cache: Optional[dict[str, tuple[float, float]]] = None
         self._llm_cache_at: float = 0.0
 
     @property
@@ -175,7 +176,9 @@ class ChutesClient:
         logger.info("Fetched models", count=len(models))
         return models
 
-    async def _fetch_llm_models(self) -> tuple[dict[str, int], dict[str, int]]:
+    async def _fetch_llm_models(
+        self,
+    ) -> tuple[dict[str, int], dict[str, int], dict[str, tuple[float, float]]]:
         url = f"{self.base_url}/models"
         headers = None
         auth_token = self.user_access_token or self.api_key
@@ -188,49 +191,79 @@ class ChutesClient:
                 data = response.json()
         except Exception as exc:
             logger.warning("Failed to fetch LLM model limits", error=str(exc))
-            return {}, {}
+            return {}, {}, {}
 
         items = data.get("data") if isinstance(data, dict) else None
         if not isinstance(items, list):
-            return {}, {}
+            return {}, {}, {}
 
         output_limits: dict[str, int] = {}
         context_limits: dict[str, int] = {}
+        pricing_map: dict[str, tuple[float, float]] = {}
         for item in items:
             if not isinstance(item, dict):
                 continue
             max_output_length = item.get("max_output_length")
             context_length = item.get("max_model_len") or item.get("context_length")
+            raw_pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
+            raw_price = item.get("price") if isinstance(item.get("price"), dict) else {}
+            input_price = raw_pricing.get("prompt")
+            output_price = raw_pricing.get("completion")
+            if input_price is None or output_price is None:
+                input_price = (
+                    raw_price.get("input", {}).get("usd")
+                    if isinstance(raw_price.get("input"), dict)
+                    else input_price
+                )
+                output_price = (
+                    raw_price.get("output", {}).get("usd")
+                    if isinstance(raw_price.get("output"), dict)
+                    else output_price
+                )
             if not isinstance(max_output_length, int):
                 max_output_length = None
             if not isinstance(context_length, int):
                 context_length = None
+            if not isinstance(input_price, (int, float)):
+                input_price = None
+            if not isinstance(output_price, (int, float)):
+                output_price = None
             model_id = item.get("id")
             if isinstance(model_id, str) and model_id:
                 if max_output_length is not None:
                     output_limits[model_id] = max_output_length
                 if context_length is not None:
                     context_limits[model_id] = context_length
+                if input_price is not None and output_price is not None:
+                    pricing_map[model_id] = (float(input_price), float(output_price))
             chute_id = item.get("chute_id")
             if isinstance(chute_id, str) and chute_id:
                 if max_output_length is not None:
                     output_limits[chute_id] = max_output_length
                 if context_length is not None:
                     context_limits[chute_id] = context_length
-        return output_limits, context_limits
+                if input_price is not None and output_price is not None:
+                    pricing_map[chute_id] = (float(input_price), float(output_price))
+        return output_limits, context_limits, pricing_map
 
     async def _get_llm_model_limits(self) -> dict[str, int]:
         ttl_seconds = settings.chutes_models_cache_ttl_seconds
         now = time.monotonic()
-        if self._llm_output_cache and (now - self._llm_cache_at) < ttl_seconds:
+        if (
+            self._llm_output_cache
+            and (now - self._llm_cache_at) < ttl_seconds
+            and self._llm_pricing_cache is not None
+        ):
             return self._llm_output_cache
 
-        output_limits, context_limits = await self._fetch_llm_models()
-        if output_limits or context_limits:
+        output_limits, context_limits, pricing_map = await self._fetch_llm_models()
+        if output_limits or context_limits or pricing_map:
             if output_limits:
                 self._llm_output_cache = output_limits
             if context_limits:
                 self._llm_context_cache = context_limits
+            if pricing_map:
+                self._llm_pricing_cache = pricing_map
             self._llm_cache_at = now
             return self._llm_output_cache or {}
         return self._llm_output_cache or {}
@@ -246,6 +279,17 @@ class ChutesClient:
         if not self._llm_context_cache:
             return None
         return self._llm_context_cache.get(model_identifier)
+
+    async def get_model_pricing(
+        self, *identifiers: Optional[str]
+    ) -> Optional[tuple[float, float]]:
+        await self._get_llm_model_limits()
+        if not self._llm_pricing_cache:
+            return None
+        for identifier in identifiers:
+            if identifier and identifier in self._llm_pricing_cache:
+                return self._llm_pricing_cache[identifier]
+        return None
 
     def _estimate_tokens(self, text: str) -> int:
         if not text:

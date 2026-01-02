@@ -145,6 +145,30 @@ class ItemResultsResponse(BaseModel):
     offset: int
 
 
+class BenchmarkSummaryResponse(BaseModel):
+    """Aggregated benchmark stats across all items in a run."""
+    total_items: int
+    correct: int
+    incorrect: int
+    errors: int
+    avg_latency_ms: Optional[float] = None
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    input_cost_usd: Optional[float] = None
+    output_cost_usd: Optional[float] = None
+    total_cost_usd: Optional[float] = None
+    pricing_input_per_million_usd: Optional[float] = None
+    pricing_output_per_million_usd: Optional[float] = None
+
+
+class RunBenchmarkDetailsResponse(BaseModel):
+    """Benchmark details with item results and summary stats."""
+    benchmark: BenchmarkRunBenchmarkResponse
+    items: ItemResultsResponse
+    summary: BenchmarkSummaryResponse
+
+
 class RunEventResponse(APIModel):
     """Run event response schema."""
     id: str

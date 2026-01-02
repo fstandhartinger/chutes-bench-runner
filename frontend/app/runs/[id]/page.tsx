@@ -13,6 +13,7 @@ import {
   type Run,
   type ItemResult,
   type BenchmarkRunBenchmark,
+  type BenchmarkSummary,
 } from "@/lib/api";
 import {
   computeQueueSchedule,
@@ -341,6 +342,7 @@ export default function RunDetailPage() {
   const [selectedBenchmark, setSelectedBenchmark] = useState<string | null>(null);
   const [items, setItems] = useState<ItemResult[]>([]);
   const [totalItems, setTotalItems] = useState(0);
+  const [summary, setSummary] = useState<BenchmarkSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [itemsLoading, setItemsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -360,6 +362,9 @@ export default function RunDetailPage() {
 
     while (offset < total || total === 0) {
       const data = await getBenchmarkDetails(runId, selectedBenchmark, pageSize, offset);
+      if (!summary) {
+        setSummary(data.summary ?? null);
+      }
       const batch = data.items.items;
       total = data.items.total;
       if (batch.length === 0) break;
@@ -368,7 +373,7 @@ export default function RunDetailPage() {
     }
 
     return allItems;
-  }, [runId, selectedBenchmark, totalItems]);
+  }, [runId, selectedBenchmark, summary, totalItems]);
 
   const loadRun = useCallback(async () => {
     try {
@@ -423,6 +428,7 @@ export default function RunDetailPage() {
     setItemsLimit(20);
     setItems([]);
     setTotalItems(0);
+    setSummary(null);
   }, [selectedBenchmark]);
 
   useEffect(() => {
@@ -434,6 +440,7 @@ export default function RunDetailPage() {
         const data = await getBenchmarkDetails(runId, selectedBenchmark!, itemsLimit, 0);
         setItems(data.items.items);
         setTotalItems(data.items.total);
+        setSummary(data.summary ?? null);
       } catch (e) {
         console.error("Failed to load items:", e);
       } finally {
@@ -470,19 +477,32 @@ export default function RunDetailPage() {
   );
 
   // Calculate stats
-  const correctCount = items.filter((i) => i.is_correct === true).length;
-  const incorrectCount = items.filter((i) => i.is_correct === false).length;
-  const errorCount = items.filter((i) => i.error).length;
+  const correctCount =
+    summary?.correct ?? items.filter((i) => i.is_correct === true).length;
+  const incorrectCount =
+    summary?.incorrect ?? items.filter((i) => i.is_correct === false).length;
+  const errorCount = summary?.errors ?? items.filter((i) => i.error).length;
   const avgLatencyMs =
-    items.length > 0
+    summary?.avg_latency_ms !== undefined && summary?.avg_latency_ms !== null
+      ? Math.round(summary.avg_latency_ms)
+      : items.length > 0
       ? Math.round(
           items.reduce((sum, i) => sum + (i.latency_ms || 0), 0) / items.length
         )
       : 0;
-  const totalTokens = items.reduce(
-    (sum, i) => sum + (i.input_tokens || 0) + (i.output_tokens || 0),
-    0
-  );
+  const inputTokens =
+    summary?.input_tokens ??
+    items.reduce((sum, i) => sum + (i.input_tokens || 0), 0);
+  const outputTokens =
+    summary?.output_tokens ??
+    items.reduce((sum, i) => sum + (i.output_tokens || 0), 0);
+  const totalTokens =
+    summary?.total_tokens ?? inputTokens + outputTokens;
+  const totalCostUsd = summary?.total_cost_usd ?? null;
+  const inputCostUsd = summary?.input_cost_usd ?? null;
+  const outputCostUsd = summary?.output_cost_usd ?? null;
+  const pricingInput = summary?.pricing_input_per_million_usd ?? null;
+  const pricingOutput = summary?.pricing_output_per_million_usd ?? null;
   const sampledPct =
     selectedRb && selectedRb.total_items > 0
       ? (selectedRb.sampled_items / selectedRb.total_items) * 100
@@ -801,7 +821,7 @@ export default function RunDetailPage() {
                 )}
 
                 {/* Metrics */}
-                <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-6">
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
                   <div className="rounded-lg bg-ink-700/50 p-4">
                     <div className="text-sm text-ink-400">Score</div>
                     <div className="text-2xl font-semibold text-moss">
@@ -830,9 +850,27 @@ export default function RunDetailPage() {
                     </div>
                   </div>
                   <div className="rounded-lg bg-ink-700/50 p-4">
+                    <div className="text-sm text-ink-400">Errors</div>
+                    <div className="text-2xl font-semibold text-yellow-400">
+                      {errorCount}
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-ink-700/50 p-4">
                     <div className="text-sm text-ink-400">Avg Latency</div>
                     <div className="text-2xl font-semibold">
                       {formatDuration(avgLatencyMs)}
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-ink-700/50 p-4">
+                    <div className="text-sm text-ink-400">Input Tokens</div>
+                    <div className="text-2xl font-semibold">
+                      {inputTokens.toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-ink-700/50 p-4">
+                    <div className="text-sm text-ink-400">Output Tokens</div>
+                    <div className="text-2xl font-semibold">
+                      {outputTokens.toLocaleString()}
                     </div>
                   </div>
                   <div className="rounded-lg bg-ink-700/50 p-4">
@@ -840,6 +878,26 @@ export default function RunDetailPage() {
                     <div className="text-2xl font-semibold">
                       {totalTokens.toLocaleString()}
                     </div>
+                  </div>
+                  <div className="rounded-lg bg-ink-700/50 p-4">
+                    <div className="text-sm text-ink-400">Estimated Cost</div>
+                    <div className="text-2xl font-semibold">
+                      {totalCostUsd === null || totalCostUsd === undefined
+                        ? "-"
+                        : `$${totalCostUsd.toFixed(4)}`}
+                    </div>
+                    {inputCostUsd !== null && outputCostUsd !== null && (
+                      <div className="text-xs text-ink-400">
+                        {`Input $${inputCostUsd.toFixed(4)} · Output $${outputCostUsd.toFixed(4)}`}
+                      </div>
+                    )}
+                    {pricingInput !== null && pricingOutput !== null && (
+                      <div className="text-xs text-ink-400">
+                        {`$${pricingInput.toFixed(2)} / $${pricingOutput.toFixed(
+                          2
+                        )} per 1M tokens`}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -902,7 +960,7 @@ export default function RunDetailPage() {
                         {showAllLoading ? (
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                         ) : null}
-                        Show All
+                        Load completely
                       </Button>
                       <Button
                         variant="secondary"
@@ -937,7 +995,7 @@ export default function RunDetailPage() {
 
                       {/* Load More Button */}
                       {itemsMode === "paged" && items.length < totalItems && (
-                        <div className="text-center pt-4">
+                        <div className="flex flex-wrap items-center justify-center gap-3 pt-4">
                           <Button
                             variant="secondary"
                             onClick={() => setItemsLimit((prev) => prev + 20)}
@@ -946,7 +1004,17 @@ export default function RunDetailPage() {
                             {itemsLoading ? (
                               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                             ) : null}
-                            Load More ({totalItems - items.length} remaining)
+                            Load more ({totalItems - items.length} remaining)
+                          </Button>
+                          <Button
+                            variant="outline"
+                            onClick={handleShowAll}
+                            disabled={itemsLoading || showAllLoading}
+                          >
+                            {showAllLoading ? (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : null}
+                            Load completely
                           </Button>
                         </div>
                       )}

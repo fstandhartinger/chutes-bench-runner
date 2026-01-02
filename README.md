@@ -19,9 +19,11 @@ results, and verifiable signed exports for sharing results.
 - **Deterministic subset sampling** (1/5/10/25/50/100%) for reproducibility
 - **API-triggered runs** using bearer API keys
 - **Detailed per-item results** with prompts, responses, latency, and judge output
+- **Token usage + cost breakdown** using Chutes pricing metadata
 - **Signed exports** (CSV, PDF, and signed ZIP with JSON + signature)
 - **Verification endpoint + UI** for signed ZIP files
 - **Queue + ETA** estimation for running and queued jobs
+- **Maintenance mode** to prevent new runs during deploys
 
 ## Benchmarks and evaluation methods
 
@@ -167,5 +169,21 @@ The `render.yaml` blueprint deploys:
 - Worker service
 - Frontend service
 - Postgres database
+
+## Maintenance mode (deploy safety)
+
+Before making any changes or deployments, **protect active runs**:
+
+1. **Check for running benchmarks**  
+   `GET /api/runs?status=running` must be empty.
+2. **Enable maintenance mode**  
+   Set `MAINTENANCE_MODE=true` (Render env var). This blocks new runs
+   via the API and UI and shows a maintenance banner.
+3. **Apply changes + deploy**  
+   Make updates, commit, push, wait for Render deploys to finish.
+4. **Disable maintenance mode**  
+   Only after confirming no runs are active, set `MAINTENANCE_MODE=false`.
+
+This prevents worker restarts during deploys from stalling in-flight runs.
 
 See `INTERNAL.md` for deployment details, operational notes, and debugging tips.

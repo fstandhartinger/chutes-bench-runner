@@ -4,13 +4,14 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from app.api.deps import AdminDep, ApiKeyDep, SessionDep
 from app.benchmarks import get_adapter
 from app.api.schemas import (
     BenchmarkInfo,
     BenchmarksListResponse,
+    BenchmarkSummaryResponse,
     CancelRunResponse,
     CreateRunRequest,
     ItemResultResponse,
@@ -19,6 +20,7 @@ from app.api.schemas import (
     ModelsListResponse,
     PublicKeyResponse,
     MaintenanceStatusResponse,
+    RunBenchmarkDetailsResponse,
     RunEventResponse,
     RunResponse,
     RunsListResponse,
@@ -289,7 +291,7 @@ async def cancel_benchmark_run(
     return CancelRunResponse(success=True, message="Run canceled")
 
 
-@router.get("/runs/{run_id}/benchmarks/{benchmark_name}")
+@router.get("/runs/{run_id}/benchmarks/{benchmark_name}", response_model=RunBenchmarkDetailsResponse)
 async def get_run_benchmark_details(
     db: SessionDep,
     run_id: str,
@@ -310,16 +312,63 @@ async def get_run_benchmark_details(
     if not rb:
         raise HTTPException(status_code=404, detail="Benchmark not found in run")
 
+    run = await get_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
     # Get item results
     items = await get_item_results(db, rb.id, limit=limit, offset=offset)
 
-    # Get total count
-    count_result = await db.execute(
-        select(func.count())
-        .select_from(BenchmarkItemResult)
-        .where(BenchmarkItemResult.run_benchmark_id == rb.id)
+    # Aggregate summary stats across all items
+    summary_result = await db.execute(
+        select(
+            func.count(BenchmarkItemResult.id),
+            func.coalesce(
+                func.sum(case((BenchmarkItemResult.is_correct == True, 1), else_=0)),  # noqa: E712
+                0,
+            ),
+            func.coalesce(
+                func.sum(case((BenchmarkItemResult.is_correct == False, 1), else_=0)),  # noqa: E712
+                0,
+            ),
+            func.coalesce(
+                func.sum(case((BenchmarkItemResult.error.is_not(None), 1), else_=0)),
+                0,
+            ),
+            func.avg(BenchmarkItemResult.latency_ms),
+            func.coalesce(func.sum(BenchmarkItemResult.input_tokens), 0),
+            func.coalesce(func.sum(BenchmarkItemResult.output_tokens), 0),
+        ).where(BenchmarkItemResult.run_benchmark_id == rb.id)
     )
-    total = count_result.scalar() or 0
+    (
+        total_items,
+        correct_count,
+        incorrect_count,
+        error_count,
+        avg_latency,
+        input_tokens,
+        output_tokens,
+    ) = summary_result.one()
+    total_items = int(total_items or 0)
+    input_tokens = int(input_tokens or 0)
+    output_tokens = int(output_tokens or 0)
+    total_tokens = input_tokens + output_tokens
+
+    input_cost_usd = None
+    output_cost_usd = None
+    total_cost_usd = None
+    pricing_input = None
+    pricing_output = None
+    client = get_chutes_client()
+    pricing = await client.get_model_pricing(
+        run.model_slug,
+        run.model.chute_id if run.model else None,
+    )
+    if pricing:
+        pricing_input, pricing_output = pricing
+        input_cost_usd = (input_tokens / 1_000_000) * pricing_input
+        output_cost_usd = (output_tokens / 1_000_000) * pricing_output
+        total_cost_usd = input_cost_usd + output_cost_usd
 
     return {
         "benchmark": {
@@ -335,9 +384,24 @@ async def get_run_benchmark_details(
         },
         "items": ItemResultsResponse(
             items=[ItemResultResponse.model_validate(i) for i in items],
-            total=total,
+            total=total_items,
             limit=limit,
             offset=offset,
+        ),
+        "summary": BenchmarkSummaryResponse(
+            total_items=total_items,
+            correct=int(correct_count or 0),
+            incorrect=int(incorrect_count or 0),
+            errors=int(error_count or 0),
+            avg_latency_ms=float(avg_latency) if avg_latency is not None else None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            input_cost_usd=input_cost_usd,
+            output_cost_usd=output_cost_usd,
+            total_cost_usd=total_cost_usd,
+            pricing_input_per_million_usd=pricing_input,
+            pricing_output_per_million_usd=pricing_output,
         ),
     }
 
