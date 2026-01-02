@@ -99,6 +99,7 @@ export interface BenchmarkSummary {
   total_cost_usd?: number | null;
   pricing_input_per_million_usd?: number | null;
   pricing_output_per_million_usd?: number | null;
+  error_breakdown?: { message: string; count: number }[];
 }
 
 export interface SignedExportVerification {

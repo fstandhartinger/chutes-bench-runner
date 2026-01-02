@@ -350,6 +350,7 @@ export default function RunDetailPage() {
   const [itemsMode, setItemsMode] = useState<"paged" | "all">("paged");
   const [showAllLoading, setShowAllLoading] = useState(false);
   const [exportingMarkdown, setExportingMarkdown] = useState(false);
+  const [showErrorBreakdown, setShowErrorBreakdown] = useState(false);
   const [queueSchedule, setQueueSchedule] = useState<Record<string, QueueEstimate>>({});
   const workerSlots = getWorkerSlots();
 
@@ -429,6 +430,7 @@ export default function RunDetailPage() {
     setItems([]);
     setTotalItems(0);
     setSummary(null);
+    setShowErrorBreakdown(false);
   }, [selectedBenchmark]);
 
   useEffect(() => {
@@ -503,6 +505,7 @@ export default function RunDetailPage() {
   const outputCostUsd = summary?.output_cost_usd ?? null;
   const pricingInput = summary?.pricing_input_per_million_usd ?? null;
   const pricingOutput = summary?.pricing_output_per_million_usd ?? null;
+  const errorBreakdown = summary?.error_breakdown ?? [];
   const sampledPct =
     selectedRb && selectedRb.total_items > 0
       ? (selectedRb.sampled_items / selectedRb.total_items) * 100
@@ -941,9 +944,18 @@ export default function RunDetailPage() {
                         )
                       </h4>
                       {errorCount > 0 && (
-                        <span className="text-sm text-yellow-400">
-                          {errorCount} items with errors
-                        </span>
+                        <div className="flex flex-wrap items-center gap-2 text-sm text-yellow-400">
+                          <span>{errorCount} items with errors</span>
+                          {errorBreakdown.length > 0 && (
+                            <button
+                              type="button"
+                              className="text-xs text-ink-300 underline hover:text-ink-100"
+                              onClick={() => setShowErrorBreakdown((prev) => !prev)}
+                            >
+                              {showErrorBreakdown ? "Hide breakdown" : "Show breakdown"}
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -985,6 +997,23 @@ export default function RunDetailPage() {
                     </p>
                   ) : (
                     <div className="space-y-3">
+                      {showErrorBreakdown && errorBreakdown.length > 0 && (
+                        <div className="rounded-lg border border-yellow-400/30 bg-yellow-400/10 p-3 text-sm text-yellow-200">
+                          <div className="mb-2 font-medium">Error breakdown</div>
+                          <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                            {errorBreakdown.map((entry, idx) => (
+                              <div key={`${entry.message}-${idx}`} className="flex items-start justify-between gap-4">
+                                <span className="flex-1 break-words font-mono text-xs text-yellow-100">
+                                  {entry.message}
+                                </span>
+                                <span className="shrink-0 text-xs text-yellow-200">
+                                  {entry.count}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       {items.map((item, index) => (
                         <ItemDetailCard
                           key={item.id}

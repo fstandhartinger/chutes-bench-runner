@@ -99,6 +99,8 @@ class ChutesClient:
         self._llm_context_cache: Optional[dict[str, int]] = None
         self._llm_pricing_cache: Optional[dict[str, tuple[float, float]]] = None
         self._llm_cache_at: float = 0.0
+        self._chutes_pricing_cache: Optional[dict[str, tuple[float, float]]] = None
+        self._chutes_pricing_cache_at: float = 0.0
 
     @property
     def using_user_token(self) -> bool:
@@ -246,6 +248,54 @@ class ChutesClient:
                     pricing_map[chute_id] = (float(input_price), float(output_price))
         return output_limits, context_limits, pricing_map
 
+    async def _fetch_chutes_pricing_map(self) -> dict[str, tuple[float, float]]:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            all_items: list[dict[str, Any]] = []
+            page = 0
+            limit = 500
+
+            while True:
+                url = (
+                    f"{self.models_api_url}/chutes/?include_public=true"
+                    f"&page={page}&limit={limit}&include_schemas=false"
+                )
+                response = await client.get(url)
+                response.raise_for_status()
+                data = response.json()
+                items = data.get("items", [])
+                all_items.extend(items)
+                if len(items) < limit or len(all_items) >= data.get("total", 0):
+                    break
+                page += 1
+
+        pricing_map: dict[str, tuple[float, float]] = {}
+        for item in all_items:
+            if not isinstance(item, dict):
+                continue
+            pricing = item.get("current_estimated_price") or {}
+            per_million = pricing.get("per_million_tokens") if isinstance(pricing, dict) else None
+            if not isinstance(per_million, dict):
+                continue
+            input_price = (
+                per_million.get("input", {}).get("usd")
+                if isinstance(per_million.get("input"), dict)
+                else None
+            )
+            output_price = (
+                per_million.get("output", {}).get("usd")
+                if isinstance(per_million.get("output"), dict)
+                else None
+            )
+            if not isinstance(input_price, (int, float)) or not isinstance(output_price, (int, float)):
+                continue
+            name = item.get("name")
+            if isinstance(name, str) and name:
+                pricing_map[name] = (float(input_price), float(output_price))
+            chute_id = item.get("chute_id")
+            if isinstance(chute_id, str) and chute_id:
+                pricing_map[chute_id] = (float(input_price), float(output_price))
+        return pricing_map
+
     async def _get_llm_model_limits(self) -> dict[str, int]:
         ttl_seconds = settings.chutes_models_cache_ttl_seconds
         now = time.monotonic()
@@ -262,8 +312,7 @@ class ChutesClient:
                 self._llm_output_cache = output_limits
             if context_limits:
                 self._llm_context_cache = context_limits
-            if pricing_map:
-                self._llm_pricing_cache = pricing_map
+            self._llm_pricing_cache = pricing_map
             self._llm_cache_at = now
             return self._llm_output_cache or {}
         return self._llm_output_cache or {}
@@ -284,12 +333,29 @@ class ChutesClient:
         self, *identifiers: Optional[str]
     ) -> Optional[tuple[float, float]]:
         await self._get_llm_model_limits()
-        if not self._llm_pricing_cache:
-            return None
+        if self._llm_pricing_cache:
+            for identifier in identifiers:
+                if identifier and identifier in self._llm_pricing_cache:
+                    return self._llm_pricing_cache[identifier]
+        pricing_map = await self._get_chutes_pricing_map()
         for identifier in identifiers:
-            if identifier and identifier in self._llm_pricing_cache:
-                return self._llm_pricing_cache[identifier]
+            if identifier and identifier in pricing_map:
+                return pricing_map[identifier]
         return None
+
+    async def _get_chutes_pricing_map(self) -> dict[str, tuple[float, float]]:
+        ttl_seconds = settings.chutes_models_cache_ttl_seconds
+        now = time.monotonic()
+        if self._chutes_pricing_cache and (now - self._chutes_pricing_cache_at) < ttl_seconds:
+            return self._chutes_pricing_cache
+        try:
+            pricing_map = await self._fetch_chutes_pricing_map()
+        except Exception as exc:
+            logger.warning("Failed to fetch Chutes pricing", error=str(exc))
+            return self._chutes_pricing_cache or {}
+        self._chutes_pricing_cache = pricing_map
+        self._chutes_pricing_cache_at = now
+        return pricing_map
 
     def _estimate_tokens(self, text: str) -> int:
         if not text:

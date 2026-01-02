@@ -145,6 +145,12 @@ class ItemResultsResponse(BaseModel):
     offset: int
 
 
+class ErrorBreakdownEntry(BaseModel):
+    """Error message breakdown entry."""
+    message: str
+    count: int
+
+
 class BenchmarkSummaryResponse(BaseModel):
     """Aggregated benchmark stats across all items in a run."""
     total_items: int
@@ -160,6 +166,7 @@ class BenchmarkSummaryResponse(BaseModel):
     total_cost_usd: Optional[float] = None
     pricing_input_per_million_usd: Optional[float] = None
     pricing_output_per_million_usd: Optional[float] = None
+    error_breakdown: list[ErrorBreakdownEntry] = []
 
 
 class RunBenchmarkDetailsResponse(BaseModel):

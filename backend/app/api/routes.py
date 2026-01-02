@@ -370,6 +370,24 @@ async def get_run_benchmark_details(
         output_cost_usd = (output_tokens / 1_000_000) * pricing_output
         total_cost_usd = input_cost_usd + output_cost_usd
 
+    breakdown_result = await db.execute(
+        select(
+            BenchmarkItemResult.error,
+            func.count(BenchmarkItemResult.id),
+        )
+        .where(
+            BenchmarkItemResult.run_benchmark_id == rb.id,
+            BenchmarkItemResult.error.is_not(None),
+        )
+        .group_by(BenchmarkItemResult.error)
+        .order_by(func.count(BenchmarkItemResult.id).desc())
+    )
+    error_breakdown = [
+        {"message": row[0], "count": int(row[1] or 0)}
+        for row in breakdown_result.all()
+        if row[0]
+    ]
+
     return {
         "benchmark": {
             "id": rb.id,
@@ -402,6 +420,7 @@ async def get_run_benchmark_details(
             total_cost_usd=total_cost_usd,
             pricing_input_per_million_usd=pricing_input,
             pricing_output_per_million_usd=pricing_output,
+            error_breakdown=error_breakdown,
         ),
     }
 
