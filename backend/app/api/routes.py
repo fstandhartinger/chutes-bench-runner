@@ -18,6 +18,7 @@ from app.api.schemas import (
     ModelResponse,
     ModelsListResponse,
     PublicKeyResponse,
+    MaintenanceStatusResponse,
     RunEventResponse,
     RunResponse,
     RunsListResponse,
@@ -165,6 +166,12 @@ async def create_benchmark_run(
     http_request: Request,
 ):
     """Create a new benchmark run."""
+    settings = get_settings()
+    if settings.maintenance_mode:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=settings.maintenance_message,
+        )
     # Validate model exists
     model = await get_model_by_id(db, request.model_id)
     if not model:
@@ -206,6 +213,12 @@ async def create_benchmark_run_with_api_key(
     api_key: ApiKeyDep,
 ):
     """Create a new benchmark run using a bearer API key."""
+    settings = get_settings()
+    if settings.maintenance_mode:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=settings.maintenance_message,
+        )
     model = await resolve_model_identifier(db, request.model_id)
     if not model:
         await sync_models(db)
@@ -437,3 +450,13 @@ async def verify_signed_export(file: UploadFile = File(...)):
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@router.get("/status", response_model=MaintenanceStatusResponse)
+async def service_status():
+    """Service status endpoint (maintenance flag)."""
+    settings = get_settings()
+    return MaintenanceStatusResponse(
+        maintenance_mode=settings.maintenance_mode,
+        message=settings.maintenance_message,
+    )

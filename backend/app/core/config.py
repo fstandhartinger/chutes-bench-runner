@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     backend_port: int = 8000
     backend_url: str = "http://localhost:8000"
 
+    # Maintenance
+    maintenance_mode: bool = False
+    maintenance_message: str = "Currently under maintenance as a new version is being deployed."
+
     # Admin
     admin_secret: Optional[str] = None
 

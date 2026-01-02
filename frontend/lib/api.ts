@@ -105,6 +105,11 @@ export interface PublicKeyInfo {
   public_key_fingerprint: string;
 }
 
+export interface MaintenanceStatus {
+  maintenance_mode: boolean;
+  message: string;
+}
+
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
   const response = await fetch(url, {
@@ -210,4 +215,8 @@ export async function verifySignedExport(file: File): Promise<SignedExportVerifi
 
 export async function getPublicKeyInfo(): Promise<PublicKeyInfo> {
   return fetchAPI("/api/exports/public-key");
+}
+
+export async function getServiceStatus(): Promise<MaintenanceStatus> {
+  return fetchAPI("/api/status");
 }

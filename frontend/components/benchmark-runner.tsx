@@ -20,10 +20,12 @@ import {
   getRun,
   getRuns,
   createEventSource,
+  getServiceStatus,
   type Model,
   type Benchmark,
   type Run,
   type RunEvent,
+  type MaintenanceStatus,
 } from "@/lib/api";
 import {
   computeQueueSchedule,
@@ -63,6 +65,7 @@ export function BenchmarkRunner() {
   const [error, setError] = useState<string | null>(null);
   const [queueStats, setQueueStats] = useState<{ running: number; queued: number } | null>(null);
   const [queueSchedule, setQueueSchedule] = useState<Record<string, QueueEstimate>>({});
+  const [maintenance, setMaintenance] = useState<MaintenanceStatus | null>(null);
   const progressRef = useRef<HTMLDivElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const lastEventIdRef = useRef<string | null>(null);
@@ -124,6 +127,21 @@ export function BenchmarkRunner() {
     return () => window.clearInterval(interval);
   }, [loadQueueStatus]);
 
+  const loadServiceStatus = useCallback(async () => {
+    try {
+      const status = await getServiceStatus();
+      setMaintenance(status);
+    } catch (e) {
+      console.warn("Failed to load service status", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadServiceStatus();
+    const interval = window.setInterval(loadServiceStatus, 30000);
+    return () => window.clearInterval(interval);
+  }, [loadServiceStatus]);
+
   useEffect(() => {
     if (!currentRun || !["queued", "running"].includes(currentRun.status)) return;
     const interval = window.setInterval(async () => {
@@ -180,6 +198,10 @@ export function BenchmarkRunner() {
   // Start benchmark run
   const startRun = async () => {
     if (!selectedModel || selectedBenchmarks.size === 0) return;
+    if (maintenance?.maintenance_mode) {
+      setError(maintenance.message);
+      return;
+    }
 
     setRunning(true);
     setError(null);
@@ -366,6 +388,12 @@ export function BenchmarkRunner() {
               <span>{error}</span>
             </div>
           )}
+          {maintenance?.maintenance_mode && (
+            <div className="flex items-center gap-2 rounded-lg bg-amber-500/10 p-4 text-amber-300">
+              <AlertCircle className="h-5 w-5" />
+              <span>{maintenance.message}</span>
+            </div>
+          )}
 
           {/* Model Selection */}
           <div className="space-y-2">
@@ -475,7 +503,12 @@ export function BenchmarkRunner() {
           <div className="flex justify-end pt-4">
             <Button
               onClick={startRun}
-              disabled={!selectedModel || selectedBenchmarks.size === 0 || running}
+              disabled={
+                !selectedModel ||
+                selectedBenchmarks.size === 0 ||
+                running ||
+                maintenance?.maintenance_mode
+              }
               size="lg"
             >
               {running ? (

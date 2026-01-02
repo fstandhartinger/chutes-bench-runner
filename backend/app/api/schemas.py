@@ -187,3 +187,9 @@ class PublicKeyResponse(BaseModel):
     algorithm: str
     public_key: str
     public_key_fingerprint: str
+
+
+class MaintenanceStatusResponse(BaseModel):
+    """Maintenance status response."""
+    maintenance_mode: bool
+    message: str

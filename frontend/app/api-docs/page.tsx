@@ -29,6 +29,10 @@ export default function ApiDocsPage() {
             Send your Chutes API key in the Authorization header. The run will execute using
             that key, not the system key.
           </p>
+          <p className="text-sm text-amber-300">
+            If the service is in maintenance mode, run creation returns HTTP 503 with the
+            maintenance message.
+          </p>
           <div className="space-y-2 text-sm text-ink-300">
             <p className="font-medium text-ink-200">Request fields</p>
             <ul className="space-y-1">
