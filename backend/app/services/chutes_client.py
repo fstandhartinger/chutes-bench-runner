@@ -1,5 +1,6 @@
 """Chutes API client for model listing and inference."""
 import asyncio
+import re
 import time
 from typing import Any, Optional, Tuple
 
@@ -68,6 +69,27 @@ def _is_max_tokens_error(exc: InferenceHTTPError) -> bool:
 def _is_context_length_error(exc: InferenceHTTPError) -> bool:
     text = (exc.response_text or "").lower()
     return "context length" in text and "input" in text and "longer" in text
+
+
+def _extract_max_tokens_limit(response_text: str) -> Optional[int]:
+    if not response_text:
+        return None
+    patterns = (
+        r"supports at most\\s+(\\d+)\\s+completion tokens",
+        r"supports at most\\s+(\\d+)\\s+tokens",
+        r"max[_\\s-]?completion[_\\s-]?tokens[^\\d]*(\\d+)",
+        r"max[_\\s-]?output[^\\d]*(\\d+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, response_text, re.IGNORECASE)
+        if match:
+            try:
+                value = int(match.group(1))
+            except ValueError:
+                continue
+            if value > 0:
+                return value
+    return None
 
 
 class ChutesClient:
@@ -230,22 +252,22 @@ class ChutesClient:
                 input_price = None
             if not isinstance(output_price, (int, float)):
                 output_price = None
-            model_id = item.get("id")
-            if isinstance(model_id, str) and model_id:
-                if max_output_length is not None:
-                    output_limits[model_id] = max_output_length
-                if context_length is not None:
-                    context_limits[model_id] = context_length
-                if input_price is not None and output_price is not None:
-                    pricing_map[model_id] = (float(input_price), float(output_price))
+            identifiers: set[str] = set()
+            for key in ("id", "name", "model", "slug"):
+                value = item.get(key)
+                if isinstance(value, str) and value:
+                    identifiers.add(value)
             chute_id = item.get("chute_id")
             if isinstance(chute_id, str) and chute_id:
-                if max_output_length is not None:
-                    output_limits[chute_id] = max_output_length
-                if context_length is not None:
-                    context_limits[chute_id] = context_length
-                if input_price is not None and output_price is not None:
-                    pricing_map[chute_id] = (float(input_price), float(output_price))
+                identifiers.add(chute_id)
+            if identifiers:
+                for identifier in identifiers:
+                    if max_output_length is not None:
+                        output_limits[identifier] = max_output_length
+                    if context_length is not None:
+                        context_limits[identifier] = context_length
+                    if input_price is not None and output_price is not None:
+                        pricing_map[identifier] = (float(input_price), float(output_price))
         return output_limits, context_limits, pricing_map
 
     async def _fetch_chutes_pricing_map(self) -> dict[str, tuple[float, float]]:
@@ -617,7 +639,11 @@ class ChutesClient:
                     and isinstance(kwargs.get("max_tokens"), int)
                 ):
                     current_max = kwargs.get("max_tokens")
-                    reduced = max(512, int(current_max * 0.5))
+                    limit = _extract_max_tokens_limit(e.response_text)
+                    if limit and limit > 0:
+                        reduced = min(current_max, limit)
+                    else:
+                        reduced = max(512, int(current_max * 0.5))
                     if reduced < current_max:
                         kwargs["max_tokens"] = reduced
                         applied_max_tokens = reduced
