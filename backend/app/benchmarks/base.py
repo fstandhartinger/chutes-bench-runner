@@ -54,6 +54,7 @@ class BenchmarkAdapter(ABC):
     
     Optional overrides:
     - supports_subset(): Whether subset sampling is supported
+    - supports_parallel_items(): Whether item-level parallelism is safe
     - requires_setup(): Whether special setup is needed
     - get_setup_notes(): Notes about required setup
     - preload(): Called before evaluation starts
@@ -102,6 +103,10 @@ class BenchmarkAdapter(ABC):
     def supports_subset(self) -> bool:
         """Return True if subset sampling is supported."""
         return True
+
+    def supports_parallel_items(self) -> bool:
+        """Return True if item-level parallelism is safe for this adapter."""
+        return False
 
     def requires_setup(self) -> bool:
         """Return True if special setup is required."""

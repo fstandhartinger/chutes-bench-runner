@@ -88,6 +88,7 @@ NEXT_PUBLIC_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 - Uses `SELECT ... FOR UPDATE SKIP LOCKED` to claim runs (prevents race conditions)
 - **Critical**: Cannot use eager loading (`joined`) with `FOR UPDATE` - must manually refresh relationships after claiming
 - Health check server on port 10000 for Render's health checks
+- Supports resume-on-restart: the worker skips completed items for in-progress benchmarks and requeues stale runs
 
 ### Database Schema Notes
 
@@ -112,6 +113,63 @@ NEXT_PUBLIC_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 ### 4. Worker Out of Memory
 **Problem**: Starter plan (512MB) insufficient for loading benchmark datasets
 **Fix**: Use Standard plan (2GB) for worker service
+
+### 12. Hetzner Worker Pool (Preferred for Cost)
+We can run additional benchmark workers on the Hetzner server (65.109.49.103) to avoid scaling Render. Use Docker to avoid Python 3.11 install conflicts.
+
+**Why**: Hetzner has plenty of CPU/RAM and is cheaper than multiple Render instances.
+
+**Requirements**:
+- `DATABASE_URL` (Neon connection string with sslmode=require)
+- `CHUTES_API_KEY`
+- `CHUTES_CLIENT_ID`
+- `CHUTES_CLIENT_SECRET` (needed to refresh IDP tokens)
+- `HF_TOKEN` (for gated datasets like HLE/GPQA)
+- `SANDY_BASE_URL` + `SANDY_API_KEY` (for code benchmarks)
+- Optional: `WORKER_MAX_CONCURRENT`, `WORKER_ITEM_CONCURRENCY`, `WORKER_STALE_RUN_MINUTES`
+
+**Setup Steps (Hetzner)**:
+1. Create a working directory:
+   ```bash
+   sudo mkdir -p /opt/chutes-bench-runner
+   sudo chown $USER:$USER /opt/chutes-bench-runner
+   ```
+2. Clone repo and checkout `main`:
+   ```bash
+   git clone https://github.com/fstandhartinger/chutes-bench-runner /opt/chutes-bench-runner
+   cd /opt/chutes-bench-runner
+   git checkout main
+   git pull
+   ```
+3. Create `/opt/chutes-bench-runner/.env.worker` with the required env vars (do not commit).
+4. Create `/opt/chutes-bench-runner/docker-compose.worker.yml`:
+   ```yaml
+   services:
+     worker:
+       build:
+         context: ./backend
+         dockerfile: Dockerfile
+       env_file:
+         - .env.worker
+       command: python -m app.worker.runner
+       restart: unless-stopped
+   ```
+5. Build and start N workers:
+   ```bash
+   cd /opt/chutes-bench-runner
+   docker compose -f docker-compose.worker.yml up -d --build --scale worker=4
+   ```
+6. Updating workers after code changes:
+   ```bash
+   cd /opt/chutes-bench-runner
+   git pull
+   docker compose -f docker-compose.worker.yml up -d --build --scale worker=4
+   ```
+
+**Notes**:
+- Use `app.worker.runner` (no health server) to avoid port conflicts.
+- Safe to run 4–8 workers; monitor memory/CPU with `htop` or `docker stats`.
+- Keep existing services intact (Sandy, TAO trader, dashboards, nginx).
 
 ### 5. Frontend lib/ Directory Ignored
 **Problem**: Root `.gitignore` had `lib/` which ignored `frontend/lib/`

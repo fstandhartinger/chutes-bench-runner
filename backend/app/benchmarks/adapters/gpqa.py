@@ -27,6 +27,9 @@ class GPQADiamondAdapter(BenchmarkAdapter):
     def get_display_name(self) -> str:
         return "GPQA Diamond"
 
+    def supports_parallel_items(self) -> bool:
+        return True
+
     async def get_total_items(self) -> int:
         if not self._items:
             await self.preload()

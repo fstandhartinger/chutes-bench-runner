@@ -29,6 +29,9 @@ class HLEAdapter(BenchmarkAdapter):
     def get_display_name(self) -> str:
         return "Humanity's Last Exam"
 
+    def supports_parallel_items(self) -> bool:
+        return True
+
     def requires_setup(self) -> bool:
         return False
 

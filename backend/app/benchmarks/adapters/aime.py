@@ -28,6 +28,9 @@ class AIME2025Adapter(BenchmarkAdapter):
     def get_display_name(self) -> str:
         return "AIME 2025"
 
+    def supports_parallel_items(self) -> bool:
+        return True
+
     async def get_total_items(self) -> int:
         if not self._items:
             await self.preload()

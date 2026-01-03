@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
 from app.benchmarks import get_adapter
-from app.benchmarks.base import ItemResult
+from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.session import async_session_maker
@@ -17,6 +17,7 @@ from app.models.benchmark import Benchmark
 from app.models.run import (
     BenchmarkRun,
     BenchmarkRunBenchmark,
+    BenchmarkItemResult,
     BenchmarkRunStatus,
     RunStatus,
 )
@@ -38,9 +39,10 @@ class BenchmarkWorker:
 
     def __init__(self):
         self.running = False
-        self.current_run_id: Optional[str] = None
+        self.current_run_ids: set[str] = set()
         self.client = get_chutes_client()
         self._last_stale_check = 0.0
+        self._active_tasks: set[asyncio.Task] = set()
 
     async def _get_client_for_run(self, db: AsyncSession, run: BenchmarkRun) -> ChutesClient:
         if run.auth_mode == "idp" and run.auth_session_id:
@@ -68,9 +70,12 @@ class BenchmarkWorker:
             try:
                 now = time.monotonic()
                 if now - self._last_stale_check >= settings.worker_stale_check_interval:
-                    await self.fail_stale_runs()
+                    await self.requeue_stale_runs()
                     self._last_stale_check = now
-                await self.process_next_run()
+                await self._refresh_tasks()
+                while len(self._active_tasks) < settings.worker_max_concurrent:
+                    task = asyncio.create_task(self.process_next_run())
+                    self._active_tasks.add(task)
             except Exception as e:
                 logger.error("Worker error", error=str(e))
 
@@ -79,7 +84,25 @@ class BenchmarkWorker:
     async def stop(self) -> None:
         """Stop the worker."""
         self.running = False
+        if self._active_tasks:
+            for task in list(self._active_tasks):
+                task.cancel()
+            await asyncio.gather(*self._active_tasks, return_exceptions=True)
+            self._active_tasks.clear()
         logger.info("Worker stopping")
+
+    async def _refresh_tasks(self) -> None:
+        done_tasks = {task for task in self._active_tasks if task.done()}
+        if not done_tasks:
+            return
+        for task in done_tasks:
+            self._active_tasks.discard(task)
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                continue
+            except Exception as e:
+                logger.error("Worker task failed", error=str(e))
 
     async def process_next_run(self) -> bool:
         """
@@ -106,15 +129,18 @@ class BenchmarkWorker:
             if not run:
                 return False
 
-            self.current_run_id = run.id
+            self.current_run_ids.add(run.id)
             logger.info("Claimed run", run_id=run.id, model=run.model_slug)
 
             # Update status to running
             await update_run_status(db, run.id, RunStatus.RUNNING)
-            await add_run_event(
-                db, run.id, "run_started",
-                message=f"Starting benchmark run for {run.model_slug}"
+            event_type = "run_resumed" if run.started_at else "run_started"
+            message = (
+                f"Resuming benchmark run for {run.model_slug}"
+                if run.started_at
+                else f"Starting benchmark run for {run.model_slug}"
             )
+            await add_run_event(db, run.id, event_type, message=message)
 
             try:
                 await self.execute_run(db, run)
@@ -126,12 +152,12 @@ class BenchmarkWorker:
                     message=f"Run failed: {str(e)}"
                 )
             finally:
-                self.current_run_id = None
+                self.current_run_ids.discard(run.id)
 
             return True
 
-    async def fail_stale_runs(self) -> None:
-        """Mark stale running runs as failed after a worker restart or stall."""
+    async def requeue_stale_runs(self) -> None:
+        """Requeue stale running runs after a worker restart or stall."""
         cutoff = datetime.utcnow() - timedelta(minutes=settings.worker_stale_run_minutes)
         async with async_session_maker() as db:
             result = await db.execute(
@@ -146,10 +172,10 @@ class BenchmarkWorker:
 
             now = datetime.utcnow()
             for run in stale_runs:
-                if run.id == self.current_run_id:
+                if run.id in self.current_run_ids:
                     continue
                 logger.warning(
-                    "Failing stale run",
+                    "Requeuing stale run",
                     run_id=run.id,
                     updated_at=run.updated_at,
                 )
@@ -158,13 +184,12 @@ class BenchmarkWorker:
                     .where(BenchmarkRunBenchmark.run_id == run.id)
                     .where(
                         BenchmarkRunBenchmark.status.in_(
-                            [BenchmarkRunStatus.PENDING.value, BenchmarkRunStatus.RUNNING.value]
+                            [BenchmarkRunStatus.RUNNING.value]
                         )
                     )
                     .values(
-                        status=BenchmarkRunStatus.FAILED.value,
-                        error_message="Run stalled while worker was offline",
-                        completed_at=now,
+                        status=BenchmarkRunStatus.PENDING.value,
+                        error_message=None,
                         updated_at=now,
                     )
                 )
@@ -172,9 +197,8 @@ class BenchmarkWorker:
                     update(BenchmarkRun)
                     .where(BenchmarkRun.id == run.id)
                     .values(
-                        status=RunStatus.FAILED.value,
-                        error_message="Run stalled while worker was offline",
-                        completed_at=now,
+                        status=RunStatus.QUEUED.value,
+                        error_message=None,
                         updated_at=now,
                     )
                 )
@@ -182,8 +206,8 @@ class BenchmarkWorker:
                 await add_run_event(
                     db,
                     run.id,
-                    "run_failed",
-                    message="Run failed: worker restart or stall detected",
+                    "run_requeued",
+                    message="Run requeued after worker restart or stall detected",
                 )
 
     async def execute_run(self, db: AsyncSession, run: BenchmarkRun) -> None:
@@ -207,6 +231,16 @@ class BenchmarkWorker:
                     logger.info("Run canceled", run_id=run.id)
                     await update_run_status(db, run.id, RunStatus.CANCELED)
                     return
+
+                if rb.status == BenchmarkRunStatus.SUCCEEDED.value:
+                    if rb.score is not None:
+                        total_score += rb.score
+                        completed_benchmarks += 1
+                    continue
+
+                if rb.status in (BenchmarkRunStatus.FAILED.value, BenchmarkRunStatus.SKIPPED.value):
+                    failed_benchmarks += 1
+                    continue
 
                 try:
                     score = await self.execute_benchmark(db, run, rb, client)
@@ -300,13 +334,6 @@ class BenchmarkWorker:
                 notes=notes,
             )
 
-        await update_benchmark_status(db, rb.id, BenchmarkRunStatus.RUNNING)
-        await add_run_event(
-            db, run.id, "benchmark_started",
-            benchmark_name=rb.benchmark_name,
-            message=f"Starting {adapter.get_display_name()}"
-        )
-
         try:
             # Get items and apply subset
             seed = f"{run.id}_{rb.benchmark_name}"
@@ -325,30 +352,121 @@ class BenchmarkWorker:
                 .values(total_items=total_items)
             )
 
+            sampled_item_ids = list(rb.sampled_item_ids or [])
+            if sampled_item_ids and len(sampled_item_ids) == len(items_to_evaluate):
+                items_to_evaluate = list(sampled_item_ids)
+            else:
+                sampled_item_ids = list(items_to_evaluate)
+
+            needs_postprocess = adapter.__class__.postprocess is not BenchmarkAdapter.postprocess
+            existing_results: list[ItemResult] = []
+
+            if needs_postprocess:
+                result = await db.execute(
+                    select(BenchmarkItemResult)
+                    .where(BenchmarkItemResult.run_benchmark_id == rb.id)
+                )
+                existing_rows = list(result.scalars().all())
+                completed_item_ids = {row.item_id for row in existing_rows}
+                correct = sum(1 for row in existing_rows if row.is_correct)
+                existing_results = [
+                    ItemResult(
+                        item_id=row.item_id,
+                        item_hash=row.item_hash,
+                        prompt=row.prompt,
+                        response=row.response,
+                        expected=row.expected,
+                        is_correct=row.is_correct,
+                        score=row.score,
+                        judge_output=row.judge_output,
+                        latency_ms=row.latency_ms,
+                        input_tokens=row.input_tokens,
+                        output_tokens=row.output_tokens,
+                        error=row.error,
+                        test_code=row.test_code,
+                        metadata=row.item_metadata,
+                    )
+                    for row in existing_rows
+                ]
+            else:
+                result = await db.execute(
+                    select(BenchmarkItemResult.item_id, BenchmarkItemResult.is_correct)
+                    .where(BenchmarkItemResult.run_benchmark_id == rb.id)
+                )
+                existing_rows = list(result.all())
+                completed_item_ids = {row.item_id for row in existing_rows}
+                correct = sum(1 for row in existing_rows if row.is_correct)
+
+            completed_items = len(completed_item_ids)
+            pending_item_ids = [item_id for item_id in items_to_evaluate if item_id not in completed_item_ids]
+
             await update_benchmark_status(
                 db, rb.id, BenchmarkRunStatus.RUNNING,
                 total_items=total_items,
                 sampled_items=len(items_to_evaluate),
-                sampled_item_ids=items_to_evaluate[:1000],  # Store up to 1000 IDs
+                sampled_item_ids=sampled_item_ids,
+                completed_items=completed_items,
             )
 
+            event_type = "benchmark_resumed" if completed_items else "benchmark_started"
+            message = (
+                f"Resuming {adapter.get_display_name()} ({completed_items}/{len(items_to_evaluate)})"
+                if completed_items
+                else f"Starting {adapter.get_display_name()}"
+            )
+            await add_run_event(
+                db, run.id, event_type,
+                benchmark_name=rb.benchmark_name,
+                message=message,
+                data={
+                    "completed": completed_items,
+                    "total": len(items_to_evaluate),
+                },
+            )
+
+            if not pending_item_ids:
+                score = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
+                additional_metrics = await adapter.postprocess(existing_results) if needs_postprocess else {}
+                metrics = {
+                    "accuracy": score,
+                    "total_items": total_items,
+                    "sampled_items": len(items_to_evaluate),
+                    "sampled_pct": run.subset_pct,
+                    "correct": correct,
+                    **additional_metrics,
+                }
+                await update_benchmark_status(
+                    db, rb.id, BenchmarkRunStatus.SUCCEEDED,
+                    score=score,
+                    metrics=metrics,
+                    completed_items=completed_items,
+                )
+                await add_run_event(
+                    db, run.id, "benchmark_completed",
+                    benchmark_name=rb.benchmark_name,
+                    message=f"Completed {adapter.get_display_name()} with score {score:.2%}",
+                    data=metrics,
+                )
+                logger.info(
+                    "Benchmark completed",
+                    run_id=run.id,
+                    benchmark=rb.benchmark_name,
+                    score=score,
+                    items=completed_items,
+                )
+                return score
+
             # Evaluate items
-            results: list[ItemResult] = []
-            correct = 0
+            new_results: list[ItemResult] = []
+            max_concurrency = (
+                settings.worker_item_concurrency
+                if adapter.supports_parallel_items()
+                else 1
+            )
 
-            for i, item_id in enumerate(items_to_evaluate):
-                # Check for cancellation periodically
-                if i % 10 == 0:
-                    await db.refresh(run)
-                    if run.canceled_at:
-                        raise Exception("Run canceled")
-                if db.in_transaction():
-                    await db.commit()
+            async def record_result(result: ItemResult) -> None:
+                nonlocal correct, completed_items
 
-                result = await adapter.evaluate_item(item_id)
-                results.append(result)
-
-                # Save result
                 await save_item_result(
                     db, rb.id,
                     item_id=result.item_id,
@@ -370,28 +488,69 @@ class BenchmarkWorker:
                 if result.is_correct:
                     correct += 1
 
-                # Update progress
+                completed_items += 1
+
                 await update_benchmark_status(
                     db, rb.id, BenchmarkRunStatus.RUNNING,
-                    completed_items=i + 1,
+                    completed_items=completed_items,
                 )
 
-                # Emit progress event every 5 items
-                if (i + 1) % 5 == 0 or i == len(items_to_evaluate) - 1:
+                if completed_items % 5 == 0 or completed_items == len(items_to_evaluate):
                     await add_run_event(
                         db, run.id, "benchmark_progress",
                         benchmark_name=rb.benchmark_name,
-                        message=f"Progress: {i + 1}/{len(items_to_evaluate)}",
+                        message=f"Progress: {completed_items}/{len(items_to_evaluate)}",
                         data={
-                            "completed": i + 1,
+                            "completed": completed_items,
                             "total": len(items_to_evaluate),
-                            "current_accuracy": correct / (i + 1) if i >= 0 else 0,
+                            "current_accuracy": correct / completed_items if completed_items else 0,
                         }
                     )
 
-            # Compute final metrics
-            score = correct / len(results) if results else 0.0
-            additional_metrics = await adapter.postprocess(results)
+            if max_concurrency > 1 and len(pending_item_ids) > 1:
+                if db.in_transaction():
+                    await db.commit()
+
+                semaphore = asyncio.Semaphore(max_concurrency)
+
+                async def run_item(item_id: str) -> ItemResult:
+                    async with semaphore:
+                        return await adapter.evaluate_item(item_id)
+
+                tasks = [asyncio.create_task(run_item(item_id)) for item_id in pending_item_ids]
+                pending_tasks = set(tasks)
+                completed_since_check = 0
+                for future in asyncio.as_completed(tasks):
+                    result = await future
+                    pending_tasks.discard(future)
+                    if needs_postprocess:
+                        new_results.append(result)
+                    await record_result(result)
+                    completed_since_check += 1
+                    if completed_since_check % 10 == 0:
+                        await db.refresh(run)
+                        if run.canceled_at:
+                            for task in pending_tasks:
+                                task.cancel()
+                            await asyncio.gather(*pending_tasks, return_exceptions=True)
+                            raise Exception("Run canceled")
+            else:
+                for i, item_id in enumerate(pending_item_ids):
+                    if i % 10 == 0:
+                        await db.refresh(run)
+                        if run.canceled_at:
+                            raise Exception("Run canceled")
+                    if db.in_transaction():
+                        await db.commit()
+
+                    result = await adapter.evaluate_item(item_id)
+                    if needs_postprocess:
+                        new_results.append(result)
+                    await record_result(result)
+
+            all_results = existing_results + new_results if needs_postprocess else []
+            score = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
+            additional_metrics = await adapter.postprocess(all_results) if needs_postprocess else {}
 
             metrics = {
                 "accuracy": score,
@@ -406,7 +565,7 @@ class BenchmarkWorker:
                 db, rb.id, BenchmarkRunStatus.SUCCEEDED,
                 score=score,
                 metrics=metrics,
-                completed_items=len(results),
+                completed_items=completed_items,
             )
 
             await add_run_event(
@@ -421,7 +580,7 @@ class BenchmarkWorker:
                 run_id=run.id,
                 benchmark=rb.benchmark_name,
                 score=score,
-                items=len(results),
+                items=completed_items,
             )
 
             return score

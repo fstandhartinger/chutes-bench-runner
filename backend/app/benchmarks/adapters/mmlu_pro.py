@@ -28,6 +28,9 @@ class MMLUProAdapter(BenchmarkAdapter):
     def get_display_name(self) -> str:
         return "MMLU-Pro"
 
+    def supports_parallel_items(self) -> bool:
+        return True
+
     async def get_total_items(self) -> int:
         """Get total items from dataset."""
         if not self._items:
