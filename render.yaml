@@ -33,7 +33,7 @@ services:
     runtime: python
     region: oregon
     plan: standard
-    numInstances: 2
+    numInstances: 6
     buildCommand: cd backend && pip install -r requirements.txt
     startCommand: cd backend && python -m app.worker.runner
     envVars:
@@ -45,6 +45,10 @@ services:
         sync: false
       - key: WORKER_POLL_INTERVAL
         value: "5"
+      - key: WORKER_MAX_CONCURRENT
+        value: "2"
+      - key: WORKER_ITEM_CONCURRENCY
+        value: "2"
       - key: PYTHON_VERSION
         value: "3.11.6"
 
@@ -61,7 +65,7 @@ services:
       - key: NEXT_PUBLIC_BACKEND_URL
         value: https://chutes-bench-runner-api-v2.onrender.com
       - key: NEXT_PUBLIC_WORKER_SLOTS
-        value: "2"
+        value: "12"
       - key: NODE_VERSION
         value: "20"
 

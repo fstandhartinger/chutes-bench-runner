@@ -143,7 +143,12 @@ async def update_run_status(
     if overall_score is not None:
         update_data["overall_score"] = overall_score
 
-    await db.execute(update(BenchmarkRun).where(BenchmarkRun.id == run_id).values(**update_data))
+    await db.execute(
+        update(BenchmarkRun)
+        .where(BenchmarkRun.id == run_id)
+        .values(**update_data)
+        .execution_options(synchronize_session=False)
+    )
     await db.commit()
 
 
@@ -204,7 +209,10 @@ async def update_benchmark_status(
         update_data["sampled_item_ids"] = sampled_item_ids
 
     await db.execute(
-        update(BenchmarkRunBenchmark).where(BenchmarkRunBenchmark.id == run_benchmark_id).values(**update_data)
+        update(BenchmarkRunBenchmark)
+        .where(BenchmarkRunBenchmark.id == run_benchmark_id)
+        .values(**update_data)
+        .execution_options(synchronize_session=False)
     )
     await db.execute(
         update(BenchmarkRun)
@@ -215,6 +223,7 @@ async def update_benchmark_status(
             .scalar_subquery()
         )
         .values(updated_at=datetime.utcnow())
+        .execution_options(synchronize_session=False)
     )
     await db.commit()
 

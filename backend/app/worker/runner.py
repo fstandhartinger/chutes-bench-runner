@@ -25,6 +25,7 @@ from app.services import auth_service
 from app.services.chutes_client import ChutesClient, get_chutes_client
 from app.services.run_service import (
     add_run_event,
+    get_run,
     save_item_result,
     update_benchmark_status,
     update_run_status,
@@ -40,6 +41,7 @@ class BenchmarkWorker:
     def __init__(self):
         self.running = False
         self.current_run_ids: set[str] = set()
+        self.run_tasks: dict[str, asyncio.Task] = {}
         self.client = get_chutes_client()
         self._last_stale_check = 0.0
 
@@ -71,7 +73,8 @@ class BenchmarkWorker:
                 if now - self._last_stale_check >= settings.worker_stale_check_interval:
                     await self.requeue_stale_runs()
                     self._last_stale_check = now
-                await self.process_next_run()
+                await self.reap_completed_runs()
+                await self.launch_runs()
             except Exception:
                 logger.exception("Worker error")
 
@@ -82,14 +85,33 @@ class BenchmarkWorker:
         self.running = False
         logger.info("Worker stopping")
 
-    async def process_next_run(self) -> bool:
+    async def reap_completed_runs(self) -> None:
+        """Remove completed tasks from tracking."""
+        completed_run_ids = [run_id for run_id, task in self.run_tasks.items() if task.done()]
+        for run_id in completed_run_ids:
+            task = self.run_tasks.pop(run_id, None)
+            self.current_run_ids.discard(run_id)
+            if task:
+                try:
+                    task.result()
+                except Exception:
+                    logger.exception("Run task failed", run_id=run_id)
+
+    async def launch_runs(self) -> None:
+        """Launch new runs up to the concurrency limit."""
+        while len(self.run_tasks) < settings.worker_max_concurrent:
+            claimed = await self.claim_next_run()
+            if not claimed:
+                break
+
+    async def claim_next_run(self) -> bool:
         """
-        Claim and process the next queued run.
+        Claim the next queued run and launch it.
         
         Uses SKIP LOCKED to prevent multiple workers from claiming same run.
         
         Returns:
-            True if a run was processed, False otherwise
+            True if a run was claimed, False otherwise
         """
         async with async_session_maker() as db:
             # Claim a queued run with row lock
@@ -121,20 +143,30 @@ class BenchmarkWorker:
                 else f"Starting benchmark run for {model_slug}"
             )
             await add_run_event(db, run.id, event_type, message=message)
+            task = asyncio.create_task(self.execute_claimed_run(run.id, model_slug))
+            self.run_tasks[run.id] = task
+
+            return True
+
+    async def execute_claimed_run(self, run_id: str, model_slug: str) -> None:
+        """Execute a claimed run in its own session."""
+        async with async_session_maker() as db:
+            run = await get_run(db, run_id)
+            if not run:
+                logger.warning("Run not found after claim", run_id=run_id)
+                return
 
             try:
                 await self.execute_run(db, run)
             except Exception as e:
-                logger.exception("Run failed", run_id=run.id)
-                await update_run_status(db, run.id, RunStatus.FAILED, error_message=str(e))
+                logger.exception("Run failed", run_id=run_id)
+                await update_run_status(db, run_id, RunStatus.FAILED, error_message=str(e))
                 await add_run_event(
-                    db, run.id, "run_failed",
-                    message=f"Run failed: {str(e)}"
+                    db,
+                    run_id,
+                    "run_failed",
+                    message=f"Run failed: {str(e)}",
                 )
-            finally:
-                self.current_run_ids.discard(run.id)
-
-            return True
 
     async def requeue_stale_runs(self) -> None:
         """Requeue stale running runs after a worker restart or stall."""
