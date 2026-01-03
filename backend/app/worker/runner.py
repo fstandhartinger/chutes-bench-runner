@@ -108,15 +108,17 @@ class BenchmarkWorker:
                 return False
 
             self.current_run_ids.add(run.id)
-            logger.info("Claimed run", run_id=run.id, model=run.model_slug)
+            model_slug = run.model_slug
+            was_started = run.started_at is not None
+            logger.info("Claimed run", run_id=run.id, model=model_slug)
 
             # Update status to running
             await update_run_status(db, run.id, RunStatus.RUNNING)
-            event_type = "run_resumed" if run.started_at else "run_started"
+            event_type = "run_resumed" if was_started else "run_started"
             message = (
-                f"Resuming benchmark run for {run.model_slug}"
-                if run.started_at
-                else f"Starting benchmark run for {run.model_slug}"
+                f"Resuming benchmark run for {model_slug}"
+                if was_started
+                else f"Starting benchmark run for {model_slug}"
             )
             await add_run_event(db, run.id, event_type, message=message)
 
