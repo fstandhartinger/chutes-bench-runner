@@ -49,6 +49,8 @@ services:
         value: "2"
       - key: WORKER_ITEM_CONCURRENCY
         value: "2"
+      - key: WORKER_STALE_RUN_MINUTES
+        value: "15"
       - key: PYTHON_VERSION
         value: "3.11.6"
 
