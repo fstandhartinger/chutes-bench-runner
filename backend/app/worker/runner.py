@@ -72,8 +72,8 @@ class BenchmarkWorker:
                     await self.requeue_stale_runs()
                     self._last_stale_check = now
                 await self.process_next_run()
-            except Exception as e:
-                logger.error("Worker error", error=str(e))
+            except Exception:
+                logger.exception("Worker error")
 
             await asyncio.sleep(settings.worker_poll_interval)
 
@@ -123,7 +123,7 @@ class BenchmarkWorker:
             try:
                 await self.execute_run(db, run)
             except Exception as e:
-                logger.error("Run failed", run_id=run.id, error=str(e))
+                logger.exception("Run failed", run_id=run.id)
                 await update_run_status(db, run.id, RunStatus.FAILED, error_message=str(e))
                 await add_run_event(
                     db, run.id, "run_failed",
