@@ -42,6 +42,7 @@ class BenchmarkWorker:
         self.running = False
         self.current_run_ids: set[str] = set()
         self.run_tasks: dict[str, asyncio.Task] = {}
+        self.last_progress_at: dict[str, datetime] = {}
         self.client = get_chutes_client()
         self._last_stale_check = 0.0
 
@@ -91,9 +92,12 @@ class BenchmarkWorker:
         for run_id in completed_run_ids:
             task = self.run_tasks.pop(run_id, None)
             self.current_run_ids.discard(run_id)
+            self.last_progress_at.pop(run_id, None)
             if task:
                 try:
                     task.result()
+                except asyncio.CancelledError:
+                    logger.warning("Run task canceled", run_id=run_id)
                 except Exception:
                     logger.exception("Run task failed", run_id=run_id)
 
@@ -132,6 +136,7 @@ class BenchmarkWorker:
             self.current_run_ids.add(run.id)
             model_slug = run.model_slug
             was_started = run.started_at is not None
+            self.last_progress_at[run.id] = datetime.utcnow()
             logger.info("Claimed run", run_id=run.id, model=model_slug)
 
             # Update status to running
@@ -158,6 +163,9 @@ class BenchmarkWorker:
 
             try:
                 await self.execute_run(db, run)
+            except asyncio.CancelledError:
+                logger.warning("Run execution canceled", run_id=run_id)
+                raise
             except Exception as e:
                 logger.exception("Run failed", run_id=run_id)
                 await update_run_status(db, run_id, RunStatus.FAILED, error_message=str(e))
@@ -185,7 +193,15 @@ class BenchmarkWorker:
             now = datetime.utcnow()
             for run in stale_runs:
                 if run.id in self.current_run_ids:
-                    continue
+                    last_progress = self.last_progress_at.get(run.id)
+                    if last_progress and last_progress >= cutoff:
+                        continue
+                    task = self.run_tasks.pop(run.id, None)
+                    if task:
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                    self.current_run_ids.discard(run.id)
+                    self.last_progress_at.pop(run.id, None)
                 logger.warning(
                     "Requeuing stale run",
                     run_id=run.id,
@@ -501,6 +517,7 @@ class BenchmarkWorker:
                     correct += 1
 
                 completed_items += 1
+                self.last_progress_at[run.id] = datetime.utcnow()
 
                 await update_benchmark_status(
                     db, rb.id, BenchmarkRunStatus.RUNNING,
