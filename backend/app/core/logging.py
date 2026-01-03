@@ -13,6 +13,7 @@ def setup_logging(log_level: str = "INFO") -> None:
             structlog.processors.add_log_level,
             structlog.processors.StackInfoRenderer(),
             structlog.dev.set_exc_info,
+            structlog.processors.format_exc_info,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.dev.ConsoleRenderer() if sys.stderr.isatty() else structlog.processors.JSONRenderer(),
         ],
@@ -26,6 +27,10 @@ def setup_logging(log_level: str = "INFO") -> None:
 def get_logger(name: str) -> structlog.BoundLogger:
     """Get a logger instance."""
     return structlog.get_logger(name)
+
+
+
+
 
 
 
