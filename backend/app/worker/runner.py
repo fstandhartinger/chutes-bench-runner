@@ -42,7 +42,6 @@ class BenchmarkWorker:
         self.current_run_ids: set[str] = set()
         self.client = get_chutes_client()
         self._last_stale_check = 0.0
-        self._active_tasks: set[asyncio.Task] = set()
 
     async def _get_client_for_run(self, db: AsyncSession, run: BenchmarkRun) -> ChutesClient:
         if run.auth_mode == "idp" and run.auth_session_id:
@@ -72,10 +71,7 @@ class BenchmarkWorker:
                 if now - self._last_stale_check >= settings.worker_stale_check_interval:
                     await self.requeue_stale_runs()
                     self._last_stale_check = now
-                await self._refresh_tasks()
-                while len(self._active_tasks) < settings.worker_max_concurrent:
-                    task = asyncio.create_task(self.process_next_run())
-                    self._active_tasks.add(task)
+                await self.process_next_run()
             except Exception as e:
                 logger.error("Worker error", error=str(e))
 
@@ -84,25 +80,7 @@ class BenchmarkWorker:
     async def stop(self) -> None:
         """Stop the worker."""
         self.running = False
-        if self._active_tasks:
-            for task in list(self._active_tasks):
-                task.cancel()
-            await asyncio.gather(*self._active_tasks, return_exceptions=True)
-            self._active_tasks.clear()
         logger.info("Worker stopping")
-
-    async def _refresh_tasks(self) -> None:
-        done_tasks = {task for task in self._active_tasks if task.done()}
-        if not done_tasks:
-            return
-        for task in done_tasks:
-            self._active_tasks.discard(task)
-            try:
-                task.result()
-            except asyncio.CancelledError:
-                continue
-            except Exception as e:
-                logger.error("Worker task failed", error=str(e))
 
     async def process_next_run(self) -> bool:
         """

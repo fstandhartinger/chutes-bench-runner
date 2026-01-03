@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     # Worker
     worker_poll_interval: int = 5
-    worker_max_concurrent: int = 2
+    worker_max_concurrent: int = 1
     worker_item_concurrency: int = 2
     worker_stale_run_minutes: int = 60
     worker_stale_check_interval: int = 300
