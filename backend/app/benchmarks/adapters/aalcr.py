@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import download_hf_file, load_dataset_with_retry
+from app.benchmarks.utils import download_hf_file_async, load_dataset_with_retry
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
@@ -42,12 +42,12 @@ class AALCRAdapter(BenchmarkAdapter):
             await self.preload()
         return len(self._items)
 
-    def _ensure_zip(self) -> Optional[str]:
+    async def _ensure_zip(self) -> Optional[str]:
         if self._zip_path:
             return self._zip_path
         hf_token = os.environ.get("HF_TOKEN")
         try:
-            zip_path = download_hf_file(
+            zip_path = await download_hf_file_async(
                 repo_id="ArtificialAnalysis/AA-LCR",
                 filename="extracted_text/AA-LCR_extracted-text.zip",
                 repo_type="dataset",
@@ -105,8 +105,8 @@ class AALCRAdapter(BenchmarkAdapter):
         for item in self._items:
             yield item["id"]
 
-    def _load_documents(self, item: dict[str, Any]) -> list[str]:
-        zip_path = self._ensure_zip()
+    async def _load_documents(self, item: dict[str, Any]) -> list[str]:
+        zip_path = await self._ensure_zip()
         if not zip_path:
             return []
 
@@ -175,7 +175,7 @@ class AALCRAdapter(BenchmarkAdapter):
         if not item:
             return ItemResult(item_id=item_id, error=f"Item {item_id} not found")
 
-        documents = self._load_documents(item)
+        documents = await self._load_documents(item)
         if not documents:
             return ItemResult(
                 item_id=item_id,

@@ -51,6 +51,25 @@ def download_hf_file(
     return Path(path)
 
 
+async def download_hf_file_async(
+    repo_id: str,
+    filename: str,
+    *,
+    repo_type: str = "dataset",
+    token: Optional[str] = None,
+    cache_subdir: Optional[str] = None,
+) -> Path:
+    """Async wrapper for download_hf_file to avoid blocking the event loop."""
+    return await asyncio.to_thread(
+        download_hf_file,
+        repo_id,
+        filename,
+        repo_type=repo_type,
+        token=token,
+        cache_subdir=cache_subdir,
+    )
+
+
 def download_hf_snapshot(
     repo_id: str,
     *,
@@ -91,6 +110,23 @@ def download_http_file(
     tmp_path.write_bytes(response.content)
     tmp_path.replace(target_path)
     return target_path
+
+
+async def download_http_file_async(
+    url: str,
+    *,
+    cache_subdir: Optional[str] = None,
+    filename: Optional[str] = None,
+    timeout_seconds: int = 120,
+) -> Path:
+    """Async wrapper for download_http_file to avoid blocking the event loop."""
+    return await asyncio.to_thread(
+        download_http_file,
+        url,
+        cache_subdir=cache_subdir,
+        filename=filename,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 async def load_dataset_with_retry(

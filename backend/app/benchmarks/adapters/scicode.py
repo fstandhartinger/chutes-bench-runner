@@ -9,7 +9,11 @@ from typing import Any, AsyncIterator, Optional
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
 from app.benchmarks.scicode_utils import extract_function_name, get_function_from_code
-from app.benchmarks.utils import download_hf_file, download_http_file, load_dataset_with_retry
+from app.benchmarks.utils import (
+    download_hf_file_async,
+    download_http_file_async,
+    load_dataset_with_retry,
+)
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -88,9 +92,9 @@ class SciCodeAdapter(BenchmarkAdapter):
         for item in self._items:
             yield item["id"]
 
-    def _ensure_assets(self) -> None:
+    async def _ensure_assets(self) -> None:
         if not self._h5_path:
-            self._h5_path = download_hf_file(
+            self._h5_path = await download_hf_file_async(
                 repo_id="Srimadh/Scicode-test-data-h5",
                 filename="test_data.h5",
                 repo_type="dataset",
@@ -98,26 +102,28 @@ class SciCodeAdapter(BenchmarkAdapter):
                 cache_subdir="scicode",
             )
         if not self._default_template:
-            self._default_template = download_http_file(
+            template_path = await download_http_file_async(
                 f"{SCICODE_REPO_BASE}/multistep_template.txt",
                 cache_subdir="scicode",
-            ).read_text(encoding="utf-8")
+            )
+            self._default_template = template_path.read_text(encoding="utf-8")
         if not self._background_template:
-            self._background_template = download_http_file(
+            background_path = await download_http_file_async(
                 f"{SCICODE_REPO_BASE}/background_comment_template.txt",
                 cache_subdir="scicode",
-            ).read_text(encoding="utf-8")
+            )
+            self._background_template = background_path.read_text(encoding="utf-8")
         if not self._special_step_cache:
             for filename, key in (
                 ("13.6.txt", ("13", 5)),
                 ("62.1.txt", ("62", 0)),
                 ("76.3.txt", ("76", 2)),
             ):
-                content = download_http_file(
+                content_path = await download_http_file_async(
                     f"{SCICODE_REPO_BASE}/{filename}",
                     cache_subdir="scicode",
-                ).read_text(encoding="utf-8")
-                self._special_step_cache[key] = content
+                )
+                self._special_step_cache[key] = content_path.read_text(encoding="utf-8")
 
     async def _ensure_sandbox(self) -> Optional[str]:
         if self._sandbox_id:
@@ -288,7 +294,7 @@ class SciCodeAdapter(BenchmarkAdapter):
         if not item:
             return ItemResult(item_id=item_id, error=f"Item {item_id} not found")
 
-        self._ensure_assets()
+        await self._ensure_assets()
         if not self._h5_path:
             return ItemResult(item_id=item_id, error="SciCode test data unavailable")
 

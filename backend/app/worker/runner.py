@@ -34,6 +34,24 @@ from app.services.run_service import (
 logger = get_logger(__name__)
 settings = get_settings()
 
+def _is_retryable_item_error(error: Optional[str]) -> bool:
+    if not error:
+        return False
+    message = error.lower()
+    if "network error contacting chutes" in message:
+        return True
+    if "timeout" in message or "timed out" in message:
+        return True
+    if "http 429" in message:
+        return True
+    if "http 5" in message:
+        return True
+    if "service unavailable" in message or "temporarily unavailable" in message:
+        return True
+    if "connection reset" in message or "connection aborted" in message:
+        return True
+    return False
+
 
 class BenchmarkWorker:
     """Worker that processes benchmark runs."""
@@ -116,15 +134,21 @@ class BenchmarkWorker:
             )
 
     async def _get_client_for_run(self, db: AsyncSession, run: BenchmarkRun) -> ChutesClient:
-        if run.auth_mode == "idp" and run.auth_session_id:
+        if run.auth_mode == "idp":
+            if not run.auth_session_id:
+                logger.warning("Missing auth session for run, falling back to system key", run_id=run.id)
+                return self.client
             session = await auth_service.get_session(db, run.auth_session_id)
             if not session:
-                raise Exception("Chutes session not found")
+                logger.warning("Chutes session not found, falling back to system key", run_id=run.id)
+                return self.client
             if not session.can_invoke_chutes():
-                raise Exception("Chutes session missing chutes:invoke scope")
+                logger.warning("Chutes session missing chutes:invoke, falling back to system key", run_id=run.id)
+                return self.client
             access_token = await auth_service.get_valid_access_token(db, session)
             if not access_token:
-                raise Exception("Chutes session expired or invalid")
+                logger.warning("Chutes session expired, falling back to system key", run_id=run.id)
+                return self.client
             return get_chutes_client(user_access_token=access_token)
 
         if run.auth_mode == "api_key" and run.auth_api_key:
@@ -498,6 +522,12 @@ class BenchmarkWorker:
             )
 
         try:
+            self.last_progress_at[run.id] = datetime.utcnow()
+            await self._safe_update_benchmark_status(
+                rb.id,
+                BenchmarkRunStatus.RUNNING,
+                completed_items=rb.completed_items,
+            )
             # Get items and apply subset
             seed = f"{run.id}_{rb.benchmark_name}"
             total_items, items_to_evaluate = await adapter.get_items_for_evaluation(run.subset_pct, seed)
@@ -642,15 +672,48 @@ class BenchmarkWorker:
             result_lock = asyncio.Lock()
 
             async def evaluate_item(item_id: str) -> ItemResult:
-                try:
-                    if item_timeout:
-                        return await asyncio.wait_for(
-                            adapter.evaluate_item(item_id),
-                            timeout=item_timeout,
+                attempt = 0
+                delay_seconds = 1
+                last_result: Optional[ItemResult] = None
+
+                while attempt < settings.worker_item_attempts:
+                    attempt += 1
+                    self.last_progress_at[run.id] = datetime.utcnow()
+                    try:
+                        if item_timeout:
+                            result = await asyncio.wait_for(
+                                adapter.evaluate_item(item_id),
+                                timeout=item_timeout,
+                            )
+                        else:
+                            result = await adapter.evaluate_item(item_id)
+                    except asyncio.TimeoutError:
+                        result = ItemResult(
+                            item_id=item_id,
+                            error=f"Item evaluation timed out after {item_timeout}s",
                         )
-                    return await adapter.evaluate_item(item_id)
-                except asyncio.TimeoutError:
-                    return ItemResult(item_id=item_id, error=f"Item evaluation timed out after {item_timeout}s")
+                    except Exception as exc:
+                        detail = str(exc) or exc.__class__.__name__
+                        result = ItemResult(item_id=item_id, error=detail)
+
+                    if result.metadata is None:
+                        result.metadata = {}
+                    result.metadata["worker_attempt"] = attempt
+                    result.metadata["worker_attempts"] = settings.worker_item_attempts
+                    last_result = result
+
+                    if not _is_retryable_item_error(result.error):
+                        return result
+
+                    if attempt < settings.worker_item_attempts:
+                        await asyncio.sleep(delay_seconds)
+                        delay_seconds = min(delay_seconds * 2, 10)
+
+                if last_result and last_result.error and settings.worker_item_attempts > 1:
+                    last_result.error = (
+                        f"{last_result.error} (after {settings.worker_item_attempts} attempts)"
+                    )
+                return last_result or ItemResult(item_id=item_id, error="Item evaluation failed")
 
             async def record_result(result: ItemResult) -> None:
                 nonlocal correct, completed_items

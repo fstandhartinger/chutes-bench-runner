@@ -11,7 +11,7 @@ from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import download_http_file
+from app.benchmarks.utils import download_http_file_async
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
@@ -54,11 +54,15 @@ class TauBenchTelecomAdapter(BenchmarkAdapter):
             await self.preload()
         return len(self._items)
 
-    def _ensure_tau2_repo(self) -> None:
+    async def _ensure_tau2_repo(self) -> None:
         if self._tau2_loaded:
             return
         settings = get_settings()
-        repo_zip = download_http_file(TAU2_REPO_ZIP, cache_subdir="tau2", filename="tau2-bench.zip")
+        repo_zip = await download_http_file_async(
+            TAU2_REPO_ZIP,
+            cache_subdir="tau2",
+            filename="tau2-bench.zip",
+        )
         repo_dir = repo_zip.with_suffix("")
         if not repo_dir.exists():
             with zipfile.ZipFile(repo_zip, "r") as zf:
@@ -81,7 +85,7 @@ class TauBenchTelecomAdapter(BenchmarkAdapter):
             return
 
         try:
-            self._ensure_tau2_repo()
+            await self._ensure_tau2_repo()
             from tau2.run import get_tasks
 
             tasks = get_tasks(task_set_name="telecom", task_split_name="base")
@@ -114,7 +118,7 @@ class TauBenchTelecomAdapter(BenchmarkAdapter):
         if not item:
             return ItemResult(item_id=item_id, error=f"Item {item_id} not found")
 
-        self._ensure_tau2_repo()
+        await self._ensure_tau2_repo()
         settings = get_settings()
         token = self.client.user_access_token or self.client.api_key
         if not token:

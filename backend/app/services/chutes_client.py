@@ -477,7 +477,10 @@ class ChutesClient:
                     **request_kwargs,
                 )
         except (httpx.TimeoutException, httpx.TransportError) as exc:
-            raise InferenceNetworkError(f"Network error contacting Chutes: {exc}") from exc
+            detail = str(exc) or repr(exc)
+            raise InferenceNetworkError(
+                f"Network error contacting Chutes ({exc.__class__.__name__}): {detail}"
+            ) from exc
 
         if response.status_code >= 400:
             request_id = response.headers.get("x-request-id") or response.headers.get("x-requestid")

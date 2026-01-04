@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import download_hf_file, load_dataset_with_retry
+from app.benchmarks.utils import download_hf_file_async, load_dataset_with_retry
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -109,7 +109,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
 
         try:
             logger.info("Loading LiveCodeBench dataset")
-            jsonl_path = self._ensure_jsonl()
+            jsonl_path = await self._ensure_jsonl()
             if not jsonl_path:
                 raise RuntimeError("Could not download LiveCodeBench dataset file")
 
@@ -150,14 +150,14 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             self._items = []
             raise
 
-    def _ensure_jsonl(self) -> Optional[Path]:
+    async def _ensure_jsonl(self) -> Optional[Path]:
         if self._jsonl_path:
             return self._jsonl_path
         try:
             import os
 
             hf_token = os.environ.get("HF_TOKEN")
-            self._jsonl_path = download_hf_file(
+            self._jsonl_path = await download_hf_file_async(
                 repo_id="livecodebench/code_generation",
                 filename="test.jsonl",
                 token=hf_token,
