@@ -491,6 +491,22 @@ class BenchmarkWorker:
                 if adapter.supports_parallel_items()
                 else 1
             )
+            item_timeout = adapter.get_item_timeout_seconds()
+            if item_timeout is None:
+                item_timeout = settings.worker_item_timeout_seconds
+            if item_timeout is not None and item_timeout <= 0:
+                item_timeout = None
+
+            async def evaluate_item(item_id: str) -> ItemResult:
+                try:
+                    if item_timeout:
+                        return await asyncio.wait_for(
+                            adapter.evaluate_item(item_id),
+                            timeout=item_timeout,
+                        )
+                    return await adapter.evaluate_item(item_id)
+                except asyncio.TimeoutError:
+                    return ItemResult(item_id=item_id, error=f"Item evaluation timed out after {item_timeout}s")
 
             async def record_result(result: ItemResult) -> None:
                 nonlocal correct, completed_items
@@ -544,7 +560,7 @@ class BenchmarkWorker:
 
                 async def run_item(item_id: str) -> ItemResult:
                     async with semaphore:
-                        return await adapter.evaluate_item(item_id)
+                        return await evaluate_item(item_id)
 
                 tasks = [asyncio.create_task(run_item(item_id)) for item_id in pending_item_ids]
                 pending_tasks = set(tasks)
@@ -572,7 +588,7 @@ class BenchmarkWorker:
                     if db.in_transaction():
                         await db.commit()
 
-                    result = await adapter.evaluate_item(item_id)
+                    result = await evaluate_item(item_id)
                     if needs_postprocess:
                         new_results.append(result)
                     await record_result(result)

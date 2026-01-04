@@ -108,6 +108,10 @@ class BenchmarkAdapter(ABC):
         """Return True if item-level parallelism is safe for this adapter."""
         return False
 
+    def get_item_timeout_seconds(self) -> Optional[int]:
+        """Return per-item timeout in seconds, or None to use default."""
+        return None
+
     def requires_setup(self) -> bool:
         """Return True if special setup is required."""
         return False
