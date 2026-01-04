@@ -1,12 +1,11 @@
 """LiveCodeBench benchmark adapter."""
 import json
 import time
-from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import download_hf_file_async, load_dataset_with_retry
+from app.benchmarks.utils import load_dataset_with_retry
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -27,7 +26,6 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []
-        self._jsonl_path: Optional[Path] = None
         self.sandy = SandyService()
 
     def get_name(self) -> str:
@@ -55,6 +53,30 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             return len(self._items)
         return LIVECODEBENCH_TOTAL_ITEMS
 
+    def _parse_item(self, index: int, item: dict[str, Any]) -> Optional[dict[str, Any]]:
+        question = item.get("question_content") or ""
+        if not question:
+            return None
+        public_tests = item.get("public_test_cases") or "[]"
+        private_tests = item.get("private_test_cases") or "[]"
+        try:
+            public_cases = json.loads(public_tests) if isinstance(public_tests, str) else public_tests
+        except json.JSONDecodeError:
+            public_cases = []
+        try:
+            private_cases = json.loads(private_tests) if isinstance(private_tests, str) else private_tests
+        except json.JSONDecodeError:
+            private_cases = []
+        return {
+            "id": str(index),
+            "question": question,
+            "starter_code": item.get("starter_code") or "",
+            "difficulty": item.get("difficulty") or "",
+            "public_tests": public_cases,
+            "private_tests": private_cases,
+            "metadata": item.get("metadata") or {},
+        }
+
     async def get_items_for_evaluation(self, subset_pct: int, seed: str) -> tuple[int, list[str]]:
         total_items = await self.get_total_items()
         if subset_pct >= 100:
@@ -64,38 +86,21 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         target = max(1, int(total_items * subset_pct / 100))
         self._items = []
         try:
+            import os
+
+            hf_token = os.environ.get("HF_TOKEN")
             dataset = await load_dataset_with_retry(
                 "livecodebench/code_generation",
                 split="test",
                 streaming=True,
+                token=hf_token,
             )
             for i, item in enumerate(dataset):
                 if len(self._items) >= target:
                     break
-                question = item.get("question_content") or ""
-                public_tests = item.get("public_test_cases") or "[]"
-                private_tests = item.get("private_test_cases") or "[]"
-                try:
-                    public_cases = json.loads(public_tests) if isinstance(public_tests, str) else public_tests
-                except json.JSONDecodeError:
-                    public_cases = []
-                try:
-                    private_cases = json.loads(private_tests) if isinstance(private_tests, str) else private_tests
-                except json.JSONDecodeError:
-                    private_cases = []
-
-                if question:
-                    self._items.append(
-                        {
-                            "id": str(i),
-                            "question": question,
-                            "starter_code": item.get("starter_code") or "",
-                            "difficulty": item.get("difficulty") or "",
-                            "public_tests": public_cases,
-                            "private_tests": private_cases,
-                            "metadata": item.get("metadata") or {},
-                        }
-                    )
+                parsed = self._parse_item(i, item)
+                if parsed:
+                    self._items.append(parsed)
         except Exception as e:
             logger.error("Failed to stream LiveCodeBench subset", error=str(e))
             self._items = []
@@ -108,65 +113,27 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             return
 
         try:
+            import os
+
             logger.info("Loading LiveCodeBench dataset")
-            jsonl_path = await self._ensure_jsonl()
-            if not jsonl_path:
-                raise RuntimeError("Could not download LiveCodeBench dataset file")
-
+            hf_token = os.environ.get("HF_TOKEN")
+            dataset = await load_dataset_with_retry(
+                "livecodebench/code_generation",
+                split="test",
+                streaming=True,
+                token=hf_token,
+            )
             self._items = []
-            with jsonl_path.open("r", encoding="utf-8") as handle:
-                for i, line in enumerate(handle):
-                    if not line.strip():
-                        continue
-                    item = json.loads(line)
-                    question = item.get("question_content") or ""
-                    public_tests = item.get("public_test_cases") or "[]"
-                    private_tests = item.get("private_test_cases") or "[]"
-                    try:
-                        public_cases = json.loads(public_tests) if isinstance(public_tests, str) else public_tests
-                    except json.JSONDecodeError:
-                        public_cases = []
-                    try:
-                        private_cases = json.loads(private_tests) if isinstance(private_tests, str) else private_tests
-                    except json.JSONDecodeError:
-                        private_cases = []
-
-                    if question:
-                        self._items.append(
-                            {
-                                "id": str(i),
-                                "question": question,
-                                "starter_code": item.get("starter_code") or "",
-                                "difficulty": item.get("difficulty") or "",
-                                "public_tests": public_cases,
-                                "private_tests": private_cases,
-                                "metadata": item.get("metadata") or {},
-                            }
-                        )
+            for i, item in enumerate(dataset):
+                parsed = self._parse_item(i, item)
+                if parsed:
+                    self._items.append(parsed)
 
             logger.info("Loaded %s LiveCodeBench items", len(self._items))
         except Exception as e:
             logger.error("Failed to load LiveCodeBench", error=str(e))
             self._items = []
             raise
-
-    async def _ensure_jsonl(self) -> Optional[Path]:
-        if self._jsonl_path:
-            return self._jsonl_path
-        try:
-            import os
-
-            hf_token = os.environ.get("HF_TOKEN")
-            self._jsonl_path = await download_hf_file_async(
-                repo_id="livecodebench/code_generation",
-                filename="test.jsonl",
-                token=hf_token,
-                cache_subdir="livecodebench",
-            )
-            return self._jsonl_path
-        except Exception as e:
-            logger.error("Failed to download LiveCodeBench JSONL", error=str(e))
-            return None
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         if not self._items:
