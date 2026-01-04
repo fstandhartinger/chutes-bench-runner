@@ -133,6 +133,7 @@ async def load_dataset_with_retry(
     *args: Any,
     max_attempts: int = 3,
     initial_delay_seconds: float = 2.0,
+    timeout_seconds: float = 600.0,
     **kwargs: Any,
 ) -> Any:
     """Load a Hugging Face dataset with retries."""
@@ -144,7 +145,10 @@ async def load_dataset_with_retry(
     while attempt < max_attempts:
         attempt += 1
         try:
-            return await asyncio.to_thread(load_dataset, *args, **kwargs)
+            return await asyncio.wait_for(
+                asyncio.to_thread(load_dataset, *args, **kwargs),
+                timeout=timeout_seconds,
+            )
         except Exception as exc:
             last_error = exc
             dataset_name = args[0] if args else "unknown"
@@ -152,7 +156,7 @@ async def load_dataset_with_retry(
                 "Failed to load dataset",
                 dataset=dataset_name,
                 attempt=attempt,
-                error=str(exc),
+                error=str(exc) or exc.__class__.__name__,
             )
             if attempt >= max_attempts:
                 raise
