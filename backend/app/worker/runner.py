@@ -289,7 +289,24 @@ class BenchmarkWorker:
 
     async def touch_active_runs(self) -> None:
         """Touch all active runs for this worker to avoid stale requeue."""
-        return
+        if not self.current_run_ids:
+            return
+        now = datetime.utcnow()
+        for run_id in self.current_run_ids:
+            self.last_progress_at[run_id] = now
+        async with async_session_maker() as db:
+            await db.execute(
+                update(BenchmarkRun)
+                .where(BenchmarkRun.id.in_(self.current_run_ids))
+                .values(updated_at=now)
+            )
+            await db.execute(
+                update(BenchmarkRunBenchmark)
+                .where(BenchmarkRunBenchmark.run_id.in_(self.current_run_ids))
+                .where(BenchmarkRunBenchmark.status == BenchmarkRunStatus.RUNNING.value)
+                .values(updated_at=now)
+            )
+            await db.commit()
 
     async def requeue_stale_runs(self) -> None:
         """Requeue stale running runs after a worker restart or stall."""
@@ -325,18 +342,13 @@ class BenchmarkWorker:
             now = datetime.utcnow()
             base_seconds = settings.worker_stale_run_minutes * 60
             buffer_seconds = max(settings.worker_heartbeat_seconds * 2, 60)
+            stale_after_seconds = max(base_seconds, buffer_seconds)
             for run in running_runs:
                 benchmark_entries = benchmarks_by_run.get(run.id, [])
-                max_timeout = max(settings.worker_item_timeout_seconds, 0)
                 benchmark_updated_at: list[datetime] = []
                 for benchmark_name, benchmark_updated in benchmark_entries:
-                    max_timeout = max(
-                        max_timeout,
-                        self._get_benchmark_timeout(benchmark_name, run.model_slug),
-                    )
                     if benchmark_updated:
                         benchmark_updated_at.append(benchmark_updated)
-                stale_after_seconds = max(base_seconds, max_timeout + buffer_seconds)
                 cutoff = now - timedelta(seconds=stale_after_seconds)
                 last_update_candidates = list(benchmark_updated_at)
                 if run.updated_at:
