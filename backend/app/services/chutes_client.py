@@ -402,6 +402,7 @@ class ChutesClient:
         messages: list[dict[str, str]],
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        timeout: Optional[float] = None,
         stop: Optional[list[str]] = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
@@ -444,24 +445,37 @@ class ChutesClient:
             if self._is_user_token_mode:
                 # Use IDP endpoint with Host header for user token auth
                 # This routes through the IDP which validates the user's token
+                timeout_config = (
+                    httpx.Timeout(timeout, connect=10.0)
+                    if timeout is not None
+                    else httpx.Timeout(300.0, connect=10.0)
+                )
                 async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(300.0, connect=10.0),
+                    timeout=timeout_config,
                 ) as client:
-                    response = await client.post(
-                        f"{IDP_INFERENCE_URL}/chat/completions",
-                        json=payload,
-                        headers={
+                    request_kwargs: dict[str, Any] = {
+                        "json": payload,
+                        "headers": {
                             "Authorization": f"Bearer {self.user_access_token}",
                             "Host": "llm.chutes.ai",
                             "Content-Type": "application/json",
                         },
+                    }
+                    if timeout is not None:
+                        request_kwargs["timeout"] = timeout
+                    response = await client.post(
+                        f"{IDP_INFERENCE_URL}/chat/completions",
+                        **request_kwargs,
                     )
             else:
                 # Use standard API with API key
                 client = await self._get_client()
+                request_kwargs = {"json": payload}
+                if timeout is not None:
+                    request_kwargs["timeout"] = timeout
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
-                    json=payload,
+                    **request_kwargs,
                 )
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             raise InferenceNetworkError(f"Network error contacting Chutes: {exc}") from exc
@@ -567,6 +581,8 @@ class ChutesClient:
         delay_seconds = 1
         requested_max_tokens = kwargs.get("max_tokens")
         applied_max_tokens = requested_max_tokens
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = settings.chutes_inference_timeout_seconds
 
         # Initialize defaults
         metadata = {

@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     chutes_max_tokens_margin: int = 2048
     chutes_min_output_tokens: int = 16384
     chutes_max_output_tokens_cap: Optional[int] = 65535
+    chutes_inference_timeout_seconds: int = 120
 
     # Backend
     backend_host: str = "0.0.0.0"

@@ -108,6 +108,8 @@ class MMLUProAdapter(BenchmarkAdapter):
                 system_prompt=system_prompt,
                 max_tokens=4096,
                 temperature=0.0,
+                timeout=60,
+                response_attempts=2,
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
