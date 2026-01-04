@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -105,16 +106,24 @@ def download_http_file(
     if target_path.exists():
         return target_path
 
-    response = httpx.get(
-        url,
-        timeout=httpx.Timeout(timeout_seconds, connect=10.0),
-        follow_redirects=True,
-        headers=headers,
-    )
-    response.raise_for_status()
-    tmp_path = target_path.with_suffix(".tmp")
-    tmp_path.write_bytes(response.content)
-    tmp_path.replace(target_path)
+    tmp_path = target_path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    try:
+        with httpx.Client(timeout=httpx.Timeout(timeout_seconds, connect=10.0)) as client:
+            with client.stream(
+                "GET",
+                url,
+                follow_redirects=True,
+                headers=headers,
+            ) as response:
+                response.raise_for_status()
+                with tmp_path.open("wb") as handle:
+                    for chunk in response.iter_bytes():
+                        if chunk:
+                            handle.write(chunk)
+        tmp_path.replace(target_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
     return target_path
 
 

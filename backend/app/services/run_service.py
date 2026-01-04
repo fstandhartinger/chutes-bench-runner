@@ -220,12 +220,13 @@ async def update_benchmark_status(
     sampled_item_ids: Optional[list[str]] = None,
 ) -> None:
     """Update benchmark status within a run."""
-    update_data: dict[str, Any] = {"status": status.value, "updated_at": datetime.utcnow()}
+    now = datetime.utcnow()
+    update_data: dict[str, Any] = {"status": status.value, "updated_at": now}
 
     if status == BenchmarkRunStatus.RUNNING:
-        update_data["started_at"] = func.coalesce(BenchmarkRunBenchmark.started_at, datetime.utcnow())
+        update_data["started_at"] = func.coalesce(BenchmarkRunBenchmark.started_at, now)
     elif status in (BenchmarkRunStatus.SUCCEEDED, BenchmarkRunStatus.FAILED, BenchmarkRunStatus.SKIPPED):
-        update_data["completed_at"] = datetime.utcnow()
+        update_data["completed_at"] = now
 
     if metrics:
         update_data["metrics"] = metrics
@@ -242,21 +243,21 @@ async def update_benchmark_status(
     if sampled_item_ids is not None:
         update_data["sampled_item_ids"] = sampled_item_ids
 
+    run_id_result = await db.execute(
+        select(BenchmarkRunBenchmark.run_id).where(BenchmarkRunBenchmark.id == run_benchmark_id)
+    )
+    run_id = run_id_result.scalar_one_or_none()
+    if run_id:
+        await db.execute(
+            update(BenchmarkRun)
+            .where(BenchmarkRun.id == run_id)
+            .values(updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
     await db.execute(
         update(BenchmarkRunBenchmark)
         .where(BenchmarkRunBenchmark.id == run_benchmark_id)
         .values(**update_data)
-        .execution_options(synchronize_session=False)
-    )
-    await db.execute(
-        update(BenchmarkRun)
-        .where(
-            BenchmarkRun.id
-            == select(BenchmarkRunBenchmark.run_id)
-            .where(BenchmarkRunBenchmark.id == run_benchmark_id)
-            .scalar_subquery()
-        )
-        .values(updated_at=datetime.utcnow())
         .execution_options(synchronize_session=False)
     )
     await db.commit()

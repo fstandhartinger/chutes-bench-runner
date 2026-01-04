@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 from typing import Any, Optional, Dict, List
 from app.core.config import get_settings
@@ -19,15 +20,34 @@ class SandyService:
 
     async def create_sandbox(self) -> Optional[str]:
         """Create a new sandbox and return its ID."""
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.post(f"{self.base_url}/api/sandboxes", headers=self.headers)
-                response.raise_for_status()
-                data = response.json()
-                return data.get("sandboxId")
-            except Exception as e:
-                logger.error("Failed to create sandbox", error=str(e))
-                return None
+        delay_seconds = 1
+        last_error: Optional[str] = None
+        for attempt in range(1, 4):
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                try:
+                    response = await client.post(f"{self.base_url}/api/sandboxes", headers=self.headers)
+                    response.raise_for_status()
+                    data = response.json()
+                    sandbox_id = data.get("sandboxId")
+                    if sandbox_id:
+                        return sandbox_id
+                    last_error = "Missing sandboxId in response"
+                except httpx.HTTPStatusError as e:
+                    last_error = e.response.text or str(e)
+                except Exception as e:
+                    last_error = str(e) or e.__class__.__name__
+
+            if attempt < 3:
+                logger.warning(
+                    "Retrying sandbox creation",
+                    attempt=attempt,
+                    error=last_error,
+                )
+                await asyncio.sleep(delay_seconds)
+                delay_seconds = min(delay_seconds * 2, 10)
+
+        logger.error("Failed to create sandbox", error=last_error)
+        return None
 
     async def execute_command(
         self,
@@ -63,8 +83,19 @@ class SandyService:
                     "stderr": data.get("stderr", ""),
                     "exit_code": data.get("exitCode", 0)
                 }
+            except httpx.HTTPStatusError as e:
+                error_detail = e.response.text or str(e)
+                logger.error(
+                    f"Failed to execute command in sandbox {sandbox_id}",
+                    status_code=e.response.status_code,
+                    error=error_detail,
+                )
+                return {"success": False, "error": error_detail, "exit_code": -1}
             except Exception as e:
-                logger.error(f"Failed to execute command in sandbox {sandbox_id}", error=str(e))
+                logger.error(
+                    f"Failed to execute command in sandbox {sandbox_id}",
+                    error=str(e) or e.__class__.__name__,
+                )
                 return {"success": False, "error": str(e), "exit_code": -1}
 
     async def write_file(self, sandbox_id: str, path: str, content: str) -> bool:

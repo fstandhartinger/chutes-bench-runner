@@ -1,4 +1,5 @@
 """LiveCodeBench benchmark adapter."""
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -8,13 +9,16 @@ from huggingface_hub import hf_hub_url
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import download_http_file_async, load_dataset_with_retry
+from app.benchmarks.utils import download_hf_file_async, download_http_file_async, load_dataset_with_retry
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
 logger = get_logger(__name__)
 
 LIVECODEBENCH_TOTAL_ITEMS = 164
+_LIVECODEBENCH_LOCK = asyncio.Lock()
+_LIVECODEBENCH_JSONL: Optional[Path] = None
+_LIVECODEBENCH_ITEMS: Optional[list[dict[str, Any]]] = None
 
 
 @register_adapter("livecodebench")
@@ -117,22 +121,33 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             return
 
         try:
-            logger.info("Loading LiveCodeBench dataset")
-            jsonl_path = await self._ensure_jsonl()
-            if not jsonl_path:
-                raise RuntimeError("Could not download LiveCodeBench dataset file")
+            global _LIVECODEBENCH_ITEMS, _LIVECODEBENCH_JSONL
+            async with _LIVECODEBENCH_LOCK:
+                if _LIVECODEBENCH_ITEMS is not None:
+                    self._items = _LIVECODEBENCH_ITEMS
+                    self._jsonl_path = _LIVECODEBENCH_JSONL
+                    return
 
-            self._items = []
-            with jsonl_path.open("r", encoding="utf-8") as handle:
-                for i, line in enumerate(handle):
-                    if not line.strip():
-                        continue
-                    item = json.loads(line)
-                    parsed = self._parse_item(i, item)
-                    if parsed:
-                        self._items.append(parsed)
+                logger.info("Loading LiveCodeBench dataset")
+                jsonl_path = await self._ensure_jsonl()
+                if not jsonl_path:
+                    raise RuntimeError("Could not download LiveCodeBench dataset file")
 
-            logger.info("Loaded %s LiveCodeBench items", len(self._items))
+                items: list[dict[str, Any]] = []
+                with jsonl_path.open("r", encoding="utf-8") as handle:
+                    for i, line in enumerate(handle):
+                        if not line.strip():
+                            continue
+                        item = json.loads(line)
+                        parsed = self._parse_item(i, item)
+                        if parsed:
+                            items.append(parsed)
+
+                logger.info("Loaded %s LiveCodeBench items", len(items))
+                self._items = items
+                self._jsonl_path = jsonl_path
+                _LIVECODEBENCH_ITEMS = items
+                _LIVECODEBENCH_JSONL = jsonl_path
         except Exception as e:
             logger.error("Failed to load LiveCodeBench", error=str(e))
             self._items = []
@@ -145,19 +160,40 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             import os
 
             hf_token = os.environ.get("HF_TOKEN")
-            url = hf_hub_url(
-                "livecodebench/code_generation",
-                "test.jsonl",
-                repo_type="dataset",
-            )
-            headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else None
-            self._jsonl_path = await download_http_file_async(
-                url,
-                cache_subdir="livecodebench",
-                filename="test.jsonl",
-                headers=headers,
-                timeout_seconds=300,
-            )
+            for attempt in range(1, 4):
+                try:
+                    self._jsonl_path = await download_hf_file_async(
+                        "livecodebench/code_generation",
+                        "test.jsonl",
+                        repo_type="dataset",
+                        token=hf_token,
+                        cache_subdir="livecodebench",
+                    )
+                    break
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to download LiveCodeBench JSONL",
+                        attempt=attempt,
+                        error=str(exc) or exc.__class__.__name__,
+                    )
+                    if attempt >= 3:
+                        raise
+                    await asyncio.sleep(min(2**attempt, 10))
+
+            if not self._jsonl_path:
+                url = hf_hub_url(
+                    "livecodebench/code_generation",
+                    "test.jsonl",
+                    repo_type="dataset",
+                )
+                headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else None
+                self._jsonl_path = await download_http_file_async(
+                    url,
+                    cache_subdir="livecodebench",
+                    filename="test.jsonl",
+                    headers=headers,
+                    timeout_seconds=900,
+                )
             return self._jsonl_path
         except Exception as e:
             logger.error("Failed to download LiveCodeBench JSONL", error=str(e))

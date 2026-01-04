@@ -18,6 +18,7 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 TAU2_REPO_ZIP = "https://github.com/sierra-research/tau2-bench/archive/refs/heads/main.zip"
+_TAU2_LOCK = asyncio.Lock()
 
 
 @register_adapter("tau_bench_telecom")
@@ -57,28 +58,55 @@ class TauBenchTelecomAdapter(BenchmarkAdapter):
     async def _ensure_tau2_repo(self) -> None:
         if self._tau2_loaded:
             return
-        settings = get_settings()
-        repo_zip = await download_http_file_async(
-            TAU2_REPO_ZIP,
-            cache_subdir="tau2",
-            filename="tau2-bench.zip",
-        )
-        repo_dir = repo_zip.with_suffix("")
-        if not repo_dir.exists():
-            with zipfile.ZipFile(repo_zip, "r") as zf:
-                zf.extractall(repo_zip.parent)
-        # The zip extracts to tau2-bench-main by default.
-        extracted_dir = repo_zip.parent / "tau2-bench-main"
-        if not extracted_dir.exists():
-            extracted_dir = repo_dir
-        self._tau2_repo = extracted_dir
-        tau2_src = extracted_dir / "src"
-        if str(tau2_src) not in sys.path:
-            sys.path.insert(0, str(tau2_src))
-        os.environ.setdefault("TAU2_DATA_DIR", str(extracted_dir / "data"))
-        os.environ.setdefault("TAU2_LOG_LEVEL", "ERROR")
-        os.environ.setdefault("OPENAI_API_BASE", settings.chutes_api_base_url)
-        self._tau2_loaded = True
+        async with _TAU2_LOCK:
+            if self._tau2_loaded:
+                return
+            settings = get_settings()
+            repo_zip = None
+            for attempt in range(2):
+                repo_zip = await download_http_file_async(
+                    TAU2_REPO_ZIP,
+                    cache_subdir="tau2",
+                    filename="tau2-bench.zip",
+                    timeout_seconds=300,
+                )
+                if zipfile.is_zipfile(repo_zip):
+                    break
+                logger.warning("Downloaded τ²-Bench zip is invalid, retrying", path=str(repo_zip))
+                repo_zip.unlink(missing_ok=True)
+                repo_zip = None
+
+            if not repo_zip or not zipfile.is_zipfile(repo_zip):
+                raise RuntimeError("Downloaded τ²-Bench archive is invalid")
+
+            repo_dir = repo_zip.with_suffix("")
+            if not repo_dir.exists():
+                try:
+                    with zipfile.ZipFile(repo_zip, "r") as zf:
+                        zf.extractall(repo_zip.parent)
+                except zipfile.BadZipFile as exc:
+                    logger.warning("Corrupt τ²-Bench zip; redownloading", error=str(exc))
+                    repo_zip.unlink(missing_ok=True)
+                    repo_zip = await download_http_file_async(
+                        TAU2_REPO_ZIP,
+                        cache_subdir="tau2",
+                        filename="tau2-bench.zip",
+                        timeout_seconds=300,
+                    )
+                    with zipfile.ZipFile(repo_zip, "r") as zf:
+                        zf.extractall(repo_zip.parent)
+            # The zip extracts to tau2-bench-main by default.
+            extracted_dir = repo_zip.parent / "tau2-bench-main"
+            if not extracted_dir.exists():
+                extracted_dir = repo_dir
+            self._tau2_repo = extracted_dir
+            tau2_src = extracted_dir / "src"
+            if str(tau2_src) not in sys.path:
+                sys.path.insert(0, str(tau2_src))
+            os.environ.setdefault("TAU2_DATA_DIR", str(extracted_dir / "data"))
+            os.environ.setdefault("TAU2_LOG_LEVEL", "ERROR")
+            os.environ.setdefault("OPENAI_API_BASE", settings.chutes_api_base_url)
+            self._tau2_loaded = True
 
     async def preload(self) -> None:
         if self._items:
