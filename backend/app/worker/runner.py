@@ -195,17 +195,7 @@ class BenchmarkWorker:
 
     async def touch_active_runs(self) -> None:
         """Touch all active runs for this worker to avoid stale requeue."""
-        if not self.current_run_ids:
-            return
-        now = datetime.utcnow()
-        async with async_session_maker() as db:
-            await db.execute(
-                update(BenchmarkRun)
-                .where(BenchmarkRun.id.in_(self.current_run_ids))
-                .values(updated_at=now)
-                .execution_options(synchronize_session=False)
-            )
-            await db.commit()
+        return
 
     async def requeue_stale_runs(self) -> None:
         """Requeue stale running runs after a worker restart or stall."""
@@ -254,15 +244,14 @@ class BenchmarkWorker:
                         benchmark_updated_at.append(benchmark_updated)
                 stale_after_seconds = max(base_seconds, max_timeout + buffer_seconds)
                 cutoff = now - timedelta(seconds=stale_after_seconds)
-                last_update = None
-                if benchmark_updated_at:
-                    last_update = max(benchmark_updated_at)
-                elif run.updated_at:
-                    last_update = run.updated_at
+                last_update_candidates = list(benchmark_updated_at)
+                if run.updated_at:
+                    last_update_candidates.append(run.updated_at)
                 elif run.started_at:
-                    last_update = run.started_at
+                    last_update_candidates.append(run.started_at)
                 else:
-                    last_update = run.created_at
+                    last_update_candidates.append(run.created_at)
+                last_update = max(last_update_candidates) if last_update_candidates else None
                 if last_update and last_update >= cutoff:
                     continue
 
