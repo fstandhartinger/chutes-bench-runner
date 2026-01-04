@@ -7,11 +7,9 @@ import os
 import time
 from typing import Any, AsyncIterator, Optional
 
-from datasets import load_dataset
-
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import download_http_file
+from app.benchmarks.utils import download_http_file, load_dataset_with_retry
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -63,7 +61,7 @@ class SWEBenchProAdapter(BenchmarkAdapter):
 
         try:
             logger.info("Loading SWE-Bench Pro dataset")
-            dataset = load_dataset(
+            dataset = await load_dataset_with_retry(
                 "ScaleAI/SWE-bench_Pro",
                 split="test",
                 token=os.environ.get("HF_TOKEN"),

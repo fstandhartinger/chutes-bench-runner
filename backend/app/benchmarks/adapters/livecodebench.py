@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import download_hf_file
+from app.benchmarks.utils import download_hf_file, load_dataset_with_retry
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -64,9 +64,11 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         target = max(1, int(total_items * subset_pct / 100))
         self._items = []
         try:
-            from datasets import load_dataset
-
-            dataset = load_dataset("livecodebench/code_generation", split="test", streaming=True)
+            dataset = await load_dataset_with_retry(
+                "livecodebench/code_generation",
+                split="test",
+                streaming=True,
+            )
             for i, item in enumerate(dataset):
                 if len(self._items) >= target:
                     break

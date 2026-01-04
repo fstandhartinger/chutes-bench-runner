@@ -4,11 +4,9 @@ import time
 import zipfile
 from typing import Any, AsyncIterator, Optional
 
-from datasets import load_dataset
-
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import download_hf_file
+from app.benchmarks.utils import download_hf_file, load_dataset_with_retry
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
@@ -70,7 +68,11 @@ class AALCRAdapter(BenchmarkAdapter):
         try:
             logger.info("Loading AA-LCR dataset")
             hf_token = os.environ.get("HF_TOKEN")
-            dataset = load_dataset("ArtificialAnalysis/AA-LCR", split="test", token=hf_token)
+            dataset = await load_dataset_with_retry(
+                "ArtificialAnalysis/AA-LCR",
+                split="test",
+                token=hf_token,
+            )
 
             self._items = []
             for i, item in enumerate(dataset):

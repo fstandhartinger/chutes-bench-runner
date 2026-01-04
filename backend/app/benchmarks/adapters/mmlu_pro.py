@@ -4,6 +4,7 @@ from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
+from app.benchmarks.utils import load_dataset_with_retry
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -43,12 +44,15 @@ class MMLUProAdapter(BenchmarkAdapter):
             return
 
         try:
-            from datasets import load_dataset
             import os
 
             logger.info("Loading MMLU-Pro dataset")
             hf_token = os.environ.get("HF_TOKEN")
-            dataset = load_dataset("TIGER-Lab/MMLU-Pro", split="test", token=hf_token)
+            dataset = await load_dataset_with_retry(
+                "TIGER-Lab/MMLU-Pro",
+                split="test",
+                token=hf_token,
+            )
             
             self._items = []
             for i, item in enumerate(dataset):

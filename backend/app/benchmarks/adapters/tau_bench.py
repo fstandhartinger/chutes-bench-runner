@@ -1,6 +1,7 @@
 """τ²-Bench Telecom benchmark adapter."""
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import time
@@ -134,7 +135,8 @@ class TauBenchTelecomAdapter(BenchmarkAdapter):
             from tau2.run import run_tasks
 
             start_time = time.time()
-            results = run_tasks(
+            results = await asyncio.to_thread(
+                run_tasks,
                 domain="telecom",
                 tasks=[item["task"]],
                 agent="llm_agent",

@@ -4,11 +4,11 @@ import time
 from typing import Any, AsyncIterator, Optional
 
 import nltk
-from datasets import load_dataset
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.ifeval import evaluation_lib
 from app.benchmarks.registry import register_adapter
+from app.benchmarks.utils import load_dataset_with_retry
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -62,7 +62,11 @@ class IFBenchAdapter(BenchmarkAdapter):
         try:
             logger.info("Loading IFBench dataset")
             hf_token = os.environ.get("HF_TOKEN")
-            dataset = load_dataset("google/IFEval", split="train", token=hf_token)
+            dataset = await load_dataset_with_retry(
+                "google/IFEval",
+                split="train",
+                token=hf_token,
+            )
             self._items = []
             for i, item in enumerate(dataset):
                 self._items.append(

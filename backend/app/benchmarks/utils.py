@@ -1,13 +1,17 @@
 """Shared helpers for benchmark adapters."""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 import httpx
 from huggingface_hub import hf_hub_download, snapshot_download
 
 from app.core.config import get_settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def get_bench_data_dir() -> Path:
@@ -87,3 +91,36 @@ def download_http_file(
     tmp_path.write_bytes(response.content)
     tmp_path.replace(target_path)
     return target_path
+
+
+async def load_dataset_with_retry(
+    *args: Any,
+    max_attempts: int = 3,
+    initial_delay_seconds: float = 2.0,
+    **kwargs: Any,
+) -> Any:
+    """Load a Hugging Face dataset with retries."""
+    from datasets import load_dataset
+
+    attempt = 0
+    delay_seconds = initial_delay_seconds
+    last_error: Optional[Exception] = None
+    while attempt < max_attempts:
+        attempt += 1
+        try:
+            return await asyncio.to_thread(load_dataset, *args, **kwargs)
+        except Exception as exc:
+            last_error = exc
+            dataset_name = args[0] if args else "unknown"
+            logger.warning(
+                "Failed to load dataset",
+                dataset=dataset_name,
+                attempt=attempt,
+                error=str(exc),
+            )
+            if attempt >= max_attempts:
+                raise
+            await asyncio.sleep(delay_seconds)
+            delay_seconds = min(delay_seconds * 2, 30)
+    if last_error:
+        raise last_error

@@ -6,6 +6,7 @@ from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
+from app.benchmarks.utils import load_dataset_with_retry
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -55,15 +56,13 @@ class HLEAdapter(BenchmarkAdapter):
             return
 
         try:
-            from datasets import load_dataset
-
             logger.info("Loading Humanity's Last Exam dataset")
             hf_token = os.environ.get("HF_TOKEN")
 
             if hf_token:
-                dataset = load_dataset("cais/hle", split="test", token=hf_token)
+                dataset = await load_dataset_with_retry("cais/hle", split="test", token=hf_token)
             else:
-                dataset = load_dataset("cais/hle", split="test")
+                dataset = await load_dataset_with_retry("cais/hle", split="test")
 
             self._items = []
             for i, item in enumerate(dataset):

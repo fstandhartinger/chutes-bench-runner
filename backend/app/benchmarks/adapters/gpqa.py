@@ -4,6 +4,7 @@ from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
+from app.benchmarks.utils import load_dataset_with_retry
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -47,17 +48,25 @@ class GPQADiamondAdapter(BenchmarkAdapter):
             return
 
         try:
-            from datasets import load_dataset
             import os
 
             logger.info("Loading GPQA Diamond dataset")
             # This is a gated dataset - requires HF authentication
             hf_token = os.environ.get("HF_TOKEN")
             if hf_token:
-                dataset = load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train", token=hf_token)
+                dataset = await load_dataset_with_retry(
+                    "Idavidrein/gpqa",
+                    "gpqa_diamond",
+                    split="train",
+                    token=hf_token,
+                )
             else:
                 # Try without token - will fail for gated datasets
-                dataset = load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train")
+                dataset = await load_dataset_with_retry(
+                    "Idavidrein/gpqa",
+                    "gpqa_diamond",
+                    split="train",
+                )
             
             self._items = []
             for i, item in enumerate(dataset):

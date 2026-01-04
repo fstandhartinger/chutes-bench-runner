@@ -7,10 +7,10 @@ import time
 from typing import Any, AsyncIterator, Optional
 
 import yaml
-from datasets import load_dataset
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
+from app.benchmarks.utils import load_dataset_with_retry
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -57,7 +57,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
 
         try:
             logger.info("Loading Terminal-Bench dataset")
-            dataset = load_dataset(
+            dataset = await load_dataset_with_retry(
                 "ia03/terminal-bench",
                 split="test",
                 token=os.environ.get("HF_TOKEN"),
