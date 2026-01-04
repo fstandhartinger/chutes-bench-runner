@@ -1,11 +1,14 @@
 """LiveCodeBench benchmark adapter."""
 import json
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator, Optional
+
+from huggingface_hub import hf_hub_url
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import load_dataset_with_retry
+from app.benchmarks.utils import download_http_file_async, load_dataset_with_retry
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -26,6 +29,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []
+        self._jsonl_path: Optional[Path] = None
         self.sandy = SandyService()
 
     def get_name(self) -> str:
@@ -113,27 +117,51 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             return
 
         try:
-            import os
-
             logger.info("Loading LiveCodeBench dataset")
-            hf_token = os.environ.get("HF_TOKEN")
-            dataset = await load_dataset_with_retry(
-                "livecodebench/code_generation",
-                split="test",
-                streaming=True,
-                token=hf_token,
-            )
+            jsonl_path = await self._ensure_jsonl()
+            if not jsonl_path:
+                raise RuntimeError("Could not download LiveCodeBench dataset file")
+
             self._items = []
-            for i, item in enumerate(dataset):
-                parsed = self._parse_item(i, item)
-                if parsed:
-                    self._items.append(parsed)
+            with jsonl_path.open("r", encoding="utf-8") as handle:
+                for i, line in enumerate(handle):
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    parsed = self._parse_item(i, item)
+                    if parsed:
+                        self._items.append(parsed)
 
             logger.info("Loaded %s LiveCodeBench items", len(self._items))
         except Exception as e:
             logger.error("Failed to load LiveCodeBench", error=str(e))
             self._items = []
             raise
+
+    async def _ensure_jsonl(self) -> Optional[Path]:
+        if self._jsonl_path:
+            return self._jsonl_path
+        try:
+            import os
+
+            hf_token = os.environ.get("HF_TOKEN")
+            url = hf_hub_url(
+                "livecodebench/code_generation",
+                "test.jsonl",
+                repo_type="dataset",
+            )
+            headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else None
+            self._jsonl_path = await download_http_file_async(
+                url,
+                cache_subdir="livecodebench",
+                filename="test.jsonl",
+                headers=headers,
+                timeout_seconds=300,
+            )
+            return self._jsonl_path
+        except Exception as e:
+            logger.error("Failed to download LiveCodeBench JSONL", error=str(e))
+            return None
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         if not self._items:

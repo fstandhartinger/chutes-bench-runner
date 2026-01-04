@@ -95,6 +95,7 @@ def download_http_file(
     *,
     cache_subdir: Optional[str] = None,
     filename: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
     timeout_seconds: int = 120,
 ) -> Path:
     """Download a file over HTTP into the benchmark cache (with caching)."""
@@ -104,7 +105,12 @@ def download_http_file(
     if target_path.exists():
         return target_path
 
-    response = httpx.get(url, timeout=timeout_seconds, follow_redirects=True)
+    response = httpx.get(
+        url,
+        timeout=httpx.Timeout(timeout_seconds, connect=10.0),
+        follow_redirects=True,
+        headers=headers,
+    )
     response.raise_for_status()
     tmp_path = target_path.with_suffix(".tmp")
     tmp_path.write_bytes(response.content)
@@ -117,6 +123,7 @@ async def download_http_file_async(
     *,
     cache_subdir: Optional[str] = None,
     filename: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
     timeout_seconds: int = 120,
 ) -> Path:
     """Async wrapper for download_http_file to avoid blocking the event loop."""
@@ -125,6 +132,7 @@ async def download_http_file_async(
         url,
         cache_subdir=cache_subdir,
         filename=filename,
+        headers=headers,
         timeout_seconds=timeout_seconds,
     )
 
