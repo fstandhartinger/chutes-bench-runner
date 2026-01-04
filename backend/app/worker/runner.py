@@ -45,6 +45,7 @@ class BenchmarkWorker:
         self.last_progress_at: dict[str, datetime] = {}
         self.client = get_chutes_client()
         self._last_stale_check = 0.0
+        self._last_heartbeat = 0.0
 
     async def _get_client_for_run(self, db: AsyncSession, run: BenchmarkRun) -> ChutesClient:
         if run.auth_mode == "idp" and run.auth_session_id:
@@ -74,6 +75,9 @@ class BenchmarkWorker:
                 if now - self._last_stale_check >= settings.worker_stale_check_interval:
                     await self.requeue_stale_runs()
                     self._last_stale_check = now
+                if now - self._last_heartbeat >= settings.worker_heartbeat_seconds:
+                    await self.touch_active_runs()
+                    self._last_heartbeat = now
                 await self.reap_completed_runs()
                 await self.launch_runs()
             except Exception:
@@ -161,7 +165,6 @@ class BenchmarkWorker:
                 logger.warning("Run not found after claim", run_id=run_id)
                 return
 
-            heartbeat_task = asyncio.create_task(self._run_heartbeat(run_id))
             try:
                 await self.execute_run(db, run)
             except asyncio.CancelledError:
@@ -176,28 +179,19 @@ class BenchmarkWorker:
                     "run_failed",
                     message=f"Run failed: {str(e)}",
                 )
-            finally:
-                heartbeat_task.cancel()
-                await asyncio.gather(heartbeat_task, return_exceptions=True)
 
-    async def _run_heartbeat(self, run_id: str) -> None:
-        """Periodically touch the run to prevent stale requeue during long tasks."""
-        interval = max(10, settings.worker_heartbeat_seconds)
-        while True:
-            try:
-                async with async_session_maker() as db:
-                    await db.execute(
-                        update(BenchmarkRun)
-                        .where(BenchmarkRun.id == run_id)
-                        .values(updated_at=datetime.utcnow())
-                        .execution_options(synchronize_session=False)
-                    )
-                    await db.commit()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("Heartbeat failed", run_id=run_id, error=str(exc))
-            await asyncio.sleep(interval)
+    async def touch_active_runs(self) -> None:
+        """Touch all active runs for this worker to avoid stale requeue."""
+        if not self.current_run_ids:
+            return
+        async with async_session_maker() as db:
+            await db.execute(
+                update(BenchmarkRun)
+                .where(BenchmarkRun.id.in_(self.current_run_ids))
+                .values(updated_at=datetime.utcnow())
+                .execution_options(synchronize_session=False)
+            )
+            await db.commit()
 
     async def requeue_stale_runs(self) -> None:
         """Requeue stale running runs after a worker restart or stall."""
