@@ -161,6 +161,7 @@ class BenchmarkWorker:
                 logger.warning("Run not found after claim", run_id=run_id)
                 return
 
+            heartbeat_task = asyncio.create_task(self._run_heartbeat(run_id))
             try:
                 await self.execute_run(db, run)
             except asyncio.CancelledError:
@@ -175,6 +176,23 @@ class BenchmarkWorker:
                     "run_failed",
                     message=f"Run failed: {str(e)}",
                 )
+            finally:
+                heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+    async def _run_heartbeat(self, run_id: str) -> None:
+        """Periodically touch the run to prevent stale requeue during long tasks."""
+        interval = max(10, settings.worker_heartbeat_seconds)
+        while True:
+            await asyncio.sleep(interval)
+            async with async_session_maker() as db:
+                await db.execute(
+                    update(BenchmarkRun)
+                    .where(BenchmarkRun.id == run_id)
+                    .values(updated_at=datetime.utcnow())
+                    .execution_options(synchronize_session=False)
+                )
+                await db.commit()
 
     async def requeue_stale_runs(self) -> None:
         """Requeue stale running runs after a worker restart or stall."""
