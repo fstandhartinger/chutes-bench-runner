@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     worker_max_concurrent: int = 2
     worker_item_concurrency: int = 2
     worker_item_timeout_seconds: int = 900
+    worker_item_attempts: int = 3
     worker_stale_run_minutes: int = 5
     worker_stale_check_interval: int = 60
     worker_heartbeat_seconds: int = 60

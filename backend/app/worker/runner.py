@@ -687,8 +687,9 @@ class BenchmarkWorker:
                 attempt = 0
                 delay_seconds = 1
                 last_result: Optional[ItemResult] = None
+                max_attempts = max(getattr(settings, "worker_item_attempts", 1), 1)
 
-                while attempt < settings.worker_item_attempts:
+                while attempt < max_attempts:
                     attempt += 1
                     self.last_progress_at[run.id] = datetime.utcnow()
                     try:
@@ -711,19 +712,19 @@ class BenchmarkWorker:
                     if result.metadata is None:
                         result.metadata = {}
                     result.metadata["worker_attempt"] = attempt
-                    result.metadata["worker_attempts"] = settings.worker_item_attempts
+                    result.metadata["worker_attempts"] = max_attempts
                     last_result = result
 
                     if not _is_retryable_item_error(result.error):
                         return result
 
-                    if attempt < settings.worker_item_attempts:
+                    if attempt < max_attempts:
                         await asyncio.sleep(delay_seconds)
                         delay_seconds = min(delay_seconds * 2, 10)
 
-                if last_result and last_result.error and settings.worker_item_attempts > 1:
+                if last_result and last_result.error and max_attempts > 1:
                     last_result.error = (
-                        f"{last_result.error} (after {settings.worker_item_attempts} attempts)"
+                        f"{last_result.error} (after {max_attempts} attempts)"
                     )
                 return last_result or ItemResult(item_id=item_id, error="Item evaluation failed")
 
