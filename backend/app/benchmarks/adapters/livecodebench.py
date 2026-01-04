@@ -170,7 +170,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
                             token=hf_token,
                             cache_subdir="livecodebench",
                         ),
-                        timeout=900,
+                        timeout=3600,
                     )
                     break
                 except Exception as exc:
@@ -195,7 +195,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
                     cache_subdir="livecodebench",
                     filename="test.jsonl",
                     headers=headers,
-                    timeout_seconds=900,
+                    timeout_seconds=3600,
                 )
             return self._jsonl_path
         except Exception as e:
