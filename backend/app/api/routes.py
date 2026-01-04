@@ -42,6 +42,7 @@ from app.services.run_service import (
     get_run,
     get_run_events,
     list_runs,
+    requeue_run,
 )
 from app.services.signed_export_service import (
     SigningKeyError,
@@ -289,6 +290,22 @@ async def cancel_benchmark_run(
             detail="Run cannot be canceled (may already be completed or not found)",
         )
     return CancelRunResponse(success=True, message="Run canceled")
+
+
+@router.post("/admin/runs/{run_id}/requeue", response_model=CancelRunResponse)
+async def requeue_benchmark_run(
+    db: SessionDep,
+    run_id: str,
+    _: AdminDep,
+):
+    """Requeue a failed or canceled benchmark run (admin only)."""
+    success = await requeue_run(db, run_id)
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail="Run cannot be requeued (must be failed or canceled)",
+        )
+    return CancelRunResponse(success=True, message="Run requeued")
 
 
 @router.get("/runs/{run_id}/benchmarks/{benchmark_name}", response_model=RunBenchmarkDetailsResponse)

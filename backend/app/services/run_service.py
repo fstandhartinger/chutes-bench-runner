@@ -173,6 +173,40 @@ async def cancel_run(db: AsyncSession, run_id: str) -> bool:
     return True
 
 
+async def requeue_run(db: AsyncSession, run_id: str) -> bool:
+    """Requeue a failed or canceled run so remaining benchmarks resume."""
+    run = await get_run(db, run_id)
+    if not run or run.status not in (RunStatus.FAILED.value, RunStatus.CANCELED.value):
+        return False
+
+    now = datetime.utcnow()
+    await db.execute(
+        update(BenchmarkRunBenchmark)
+        .where(BenchmarkRunBenchmark.run_id == run_id)
+        .where(BenchmarkRunBenchmark.status != BenchmarkRunStatus.SUCCEEDED.value)
+        .values(
+            status=BenchmarkRunStatus.PENDING.value,
+            error_message=None,
+            completed_at=None,
+            updated_at=now,
+        )
+    )
+    await db.execute(
+        update(BenchmarkRun)
+        .where(BenchmarkRun.id == run_id)
+        .values(
+            status=RunStatus.QUEUED.value,
+            error_message=None,
+            completed_at=None,
+            canceled_at=None,
+            updated_at=now,
+        )
+    )
+    await db.commit()
+    await add_run_event(db, run_id, "run_requeued", message="Run manually requeued")
+    return True
+
+
 async def update_benchmark_status(
     db: AsyncSession,
     run_benchmark_id: str,

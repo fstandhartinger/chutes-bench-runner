@@ -2,7 +2,7 @@
 import asyncio
 import time
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +47,73 @@ class BenchmarkWorker:
         self.client = get_chutes_client()
         self._last_stale_check = 0.0
         self._last_heartbeat = 0.0
+
+    async def _is_run_canceled(self, run_id: str) -> bool:
+        async with async_session_maker() as db:
+            result = await db.execute(
+                select(BenchmarkRun.canceled_at).where(BenchmarkRun.id == run_id)
+            )
+            return result.scalar_one_or_none() is not None
+
+    async def _safe_update_run_status(
+        self,
+        run_id: str,
+        status: RunStatus,
+        error_message: Optional[str] = None,
+        overall_score: Optional[float] = None,
+    ) -> None:
+        async with async_session_maker() as db:
+            await update_run_status(
+                db,
+                run_id,
+                status,
+                error_message=error_message,
+                overall_score=overall_score,
+            )
+
+    async def _safe_update_benchmark_status(
+        self,
+        run_benchmark_id: str,
+        status: BenchmarkRunStatus,
+        metrics: Optional[dict[str, Any]] = None,
+        score: Optional[float] = None,
+        error_message: Optional[str] = None,
+        completed_items: Optional[int] = None,
+        total_items: Optional[int] = None,
+        sampled_items: Optional[int] = None,
+        sampled_item_ids: Optional[list[str]] = None,
+    ) -> None:
+        async with async_session_maker() as db:
+            await update_benchmark_status(
+                db,
+                run_benchmark_id,
+                status,
+                metrics=metrics,
+                score=score,
+                error_message=error_message,
+                completed_items=completed_items,
+                total_items=total_items,
+                sampled_items=sampled_items,
+                sampled_item_ids=sampled_item_ids,
+            )
+
+    async def _safe_add_run_event(
+        self,
+        run_id: str,
+        event_type: str,
+        benchmark_name: Optional[str] = None,
+        message: Optional[str] = None,
+        data: Optional[dict[str, Any]] = None,
+    ) -> None:
+        async with async_session_maker() as db:
+            await add_run_event(
+                db,
+                run_id,
+                event_type,
+                benchmark_name=benchmark_name,
+                message=message,
+                data=data,
+            )
 
     async def _get_client_for_run(self, db: AsyncSession, run: BenchmarkRun) -> ChutesClient:
         if run.auth_mode == "idp" and run.auth_session_id:
@@ -185,9 +252,12 @@ class BenchmarkWorker:
                 raise
             except Exception as e:
                 logger.exception("Run failed", run_id=run_id)
-                await update_run_status(db, run_id, RunStatus.FAILED, error_message=str(e))
-                await add_run_event(
-                    db,
+                await self._safe_update_run_status(
+                    run_id,
+                    RunStatus.FAILED,
+                    error_message=str(e),
+                )
+                await self._safe_add_run_event(
                     run_id,
                     "run_failed",
                     message=f"Run failed: {str(e)}",
@@ -317,10 +387,9 @@ class BenchmarkWorker:
         try:
             for rb in run_benchmarks:
                 # Check for cancellation
-                await db.refresh(run)
-                if run.canceled_at:
+                if await self._is_run_canceled(run.id):
                     logger.info("Run canceled", run_id=run.id)
-                    await update_run_status(db, run.id, RunStatus.CANCELED)
+                    await self._safe_update_run_status(run.id, RunStatus.CANCELED)
                     return
 
                 if rb.status == BenchmarkRunStatus.SUCCEEDED.value:
@@ -345,14 +414,16 @@ class BenchmarkWorker:
                         benchmark=rb.benchmark_name,
                         error=str(e),
                     )
-                    await update_benchmark_status(
-                        db, rb.id, BenchmarkRunStatus.FAILED,
-                        error_message=str(e)
+                    await self._safe_update_benchmark_status(
+                        rb.id,
+                        BenchmarkRunStatus.FAILED,
+                        error_message=str(e),
                     )
-                    await add_run_event(
-                        db, run.id, "benchmark_failed",
+                    await self._safe_add_run_event(
+                        run.id,
+                        "benchmark_failed",
                         benchmark_name=rb.benchmark_name,
-                        message=f"Benchmark failed: {str(e)}"
+                        message=f"Benchmark failed: {str(e)}",
                     )
                     failed_benchmarks += 1
         finally:
@@ -361,14 +432,12 @@ class BenchmarkWorker:
 
         # Compute overall score
         if completed_benchmarks == 0 and failed_benchmarks > 0:
-            await update_run_status(
-                db,
+            await self._safe_update_run_status(
                 run.id,
                 RunStatus.FAILED,
                 error_message="All benchmarks failed",
             )
-            await add_run_event(
-                db,
+            await self._safe_add_run_event(
                 run.id,
                 "run_failed",
                 message="Run failed: all benchmarks failed",
@@ -379,14 +448,16 @@ class BenchmarkWorker:
 
         overall_score = total_score / completed_benchmarks if completed_benchmarks > 0 else None
 
-        await update_run_status(
-            db, run.id, RunStatus.SUCCEEDED,
-            overall_score=overall_score
+        await self._safe_update_run_status(
+            run.id,
+            RunStatus.SUCCEEDED,
+            overall_score=overall_score,
         )
-        await add_run_event(
-            db, run.id, "run_completed",
+        await self._safe_add_run_event(
+            run.id,
+            "run_completed",
             message=f"Run completed with overall score: {overall_score:.2%}" if overall_score else "Run completed",
-            data={"overall_score": overall_score, "completed_benchmarks": completed_benchmarks}
+            data={"overall_score": overall_score, "completed_benchmarks": completed_benchmarks},
         )
 
         logger.info(
@@ -409,9 +480,10 @@ class BenchmarkWorker:
         # Get adapter
         adapter = get_adapter(rb.benchmark_name, client, run.model_slug)
         if not adapter:
-            await update_benchmark_status(
-                db, rb.id, BenchmarkRunStatus.SKIPPED,
-                error_message=f"No adapter found for {rb.benchmark_name}"
+            await self._safe_update_benchmark_status(
+                rb.id,
+                BenchmarkRunStatus.SKIPPED,
+                error_message=f"No adapter found for {rb.benchmark_name}",
             )
             return None
 
@@ -431,17 +503,20 @@ class BenchmarkWorker:
             total_items, items_to_evaluate = await adapter.get_items_for_evaluation(run.subset_pct, seed)
 
             if total_items <= 0 or not items_to_evaluate:
-                await update_benchmark_status(
-                    db, rb.id, BenchmarkRunStatus.NEEDS_SETUP,
-                    error_message="No items found - dataset may require setup"
+                await self._safe_update_benchmark_status(
+                    rb.id,
+                    BenchmarkRunStatus.NEEDS_SETUP,
+                    error_message="No items found - dataset may require setup",
                 )
                 return None
 
-            await db.execute(
-                update(Benchmark)
-                .where(Benchmark.id == rb.benchmark_id)
-                .values(total_items=total_items)
-            )
+            async with async_session_maker() as update_db:
+                await update_db.execute(
+                    update(Benchmark)
+                    .where(Benchmark.id == rb.benchmark_id)
+                    .values(total_items=total_items)
+                )
+                await update_db.commit()
 
             sampled_item_ids = list(rb.sampled_item_ids or [])
             if sampled_item_ids and len(sampled_item_ids) == len(items_to_evaluate):
@@ -491,8 +566,9 @@ class BenchmarkWorker:
             completed_items = len(completed_item_ids)
             pending_item_ids = [item_id for item_id in items_to_evaluate if item_id not in completed_item_ids]
 
-            await update_benchmark_status(
-                db, rb.id, BenchmarkRunStatus.RUNNING,
+            await self._safe_update_benchmark_status(
+                rb.id,
+                BenchmarkRunStatus.RUNNING,
                 total_items=total_items,
                 sampled_items=len(items_to_evaluate),
                 sampled_item_ids=sampled_item_ids,
@@ -505,8 +581,9 @@ class BenchmarkWorker:
                 if completed_items
                 else f"Starting {adapter.get_display_name()}"
             )
-            await add_run_event(
-                db, run.id, event_type,
+            await self._safe_add_run_event(
+                run.id,
+                event_type,
                 benchmark_name=rb.benchmark_name,
                 message=message,
                 data={
@@ -526,14 +603,16 @@ class BenchmarkWorker:
                     "correct": correct,
                     **additional_metrics,
                 }
-                await update_benchmark_status(
-                    db, rb.id, BenchmarkRunStatus.SUCCEEDED,
+                await self._safe_update_benchmark_status(
+                    rb.id,
+                    BenchmarkRunStatus.SUCCEEDED,
                     score=score,
                     metrics=metrics,
                     completed_items=completed_items,
                 )
-                await add_run_event(
-                    db, run.id, "benchmark_completed",
+                await self._safe_add_run_event(
+                    run.id,
+                    "benchmark_completed",
                     benchmark_name=rb.benchmark_name,
                     message=f"Completed {adapter.get_display_name()} with score {score:.2%}",
                     data=metrics,
@@ -659,8 +738,7 @@ class BenchmarkWorker:
                         await record_result(result)
                         completed_since_check += 1
                         if completed_since_check % 10 == 0:
-                            await db.refresh(run)
-                            if run.canceled_at:
+                            if await self._is_run_canceled(run.id):
                                 for pending in pending_tasks:
                                     pending.cancel()
                                 await asyncio.gather(*pending_tasks, return_exceptions=True)
@@ -669,8 +747,7 @@ class BenchmarkWorker:
             else:
                 for i, item_id in enumerate(pending_item_ids):
                     if i % 10 == 0:
-                        await db.refresh(run)
-                        if run.canceled_at:
+                        if await self._is_run_canceled(run.id):
                             raise Exception("Run canceled")
                     if db.in_transaction():
                         await db.commit()
@@ -691,15 +768,17 @@ class BenchmarkWorker:
                 **additional_metrics,
             }
 
-            await update_benchmark_status(
-                db, rb.id, BenchmarkRunStatus.SUCCEEDED,
+            await self._safe_update_benchmark_status(
+                rb.id,
+                BenchmarkRunStatus.SUCCEEDED,
                 score=score,
                 metrics=metrics,
                 completed_items=completed_items,
             )
 
-            await add_run_event(
-                db, run.id, "benchmark_completed",
+            await self._safe_add_run_event(
+                run.id,
+                "benchmark_completed",
                 benchmark_name=rb.benchmark_name,
                 message=f"Completed {adapter.get_display_name()} with score {score:.2%}",
                 data=metrics,
