@@ -195,6 +195,12 @@ class BenchmarkAdapter(ABC):
             parts: list[str] = []
             if detail:
                 parts.append(str(detail))
+            response_code = metadata.get("response_error_code")
+            if response_code:
+                parts.append(f"status={response_code}")
+            response_detail = metadata.get("response_error_detail")
+            if response_detail:
+                parts.append(str(response_detail))
             response_source = metadata.get("response_source")
             finish_reason = metadata.get("finish_reason")
             attempts = metadata.get("response_attempts")
@@ -250,9 +256,23 @@ class BenchmarkAdapter(ABC):
         if answer_matches:
             return answer_matches[-1].upper()
 
+        inline_match = re.search(
+            rf"(?i)\banswer\b\s*(?:is|:|-)\s*\(?({letter_set})\)?",
+            cleaned,
+        )
+        if inline_match:
+            return inline_match.group(1).upper()
+
+        leading_match = re.match(rf"^\s*\(?({letter_set})\)?[\\.\)]\s+", cleaned)
+        if leading_match:
+            return leading_match.group(1).upper()
+
         # Check lines from bottom to top for a standalone letter.
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
         for line in reversed(lines):
+            line_match = re.match(rf"^\s*\(?({letter_set})\)?[\\.\)]\s+.+", line)
+            if line_match:
+                return line_match.group(1).upper()
             line_match = re.match(rf"^\(?({letter_set})\)?[\\.\)]?\s*$", line.upper())
             if line_match:
                 return line_match.group(1).upper()

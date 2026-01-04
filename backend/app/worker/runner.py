@@ -43,6 +43,7 @@ class BenchmarkWorker:
         self.current_run_ids: set[str] = set()
         self.run_tasks: dict[str, asyncio.Task] = {}
         self.last_progress_at: dict[str, datetime] = {}
+        self._benchmark_timeout_cache: dict[str, int] = {}
         self.client = get_chutes_client()
         self._last_stale_check = 0.0
         self._last_heartbeat = 0.0
@@ -63,6 +64,18 @@ class BenchmarkWorker:
             return get_chutes_client(api_key=run.auth_api_key)
 
         return self.client
+
+    def _get_benchmark_timeout(self, benchmark_name: str, model_slug: str) -> int:
+        cached = self._benchmark_timeout_cache.get(benchmark_name)
+        if cached is not None:
+            return cached
+
+        adapter = get_adapter(benchmark_name, self.client, model_slug)
+        timeout = adapter.get_item_timeout_seconds() if adapter else None
+        if not timeout or timeout <= 0:
+            timeout = settings.worker_item_timeout_seconds
+        self._benchmark_timeout_cache[benchmark_name] = timeout
+        return timeout
 
     async def start(self) -> None:
         """Start the worker loop."""
@@ -184,31 +197,64 @@ class BenchmarkWorker:
         """Touch all active runs for this worker to avoid stale requeue."""
         if not self.current_run_ids:
             return
+        now = datetime.utcnow()
+        for run_id in self.current_run_ids:
+            self.last_progress_at[run_id] = now
         async with async_session_maker() as db:
             await db.execute(
                 update(BenchmarkRun)
                 .where(BenchmarkRun.id.in_(self.current_run_ids))
-                .values(updated_at=datetime.utcnow())
+                .values(updated_at=now)
                 .execution_options(synchronize_session=False)
             )
             await db.commit()
 
     async def requeue_stale_runs(self) -> None:
         """Requeue stale running runs after a worker restart or stall."""
-        cutoff = datetime.utcnow() - timedelta(minutes=settings.worker_stale_run_minutes)
         async with async_session_maker() as db:
             result = await db.execute(
                 select(BenchmarkRun)
                 .options(noload(BenchmarkRun.model))
                 .where(BenchmarkRun.status == RunStatus.RUNNING.value)
-                .where(BenchmarkRun.updated_at < cutoff)
             )
-            stale_runs = list(result.scalars().all())
-            if not stale_runs:
+            running_runs = list(result.scalars().all())
+            if not running_runs:
                 return
 
+            run_ids = [run.id for run in running_runs]
+            benchmark_result = await db.execute(
+                select(
+                    BenchmarkRunBenchmark.run_id,
+                    BenchmarkRunBenchmark.benchmark_name,
+                    BenchmarkRunBenchmark.status,
+                ).where(BenchmarkRunBenchmark.run_id.in_(run_ids))
+            )
+            benchmarks_by_run: dict[str, list[str]] = {}
+            for run_id, benchmark_name, status in benchmark_result.all():
+                if status in (
+                    BenchmarkRunStatus.SUCCEEDED.value,
+                    BenchmarkRunStatus.FAILED.value,
+                    BenchmarkRunStatus.SKIPPED.value,
+                ):
+                    continue
+                benchmarks_by_run.setdefault(run_id, []).append(benchmark_name)
+
             now = datetime.utcnow()
-            for run in stale_runs:
+            base_seconds = settings.worker_stale_run_minutes * 60
+            buffer_seconds = max(settings.worker_heartbeat_seconds * 2, 60)
+            for run in running_runs:
+                benchmark_names = benchmarks_by_run.get(run.id, [])
+                max_timeout = max(settings.worker_item_timeout_seconds, 0)
+                for benchmark_name in benchmark_names:
+                    max_timeout = max(
+                        max_timeout,
+                        self._get_benchmark_timeout(benchmark_name, run.model_slug),
+                    )
+                stale_after_seconds = max(base_seconds, max_timeout + buffer_seconds)
+                cutoff = now - timedelta(seconds=stale_after_seconds)
+                if run.updated_at and run.updated_at >= cutoff:
+                    continue
+
                 if run.id in self.current_run_ids:
                     last_progress = self.last_progress_at.get(run.id)
                     if last_progress and last_progress >= cutoff:

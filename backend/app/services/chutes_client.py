@@ -354,11 +354,10 @@ class ChutesClient:
     async def get_model_pricing(
         self, *identifiers: Optional[str]
     ) -> Optional[tuple[float, float]]:
-        await self._get_llm_model_limits()
-        pricing_map = self._llm_pricing_cache or {}
+        chutes_pricing = await self._get_chutes_pricing_map()
         for identifier in identifiers:
-            if identifier and identifier in pricing_map:
-                return pricing_map[identifier]
+            if identifier and identifier in chutes_pricing:
+                return chutes_pricing[identifier]
         return None
 
     async def _get_chutes_pricing_map(self) -> dict[str, tuple[float, float]]:
