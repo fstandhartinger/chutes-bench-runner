@@ -634,21 +634,38 @@ class BenchmarkWorker:
                     async with semaphore:
                         return await evaluate_item(item_id)
 
-                tasks = [asyncio.create_task(run_item(item_id)) for item_id in pending_item_ids]
-                pending_tasks = set(tasks)
+                pending_iter = iter(pending_item_ids)
+                pending_tasks: set[asyncio.Task[ItemResult]] = set()
+
+                async def schedule_next() -> bool:
+                    try:
+                        item_id = next(pending_iter)
+                    except StopIteration:
+                        return False
+                    pending_tasks.add(asyncio.create_task(run_item(item_id)))
+                    return True
+
+                for _ in range(min(max_concurrency, len(pending_item_ids))):
+                    await schedule_next()
+
                 completed_since_check = 0
-                for future in asyncio.as_completed(tasks):
-                    result = await future
-                    pending_tasks.discard(future)
-                    await record_result(result)
-                    completed_since_check += 1
-                    if completed_since_check % 10 == 0:
-                        await db.refresh(run)
-                        if run.canceled_at:
-                            for task in pending_tasks:
-                                task.cancel()
-                            await asyncio.gather(*pending_tasks, return_exceptions=True)
-                            raise Exception("Run canceled")
+                while pending_tasks:
+                    done, _ = await asyncio.wait(
+                        pending_tasks, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for task in done:
+                        pending_tasks.discard(task)
+                        result = await task
+                        await record_result(result)
+                        completed_since_check += 1
+                        if completed_since_check % 10 == 0:
+                            await db.refresh(run)
+                            if run.canceled_at:
+                                for pending in pending_tasks:
+                                    pending.cancel()
+                                await asyncio.gather(*pending_tasks, return_exceptions=True)
+                                raise Exception("Run canceled")
+                        await schedule_next()
             else:
                 for i, item_id in enumerate(pending_item_ids):
                     if i % 10 == 0:
