@@ -184,15 +184,20 @@ class BenchmarkWorker:
         """Periodically touch the run to prevent stale requeue during long tasks."""
         interval = max(10, settings.worker_heartbeat_seconds)
         while True:
+            try:
+                async with async_session_maker() as db:
+                    await db.execute(
+                        update(BenchmarkRun)
+                        .where(BenchmarkRun.id == run_id)
+                        .values(updated_at=datetime.utcnow())
+                        .execution_options(synchronize_session=False)
+                    )
+                    await db.commit()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Heartbeat failed", run_id=run_id, error=str(exc))
             await asyncio.sleep(interval)
-            async with async_session_maker() as db:
-                await db.execute(
-                    update(BenchmarkRun)
-                    .where(BenchmarkRun.id == run_id)
-                    .values(updated_at=datetime.utcnow())
-                    .execution_options(synchronize_session=False)
-                )
-                await db.commit()
 
     async def requeue_stale_runs(self) -> None:
         """Requeue stale running runs after a worker restart or stall."""
