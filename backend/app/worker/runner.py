@@ -497,6 +497,8 @@ class BenchmarkWorker:
             if item_timeout is not None and item_timeout <= 0:
                 item_timeout = None
 
+            result_lock = asyncio.Lock()
+
             async def evaluate_item(item_id: str) -> ItemResult:
                 try:
                     if item_timeout:
@@ -511,46 +513,53 @@ class BenchmarkWorker:
             async def record_result(result: ItemResult) -> None:
                 nonlocal correct, completed_items
 
-                await save_item_result(
-                    db, rb.id,
-                    item_id=result.item_id,
-                    item_hash=result.item_hash,
-                    prompt=result.prompt,
-                    response=result.response,
-                    expected=result.expected,
-                    is_correct=result.is_correct,
-                    score=result.score,
-                    judge_output=result.judge_output,
-                    latency_ms=result.latency_ms,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    error=result.error,
-                    test_code=result.test_code,
-                    item_metadata=result.metadata,
-                )
+                async with result_lock:
+                    if needs_postprocess:
+                        new_results.append(result)
 
-                if result.is_correct:
-                    correct += 1
+                    if result.is_correct:
+                        correct += 1
 
-                completed_items += 1
-                self.last_progress_at[run.id] = datetime.utcnow()
+                    completed_items += 1
+                    current_completed = completed_items
+                    current_correct = correct
+                    self.last_progress_at[run.id] = datetime.utcnow()
 
-                await update_benchmark_status(
-                    db, rb.id, BenchmarkRunStatus.RUNNING,
-                    completed_items=completed_items,
-                )
-
-                if completed_items % 5 == 0 or completed_items == len(items_to_evaluate):
-                    await add_run_event(
-                        db, run.id, "benchmark_progress",
-                        benchmark_name=rb.benchmark_name,
-                        message=f"Progress: {completed_items}/{len(items_to_evaluate)}",
-                        data={
-                            "completed": completed_items,
-                            "total": len(items_to_evaluate),
-                            "current_accuracy": correct / completed_items if completed_items else 0,
-                        }
+                async with async_session_maker() as item_db:
+                    await save_item_result(
+                        item_db, rb.id,
+                        item_id=result.item_id,
+                        item_hash=result.item_hash,
+                        prompt=result.prompt,
+                        response=result.response,
+                        expected=result.expected,
+                        is_correct=result.is_correct,
+                        score=result.score,
+                        judge_output=result.judge_output,
+                        latency_ms=result.latency_ms,
+                        input_tokens=result.input_tokens,
+                        output_tokens=result.output_tokens,
+                        error=result.error,
+                        test_code=result.test_code,
+                        item_metadata=result.metadata,
                     )
+
+                    await update_benchmark_status(
+                        item_db, rb.id, BenchmarkRunStatus.RUNNING,
+                        completed_items=current_completed,
+                    )
+
+                    if current_completed % 5 == 0 or current_completed == len(items_to_evaluate):
+                        await add_run_event(
+                            item_db, run.id, "benchmark_progress",
+                            benchmark_name=rb.benchmark_name,
+                            message=f"Progress: {current_completed}/{len(items_to_evaluate)}",
+                            data={
+                                "completed": current_completed,
+                                "total": len(items_to_evaluate),
+                                "current_accuracy": current_correct / current_completed if current_completed else 0,
+                            }
+                        )
 
             if max_concurrency > 1 and len(pending_item_ids) > 1:
                 if db.in_transaction():
@@ -568,8 +577,6 @@ class BenchmarkWorker:
                 for future in asyncio.as_completed(tasks):
                     result = await future
                     pending_tasks.discard(future)
-                    if needs_postprocess:
-                        new_results.append(result)
                     await record_result(result)
                     completed_since_check += 1
                     if completed_since_check % 10 == 0:
@@ -589,8 +596,6 @@ class BenchmarkWorker:
                         await db.commit()
 
                     result = await evaluate_item(item_id)
-                    if needs_postprocess:
-                        new_results.append(result)
                     await record_result(result)
 
             all_results = existing_results + new_results if needs_postprocess else []
