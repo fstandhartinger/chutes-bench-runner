@@ -198,8 +198,6 @@ class BenchmarkWorker:
         if not self.current_run_ids:
             return
         now = datetime.utcnow()
-        for run_id in self.current_run_ids:
-            self.last_progress_at[run_id] = now
         async with async_session_maker() as db:
             await db.execute(
                 update(BenchmarkRun)
@@ -227,32 +225,45 @@ class BenchmarkWorker:
                     BenchmarkRunBenchmark.run_id,
                     BenchmarkRunBenchmark.benchmark_name,
                     BenchmarkRunBenchmark.status,
+                    BenchmarkRunBenchmark.updated_at,
                 ).where(BenchmarkRunBenchmark.run_id.in_(run_ids))
             )
-            benchmarks_by_run: dict[str, list[str]] = {}
-            for run_id, benchmark_name, status in benchmark_result.all():
+            benchmarks_by_run: dict[str, list[tuple[str, Optional[datetime]]]] = {}
+            for run_id, benchmark_name, status, updated_at in benchmark_result.all():
                 if status in (
                     BenchmarkRunStatus.SUCCEEDED.value,
                     BenchmarkRunStatus.FAILED.value,
                     BenchmarkRunStatus.SKIPPED.value,
                 ):
                     continue
-                benchmarks_by_run.setdefault(run_id, []).append(benchmark_name)
+                benchmarks_by_run.setdefault(run_id, []).append((benchmark_name, updated_at))
 
             now = datetime.utcnow()
             base_seconds = settings.worker_stale_run_minutes * 60
             buffer_seconds = max(settings.worker_heartbeat_seconds * 2, 60)
             for run in running_runs:
-                benchmark_names = benchmarks_by_run.get(run.id, [])
+                benchmark_entries = benchmarks_by_run.get(run.id, [])
                 max_timeout = max(settings.worker_item_timeout_seconds, 0)
-                for benchmark_name in benchmark_names:
+                benchmark_updated_at: list[datetime] = []
+                for benchmark_name, benchmark_updated in benchmark_entries:
                     max_timeout = max(
                         max_timeout,
                         self._get_benchmark_timeout(benchmark_name, run.model_slug),
                     )
+                    if benchmark_updated:
+                        benchmark_updated_at.append(benchmark_updated)
                 stale_after_seconds = max(base_seconds, max_timeout + buffer_seconds)
                 cutoff = now - timedelta(seconds=stale_after_seconds)
-                if run.updated_at and run.updated_at >= cutoff:
+                last_update = None
+                if benchmark_updated_at:
+                    last_update = max(benchmark_updated_at)
+                elif run.updated_at:
+                    last_update = run.updated_at
+                elif run.started_at:
+                    last_update = run.started_at
+                else:
+                    last_update = run.created_at
+                if last_update and last_update >= cutoff:
                     continue
 
                 if run.id in self.current_run_ids:
