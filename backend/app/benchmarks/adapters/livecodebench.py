@@ -162,12 +162,15 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             hf_token = os.environ.get("HF_TOKEN")
             for attempt in range(1, 4):
                 try:
-                    self._jsonl_path = await download_hf_file_async(
-                        "livecodebench/code_generation",
-                        "test.jsonl",
-                        repo_type="dataset",
-                        token=hf_token,
-                        cache_subdir="livecodebench",
+                    self._jsonl_path = await asyncio.wait_for(
+                        download_hf_file_async(
+                            "livecodebench/code_generation",
+                            "test.jsonl",
+                            repo_type="dataset",
+                            token=hf_token,
+                            cache_subdir="livecodebench",
+                        ),
+                        timeout=900,
                     )
                     break
                 except Exception as exc:
