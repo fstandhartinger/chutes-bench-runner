@@ -94,21 +94,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         target = max(1, int(total_items * subset_pct / 100))
         self._items = []
         try:
-            import os
-
-            hf_token = os.environ.get("HF_TOKEN")
-            dataset = await load_dataset_with_retry(
-                "livecodebench/code_generation",
-                split="test",
-                streaming=True,
-                token=hf_token,
-            )
-            for i, item in enumerate(dataset):
-                if len(self._items) >= target:
-                    break
-                parsed = self._parse_item(i, item)
-                if parsed:
-                    self._items.append(parsed)
+            self._items = await self._load_streaming_items(target=target)
         except Exception as e:
             logger.error("Failed to stream LiveCodeBench subset", error=str(e))
             self._items = []
@@ -129,29 +115,58 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
                     return
 
                 logger.info("Loading LiveCodeBench dataset")
-                jsonl_path = await self._ensure_jsonl()
-                if not jsonl_path:
-                    raise RuntimeError("Could not download LiveCodeBench dataset file")
-
-                items: list[dict[str, Any]] = []
-                with jsonl_path.open("r", encoding="utf-8") as handle:
-                    for i, line in enumerate(handle):
-                        if not line.strip():
-                            continue
-                        item = json.loads(line)
-                        parsed = self._parse_item(i, item)
-                        if parsed:
-                            items.append(parsed)
+                try:
+                    items = await self._load_streaming_items()
+                except Exception as exc:
+                    logger.warning(
+                        "Streaming LiveCodeBench failed, falling back to JSONL",
+                        error=str(exc) or exc.__class__.__name__,
+                    )
+                    jsonl_path = await self._ensure_jsonl()
+                    if not jsonl_path:
+                        raise RuntimeError("Could not download LiveCodeBench dataset file")
+                    items = self._load_items_from_jsonl(jsonl_path)
+                    self._jsonl_path = jsonl_path
+                    _LIVECODEBENCH_JSONL = jsonl_path
 
                 logger.info("Loaded %s LiveCodeBench items", len(items))
                 self._items = items
-                self._jsonl_path = jsonl_path
                 _LIVECODEBENCH_ITEMS = items
-                _LIVECODEBENCH_JSONL = jsonl_path
         except Exception as e:
             logger.error("Failed to load LiveCodeBench", error=str(e))
             self._items = []
             raise
+
+    async def _load_streaming_items(self, target: Optional[int] = None) -> list[dict[str, Any]]:
+        import os
+
+        hf_token = os.environ.get("HF_TOKEN")
+        dataset = await load_dataset_with_retry(
+            "livecodebench/code_generation",
+            split="test",
+            streaming=True,
+            token=hf_token,
+        )
+        items: list[dict[str, Any]] = []
+        for i, item in enumerate(dataset):
+            if target is not None and len(items) >= target:
+                break
+            parsed = self._parse_item(i, item)
+            if parsed:
+                items.append(parsed)
+        return items
+
+    def _load_items_from_jsonl(self, jsonl_path: Path) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        with jsonl_path.open("r", encoding="utf-8") as handle:
+            for i, line in enumerate(handle):
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                parsed = self._parse_item(i, item)
+                if parsed:
+                    items.append(parsed)
+        return items
 
     async def _ensure_jsonl(self) -> Optional[Path]:
         if self._jsonl_path:
