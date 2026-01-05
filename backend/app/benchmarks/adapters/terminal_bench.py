@@ -112,11 +112,51 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         )
         return result.get("exit_code") == 0
 
+    def _add_compose_build_context(self, content: str) -> str:
+        lines = content.splitlines()
+        updated: list[str] = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            updated.append(line)
+            if line.strip() == "build:":
+                indent = len(line) - len(line.lstrip())
+                j = i + 1
+                has_context = False
+                while j < len(lines):
+                    candidate = lines[j]
+                    if candidate.strip() == "":
+                        j += 1
+                        continue
+                    candidate_indent = len(candidate) - len(candidate.lstrip())
+                    if candidate_indent <= indent:
+                        break
+                    if candidate.strip().startswith("context:"):
+                        has_context = True
+                        break
+                    j += 1
+                if not has_context:
+                    updated.append(" " * (indent + 2) + "context: .")
+            i += 1
+        return "\n".join(updated) + ("\n" if content.endswith("\n") else "")
+
+    async def _ensure_compose_context(self, sandbox_id: str, compose_path: str) -> None:
+        read_result = await self.sandy.execute_command(sandbox_id, f"cat {compose_path}")
+        if read_result.get("exit_code") != 0:
+            return
+        content = read_result.get("stdout") or ""
+        if not content:
+            return
+        patched = self._add_compose_build_context(content)
+        if patched != content:
+            await self.sandy.write_file(sandbox_id, compose_path, patched)
+
     async def _run_terminal_bench(self, sandbox_id: str, task_id: str) -> dict[str, Any]:
         task_dir = "/workspace/task"
+        compose_path = "task/docker-compose.yaml"
         compose_check = await self.sandy.execute_command(
             sandbox_id,
-            f"test -f {task_dir}/docker-compose.yaml",
+            f"test -f {compose_path}",
         )
         has_compose = compose_check.get("exit_code") == 0
         image_name = f"tbench_{task_id}".lower()
@@ -124,10 +164,11 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         cleanup_cmd = None
 
         if has_compose:
-            compose_cmd = "docker-compose"
-            compose_check = await self.sandy.execute_command(sandbox_id, "docker-compose version")
+            compose_cmd = "docker compose"
+            compose_check = await self.sandy.execute_command(sandbox_id, "docker compose version")
             if compose_check.get("exit_code") != 0:
-                compose_cmd = "docker compose"
+                compose_cmd = "docker-compose"
+            await self._ensure_compose_context(sandbox_id, compose_path)
             logs_dir = f"{task_dir}/logs"
             await self.sandy.execute_command(sandbox_id, f"mkdir -p {logs_dir}")
             env = {
@@ -136,9 +177,12 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 "T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME": f"tbench_{task_id}_client",
                 "T_BENCH_TASK_LOGS_PATH": logs_dir,
                 "T_BENCH_CONTAINER_LOGS_PATH": "/var/log/tbench",
+                "T_BENCH_TASK_AGENT_LOGS_PATH": logs_dir,
+                "T_BENCH_CONTAINER_AGENT_LOGS_PATH": "/var/log/tbench/agent",
                 "T_BENCH_TEST_DIR": "/tests",
+                "DOCKER_HOST": "unix:///var/run/docker.sock",
             }
-            up_cmd = f"{compose_cmd} -f {task_dir}/docker-compose.yaml up --build -d"
+            up_cmd = f"{compose_cmd} -f {compose_path} up --build -d"
             up_result = await self.sandy.execute_command(
                 sandbox_id,
                 up_cmd,
@@ -154,7 +198,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     "stderr": up_result.get("stderr"),
                 }
             container_name = env["T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME"]
-            cleanup_cmd = f"{compose_cmd} -f {task_dir}/docker-compose.yaml down"
+            cleanup_cmd = f"{compose_cmd} -f {compose_path} down"
         else:
             build_result = await self.sandy.execute_command(
                 sandbox_id,
