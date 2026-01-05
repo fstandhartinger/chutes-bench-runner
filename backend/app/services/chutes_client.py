@@ -339,6 +339,28 @@ class ChutesClient:
             return self._llm_output_cache or {}
         return self._llm_output_cache or {}
 
+    async def get_llm_identifiers(self) -> set[str]:
+        """Return a set of identifiers available on the LLM inference endpoint."""
+        await self._get_llm_model_limits()
+        identifiers: set[str] = set()
+        if self._llm_output_cache:
+            identifiers.update(self._llm_output_cache.keys())
+        if self._llm_context_cache:
+            identifiers.update(self._llm_context_cache.keys())
+        if self._llm_pricing_cache:
+            identifiers.update(self._llm_pricing_cache.keys())
+        return identifiers
+
+    async def is_model_available(self, *identifiers: Optional[str]) -> Optional[bool]:
+        """Check whether any identifier is available in the LLM model list."""
+        candidates = {identifier for identifier in identifiers if identifier}
+        if not candidates:
+            return None
+        llm_identifiers = await self.get_llm_identifiers()
+        if not llm_identifiers:
+            return None
+        return any(identifier in llm_identifiers for identifier in candidates)
+
     async def get_model_max_output_length(self, model_identifier: str) -> Optional[int]:
         limits = await self._get_llm_model_limits()
         if not limits:

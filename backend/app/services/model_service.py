@@ -32,6 +32,11 @@ async def sync_models(db: AsyncSession) -> int:
     """
     client = get_chutes_client()
     models = await client.list_models()
+    llm_identifiers: set[str] = set()
+    try:
+        llm_identifiers = await client.get_llm_identifiers()
+    except Exception as exc:
+        logger.warning("Failed to fetch LLM model list", error=str(exc))
     
     # Filter out models without slugs and deduplicate by slug
     seen_slugs: set[str] = set()
@@ -49,14 +54,19 @@ async def sync_models(db: AsyncSession) -> int:
     # Use PostgreSQL upsert (INSERT ... ON CONFLICT UPDATE)
     for model_data in unique_models:
         slug = model_data.get("slug")
-        is_llm = bool(model_data.get("is_llm", True))
+        chute_id = model_data.get("chute_id")
+        is_llm_flag = bool(model_data.get("is_llm", True))
+        if llm_identifiers:
+            is_llm = slug in llm_identifiers or (chute_id in llm_identifiers if chute_id else False)
+        else:
+            is_llm = is_llm_flag
         stmt = pg_insert(Model).values(
             slug=slug,
             name=model_data.get("name", slug),
             tagline=model_data.get("tagline"),
             user=model_data.get("user"),
             logo=model_data.get("logo"),
-            chute_id=model_data.get("chute_id"),
+            chute_id=chute_id,
             instance_count=model_data.get("instance_count", 0),
             is_active=is_llm,
         ).on_conflict_do_update(
@@ -66,7 +76,7 @@ async def sync_models(db: AsyncSession) -> int:
                 "tagline": model_data.get("tagline"),
                 "user": model_data.get("user"),
                 "logo": model_data.get("logo"),
-                "chute_id": model_data.get("chute_id"),
+                "chute_id": chute_id,
                 "instance_count": model_data.get("instance_count", 0),
                 "is_active": is_llm,
             }

@@ -182,6 +182,7 @@ async def create_benchmark_run(
 
     auth_mode = "system"
     auth_session_id = None
+    access_token = None
 
     session_id = http_request.cookies.get(auth_service.SESSION_COOKIE_NAME)
     if session_id:
@@ -194,6 +195,22 @@ async def create_benchmark_run(
                 raise HTTPException(status_code=401, detail="Chutes session expired or invalid")
             auth_mode = "idp"
             auth_session_id = session_id
+
+    client = (
+        get_chutes_client(user_access_token=access_token)
+        if access_token
+        else get_chutes_client()
+    )
+    try:
+        available = await client.is_model_available(model.slug, model.chute_id)
+    finally:
+        if access_token:
+            await client.close()
+    if available is False:
+        raise HTTPException(
+            status_code=404,
+            detail="Model not available for inference on Chutes.",
+        )
 
     run = await create_run(
         db,
@@ -230,6 +247,17 @@ async def create_benchmark_run_with_api_key(
         raise HTTPException(
             status_code=404,
             detail="Model not found. Provide a bench runner model UUID, Chutes chute_id, or model slug.",
+        )
+
+    client = get_chutes_client(api_key=api_key)
+    try:
+        available = await client.is_model_available(model.slug, model.chute_id)
+    finally:
+        await client.close()
+    if available is False:
+        raise HTTPException(
+            status_code=404,
+            detail="Model not available for inference on Chutes.",
         )
 
     run = await create_run(

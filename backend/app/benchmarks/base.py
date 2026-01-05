@@ -108,6 +108,10 @@ class BenchmarkAdapter(ABC):
         """Return True if item-level parallelism is safe for this adapter."""
         return False
 
+    def get_item_concurrency(self) -> Optional[int]:
+        """Optional per-benchmark item concurrency override."""
+        return None
+
     def get_item_timeout_seconds(self) -> Optional[int]:
         """Return per-item timeout in seconds, or None to use default."""
         return None

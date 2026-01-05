@@ -44,6 +44,9 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
     def supports_parallel_items(self) -> bool:
         return True
 
+    def get_item_concurrency(self) -> Optional[int]:
+        return 2
+
     def get_item_timeout_seconds(self) -> Optional[int]:
         return 1800
 

@@ -53,6 +53,21 @@ def _is_retryable_item_error(error: Optional[str]) -> bool:
     return False
 
 
+def _is_fatal_item_error(error: Optional[str]) -> bool:
+    if not error:
+        return False
+    message = error.lower()
+    if "model not found" in message or "no such model" in message or "http 404" in message:
+        return True
+    if "http 401" in message or "http 403" in message:
+        return True
+    if "unauthorized" in message or "forbidden" in message:
+        return True
+    if "invalid api key" in message or "invalid api-key" in message:
+        return True
+    return False
+
+
 class BenchmarkWorker:
     """Worker that processes benchmark runs."""
 
@@ -542,6 +557,35 @@ class BenchmarkWorker:
         client = await self._get_client_for_run(db, run)
 
         try:
+            available = await client.is_model_available(run.model_slug)
+            if available is False:
+                message = f"Model {run.model_slug} not available for inference"
+                for rb in run_benchmarks:
+                    if rb.status in (
+                        BenchmarkRunStatus.SUCCEEDED.value,
+                        BenchmarkRunStatus.FAILED.value,
+                        BenchmarkRunStatus.SKIPPED.value,
+                    ):
+                        continue
+                    await self._safe_update_benchmark_status(
+                        rb.id,
+                        BenchmarkRunStatus.FAILED,
+                        error_message=message,
+                    )
+                    failed_benchmarks += 1
+                await self._safe_update_run_status(
+                    run.id,
+                    RunStatus.FAILED,
+                    error_message=message,
+                )
+                await self._safe_add_run_event(
+                    run.id,
+                    "run_failed",
+                    message=message,
+                )
+                logger.error("Run failed", run_id=run.id, error=message)
+                return
+
             for rb in run_benchmarks:
                 # Check for cancellation
                 if await self._is_run_canceled(run.id):
@@ -791,11 +835,13 @@ class BenchmarkWorker:
 
             # Evaluate items
             new_results: list[ItemResult] = []
-            max_concurrency = (
-                settings.worker_item_concurrency
-                if adapter.supports_parallel_items()
-                else 1
-            )
+            if adapter.supports_parallel_items():
+                max_concurrency = settings.worker_item_concurrency
+                override_concurrency = adapter.get_item_concurrency()
+                if override_concurrency is not None:
+                    max_concurrency = max(1, override_concurrency)
+            else:
+                max_concurrency = 1
             item_timeout = adapter.get_item_timeout_seconds()
             if item_timeout is None:
                 item_timeout = settings.worker_item_timeout_seconds
@@ -803,6 +849,8 @@ class BenchmarkWorker:
                 item_timeout = None
 
             result_lock = asyncio.Lock()
+            abort_event = asyncio.Event()
+            abort_error: Optional[str] = None
 
             async def evaluate_item(item_id: str) -> ItemResult:
                 attempt = 0
@@ -850,7 +898,7 @@ class BenchmarkWorker:
                 return last_result or ItemResult(item_id=item_id, error="Item evaluation failed")
 
             async def record_result(result: ItemResult) -> None:
-                nonlocal correct, completed_items
+                nonlocal correct, completed_items, abort_error
 
                 async with result_lock:
                     if needs_postprocess:
@@ -862,6 +910,9 @@ class BenchmarkWorker:
                     completed_items += 1
                     current_completed = completed_items
                     current_correct = correct
+                    if result.error and _is_fatal_item_error(result.error):
+                        abort_error = result.error
+                        abort_event.set()
                     self.last_progress_at[run.id] = datetime.utcnow()
 
                 async with async_session_maker() as item_db:
@@ -914,6 +965,8 @@ class BenchmarkWorker:
                 pending_tasks: set[asyncio.Task[ItemResult]] = set()
 
                 async def schedule_next() -> bool:
+                    if abort_event.is_set():
+                        return False
                     try:
                         item_id = next(pending_iter)
                     except StopIteration:
@@ -933,6 +986,11 @@ class BenchmarkWorker:
                         pending_tasks.discard(task)
                         result = await task
                         await record_result(result)
+                        if abort_event.is_set():
+                            for pending in pending_tasks:
+                                pending.cancel()
+                            await asyncio.gather(*pending_tasks, return_exceptions=True)
+                            raise Exception(abort_error or "Fatal benchmark error")
                         completed_since_check += 1
                         if completed_since_check % 10 == 0:
                             if await self._is_run_canceled(run.id):
@@ -951,6 +1009,8 @@ class BenchmarkWorker:
 
                     result = await evaluate_item(item_id)
                     await record_result(result)
+                    if abort_event.is_set():
+                        raise Exception(abort_error or "Fatal benchmark error")
 
             all_results = existing_results + new_results if needs_postprocess else []
             score = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
