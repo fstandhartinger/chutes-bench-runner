@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     worker_stale_run_minutes: int = 5
     worker_stale_check_interval: int = 60
     worker_heartbeat_seconds: int = 60
+    worker_exclusive_benchmarks: list[str] = ["livecodebench"]
 
     # Startup
     skip_model_sync: bool = False

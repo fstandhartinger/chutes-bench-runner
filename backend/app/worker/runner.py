@@ -226,6 +226,16 @@ class BenchmarkWorker:
             True if a run was claimed, False otherwise
         """
         async with async_session_maker() as db:
+            exclusive = [b for b in settings.worker_exclusive_benchmarks if b]
+            active_exclusive: set[str] = set()
+            if exclusive:
+                active_result = await db.execute(
+                    select(BenchmarkRunBenchmark.benchmark_name)
+                    .where(BenchmarkRunBenchmark.status == BenchmarkRunStatus.RUNNING.value)
+                    .where(BenchmarkRunBenchmark.benchmark_name.in_(exclusive))
+                )
+                active_exclusive = {row[0] for row in active_result.all()}
+
             # Claim a queued run with row lock
             # Use noload to prevent JOIN that's incompatible with FOR UPDATE
             result = await db.execute(
@@ -233,10 +243,20 @@ class BenchmarkWorker:
                 .options(noload(BenchmarkRun.model))
                 .where(BenchmarkRun.status == RunStatus.QUEUED.value)
                 .order_by(BenchmarkRun.created_at)
-                .limit(1)
+                .limit(10)
                 .with_for_update(skip_locked=True)
             )
-            run = result.scalar_one_or_none()
+            runs = list(result.scalars().all())
+            if not runs:
+                return False
+
+            run = None
+            for candidate in runs:
+                selected = candidate.selected_benchmarks or []
+                if active_exclusive and any(b in active_exclusive for b in selected):
+                    continue
+                run = candidate
+                break
 
             if not run:
                 return False
