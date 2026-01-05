@@ -231,6 +231,8 @@ class BenchmarkWorker:
             if exclusive:
                 active_result = await db.execute(
                     select(BenchmarkRunBenchmark.benchmark_name)
+                    .join(BenchmarkRun, BenchmarkRunBenchmark.run_id == BenchmarkRun.id)
+                    .where(BenchmarkRun.status == RunStatus.RUNNING.value)
                     .where(BenchmarkRunBenchmark.status == BenchmarkRunStatus.RUNNING.value)
                     .where(BenchmarkRunBenchmark.benchmark_name.in_(exclusive))
                 )
@@ -331,6 +333,56 @@ class BenchmarkWorker:
     async def requeue_stale_runs(self) -> None:
         """Requeue stale running runs after a worker restart or stall."""
         async with async_session_maker() as db:
+            inactive_result = await db.execute(
+                select(BenchmarkRun.id, BenchmarkRun.status)
+                .where(BenchmarkRun.status != RunStatus.RUNNING.value)
+            )
+            inactive_runs = list(inactive_result.all())
+            if inactive_runs:
+                now = datetime.utcnow()
+                queued_ids = [
+                    run_id
+                    for run_id, status in inactive_runs
+                    if status == RunStatus.QUEUED.value
+                ]
+                skip_ids = [
+                    run_id
+                    for run_id, status in inactive_runs
+                    if status
+                    in (
+                        RunStatus.CANCELED.value,
+                        RunStatus.FAILED.value,
+                        RunStatus.SUCCEEDED.value,
+                    )
+                ]
+                if queued_ids:
+                    await db.execute(
+                        update(BenchmarkRunBenchmark)
+                        .where(BenchmarkRunBenchmark.run_id.in_(queued_ids))
+                        .where(BenchmarkRunBenchmark.status == BenchmarkRunStatus.RUNNING.value)
+                        .values(
+                            status=BenchmarkRunStatus.PENDING.value,
+                            error_message=None,
+                            started_at=None,
+                            completed_at=None,
+                            updated_at=now,
+                        )
+                    )
+                if skip_ids:
+                    await db.execute(
+                        update(BenchmarkRunBenchmark)
+                        .where(BenchmarkRunBenchmark.run_id.in_(skip_ids))
+                        .where(BenchmarkRunBenchmark.status == BenchmarkRunStatus.RUNNING.value)
+                        .values(
+                            status=BenchmarkRunStatus.SKIPPED.value,
+                            error_message="Run no longer active",
+                            completed_at=now,
+                            updated_at=now,
+                        )
+                    )
+                if queued_ids or skip_ids:
+                    await db.commit()
+
             result = await db.execute(
                 select(BenchmarkRun)
                 .options(noload(BenchmarkRun.model))
