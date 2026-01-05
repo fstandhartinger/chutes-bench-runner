@@ -140,8 +140,12 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             i += 1
         return "\n".join(updated) + ("\n" if content.endswith("\n") else "")
 
-    async def _ensure_compose_context(self, sandbox_id: str, compose_path: str) -> None:
-        read_result = await self.sandy.execute_command(sandbox_id, f"cat {compose_path}")
+    async def _ensure_compose_context(
+        self, sandbox_id: str, compose_path: str, cwd: Optional[str] = None
+    ) -> None:
+        read_result = await self.sandy.execute_command(
+            sandbox_id, f"cat {compose_path}", cwd=cwd
+        )
         if read_result.get("exit_code") != 0:
             return
         content = read_result.get("stdout") or ""
@@ -149,26 +153,38 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             return
         patched = self._add_compose_build_context(content)
         if patched != content:
-            await self.sandy.write_file(sandbox_id, compose_path, patched)
+            target_path = compose_path
+            if cwd:
+                target_path = f"{cwd.rstrip('/')}/{compose_path}"
+            await self.sandy.write_file(sandbox_id, target_path, patched)
 
     async def _run_terminal_bench(self, sandbox_id: str, task_id: str) -> dict[str, Any]:
         task_dir = "/workspace/task"
-        compose_path = "task/docker-compose.yaml"
+        compose_path = "docker-compose.yaml"
         compose_check = await self.sandy.execute_command(
             sandbox_id,
             f"test -f {compose_path}",
+            cwd=task_dir,
         )
+        if compose_check.get("exit_code") != 0:
+            compose_path = "docker-compose.yml"
+            compose_check = await self.sandy.execute_command(
+                sandbox_id,
+                f"test -f {compose_path}",
+                cwd=task_dir,
+            )
         has_compose = compose_check.get("exit_code") == 0
         image_name = f"tbench_{task_id}".lower()
         container_name = f"{image_name}_container"
         cleanup_cmd = None
+        cleanup_cwd = None
 
         if has_compose:
             compose_cmd = "docker compose"
             compose_check = await self.sandy.execute_command(sandbox_id, "docker compose version")
             if compose_check.get("exit_code") != 0:
                 compose_cmd = "docker-compose"
-            await self._ensure_compose_context(sandbox_id, compose_path)
+            await self._ensure_compose_context(sandbox_id, compose_path, cwd=task_dir)
             logs_dir = f"{task_dir}/logs"
             await self.sandy.execute_command(sandbox_id, f"mkdir -p {logs_dir}")
             env = {
@@ -182,11 +198,14 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 "T_BENCH_TEST_DIR": "/tests",
                 "DOCKER_HOST": "unix:///var/run/docker.sock",
             }
+            env_lines = [f"{key}={value}" for key, value in env.items()]
+            await self.sandy.write_file(sandbox_id, "task/.env", "\n".join(env_lines) + "\n")
             up_cmd = f"{compose_cmd} -f {compose_path} up --build -d"
             up_result = await self.sandy.execute_command(
                 sandbox_id,
                 up_cmd,
                 env=env,
+                cwd=task_dir,
                 timeout_ms=900000,
             )
             if up_result.get("exit_code") != 0:
@@ -199,6 +218,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 }
             container_name = env["T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME"]
             cleanup_cmd = f"{compose_cmd} -f {compose_path} down"
+            cleanup_cwd = task_dir
         else:
             build_result = await self.sandy.execute_command(
                 sandbox_id,
@@ -227,7 +247,11 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 }
             cleanup_cmd = f"docker rm -f {container_name}"
 
-        return {"container_name": container_name, "cleanup_cmd": cleanup_cmd}
+        return {
+            "container_name": container_name,
+            "cleanup_cmd": cleanup_cmd,
+            "cleanup_cwd": cleanup_cwd,
+        }
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single Terminal-Bench item."""
@@ -296,6 +320,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 setup_result = await self._run_terminal_bench(sandbox_id, item.get("task_id") or "task")
                 container_name = setup_result.get("container_name")
                 cleanup_cmd = setup_result.get("cleanup_cmd")
+                cleanup_cwd = setup_result.get("cleanup_cwd")
                 if not container_name:
                     return ItemResult(
                         item_id=item_id,
@@ -384,7 +409,9 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     )
                 finally:
                     if cleanup_cmd:
-                        await self.sandy.execute_command(sandbox_id, cleanup_cmd)
+                        await self.sandy.execute_command(
+                            sandbox_id, cleanup_cmd, cwd=cleanup_cwd
+                        )
             finally:
                 await self.sandy.terminate_sandbox(sandbox_id)
 
