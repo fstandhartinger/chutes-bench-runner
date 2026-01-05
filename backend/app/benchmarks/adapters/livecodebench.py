@@ -2,25 +2,17 @@
 import asyncio
 import json
 import time
-from pathlib import Path
-from typing import Any, AsyncIterator, Optional
-
-from huggingface_hub import hf_hub_url
+from typing import Any, AsyncIterator, Iterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import download_hf_file_async, download_http_file_async
+from app.benchmarks.utils import load_dataset_with_retry
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
 logger = get_logger(__name__)
 
 LIVECODEBENCH_TOTAL_ITEMS = 164
-LIVECODEBENCH_STREAM_TIMEOUT_SECONDS = 300
-LIVECODEBENCH_JSONL_TIMEOUT_SECONDS = 180
-_LIVECODEBENCH_LOCK = asyncio.Lock()
-_LIVECODEBENCH_JSONL: Optional[Path] = None
-_LIVECODEBENCH_ITEMS: Optional[list[dict[str, Any]]] = None
 
 
 @register_adapter("livecodebench")
@@ -35,7 +27,9 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []
-        self._jsonl_path: Optional[Path] = None
+        self._stream_iter: Optional[Iterator[dict[str, Any]]] = None
+        self._stream_index = -1
+        self._stream_lock = asyncio.Lock()
         self.sandy = SandyService()
 
     def get_name(self) -> str:
@@ -59,8 +53,6 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         return False
 
     async def get_total_items(self) -> int:
-        if self._items:
-            return len(self._items)
         return LIVECODEBENCH_TOTAL_ITEMS
 
     def _parse_item(self, index: int, item: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -89,190 +81,59 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
 
     async def get_items_for_evaluation(self, subset_pct: int, seed: str) -> tuple[int, list[str]]:
         total_items = await self.get_total_items()
+        item_ids = [str(i) for i in range(total_items)]
         if subset_pct >= 100:
-            await self.preload()
-            return len(self._items), [item["id"] for item in self._items]
+            return total_items, item_ids
 
-        target = max(1, int(total_items * subset_pct / 100))
-        self._items = []
-        jsonl_path = await self._ensure_jsonl()
-        if jsonl_path:
-            items = self._load_items_from_jsonl(jsonl_path)
-            self._items = items[:target]
-        else:
-            try:
-                self._items = await self._load_streaming_items(target=target)
-            except Exception as e:
-                logger.warning("Failed to stream LiveCodeBench subset", error=str(e))
-                self._items = []
-
-        return total_items, [item["id"] for item in self._items]
+        subset = self.get_deterministic_subset(item_ids, subset_pct, seed)
+        subset.sort(key=int)
+        return total_items, subset
 
     async def preload(self) -> None:
-        """Load LiveCodeBench dataset."""
-        if self._items:
+        """Initialize the streaming dataset iterator."""
+        await self._ensure_streaming_iter()
+
+    async def _ensure_streaming_iter(self) -> None:
+        if self._stream_iter is not None:
             return
-
-        try:
-            global _LIVECODEBENCH_ITEMS, _LIVECODEBENCH_JSONL
-            async with _LIVECODEBENCH_LOCK:
-                if _LIVECODEBENCH_ITEMS is not None:
-                    self._items = _LIVECODEBENCH_ITEMS
-                    self._jsonl_path = _LIVECODEBENCH_JSONL
-                    return
-
-                logger.info("Loading LiveCodeBench dataset")
-                jsonl_path = await self._ensure_jsonl()
-                if jsonl_path:
-                    items = self._load_items_from_jsonl(jsonl_path)
-                    self._jsonl_path = jsonl_path
-                    _LIVECODEBENCH_JSONL = jsonl_path
-                else:
-                    try:
-                        items = await self._load_streaming_items()
-                    except Exception as exc:
-                        logger.warning(
-                            "Streaming LiveCodeBench failed, no JSONL available",
-                            error=str(exc) or exc.__class__.__name__,
-                        )
-                        raise
-
-                logger.info("Loaded %s LiveCodeBench items", len(items))
-                self._items = items
-                _LIVECODEBENCH_ITEMS = items
-        except Exception as e:
-            logger.error("Failed to load LiveCodeBench", error=str(e))
-            self._items = []
-            raise
-
-    async def _load_streaming_items(self, target: Optional[int] = None) -> list[dict[str, Any]]:
         import os
 
         hf_token = os.environ.get("HF_TOKEN")
+        logger.info("Initializing LiveCodeBench streaming dataset")
+        dataset = await load_dataset_with_retry(
+            "livecodebench/code_generation",
+            split="test",
+            streaming=True,
+            token=hf_token,
+        )
+        self._stream_iter = iter(dataset)
+        self._stream_index = -1
 
-        def _load_items_sync() -> list[dict[str, Any]]:
-            from datasets import load_dataset
-
-            attempt = 0
-            delay_seconds = 2.0
-            last_error: Optional[Exception] = None
-            while attempt < 3:
-                attempt += 1
-                try:
-                    dataset = load_dataset(
-                        "livecodebench/code_generation",
-                        split="test",
-                        streaming=True,
-                        token=hf_token,
-                    )
-                    items: list[dict[str, Any]] = []
-                    for i, item in enumerate(dataset):
-                        if target is not None and len(items) >= target:
-                            break
-                        parsed = self._parse_item(i, item)
-                        if parsed:
-                            items.append(parsed)
-                    return items
-                except Exception as exc:
-                    last_error = exc
-                    logger.warning(
-                        "Failed to stream LiveCodeBench dataset",
-                        attempt=attempt,
-                        error=str(exc) or exc.__class__.__name__,
-                    )
-                    if attempt >= 3:
-                        break
-                    time.sleep(delay_seconds)
-                    delay_seconds = min(delay_seconds * 2, 30)
-            if last_error:
-                raise last_error
-            return []
-
+    async def _get_item_by_id(self, item_id: str) -> Optional[dict[str, Any]]:
         try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(_load_items_sync),
-                timeout=LIVECODEBENCH_STREAM_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError as exc:
-            logger.warning(
-                "LiveCodeBench streaming timed out",
-                timeout_seconds=LIVECODEBENCH_STREAM_TIMEOUT_SECONDS,
-            )
-            raise exc
-
-    def _load_items_from_jsonl(self, jsonl_path: Path) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
-        with jsonl_path.open("r", encoding="utf-8") as handle:
-            for i, line in enumerate(handle):
-                if not line.strip():
-                    continue
-                item = json.loads(line)
-                parsed = self._parse_item(i, item)
-                if parsed:
-                    items.append(parsed)
-        return items
-
-    async def _ensure_jsonl(self) -> Optional[Path]:
-        if self._jsonl_path:
-            return self._jsonl_path
-        try:
-            import os
-
-            hf_token = os.environ.get("HF_TOKEN")
-            logger.info("Downloading LiveCodeBench JSONL")
-            url = hf_hub_url(
-                "livecodebench/code_generation",
-                "test.jsonl",
-                repo_type="dataset",
-            )
-            headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else None
-            try:
-                self._jsonl_path = await download_http_file_async(
-                    url,
-                    cache_subdir="livecodebench",
-                    filename="test.jsonl",
-                    headers=headers,
-                    timeout_seconds=LIVECODEBENCH_JSONL_TIMEOUT_SECONDS,
-                )
-                return self._jsonl_path
-            except Exception as exc:
-                logger.warning(
-                    "Failed to download LiveCodeBench JSONL via HTTP",
-                    error=str(exc) or exc.__class__.__name__,
-                )
-
-            for attempt in range(1, 3):
-                try:
-                    self._jsonl_path = await asyncio.wait_for(
-                        download_hf_file_async(
-                            "livecodebench/code_generation",
-                            "test.jsonl",
-                            repo_type="dataset",
-                            token=hf_token,
-                            cache_subdir="livecodebench",
-                        ),
-                        timeout=LIVECODEBENCH_JSONL_TIMEOUT_SECONDS,
-                    )
-                    break
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to download LiveCodeBench JSONL via HF",
-                        attempt=attempt,
-                        error=str(exc) or exc.__class__.__name__,
-                    )
-                    if attempt >= 2:
-                        raise
-                    await asyncio.sleep(min(2**attempt, 10))
-            return self._jsonl_path
-        except Exception as e:
-            logger.error("Failed to download LiveCodeBench JSONL", error=str(e))
+            target_index = int(item_id)
+        except (TypeError, ValueError):
             return None
 
+        async with self._stream_lock:
+            await self._ensure_streaming_iter()
+            while self._stream_index < target_index:
+                try:
+                    raw_item = await asyncio.to_thread(next, self._stream_iter)  # type: ignore[arg-type]
+                except StopIteration:
+                    break
+                self._stream_index += 1
+                parsed = self._parse_item(self._stream_index, raw_item)
+                self._items.append(parsed)
+
+            if target_index < len(self._items):
+                return self._items[target_index]
+        return None
+
     async def enumerate_items(self) -> AsyncIterator[str]:
-        if not self._items:
-            await self.preload()
-        for item in self._items:
-            yield item["id"]
+        total_items = await self.get_total_items()
+        for idx in range(total_items):
+            yield str(idx)
 
     async def _run_io_tests(
         self,
@@ -327,10 +188,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single LiveCodeBench item."""
-        if not self._items:
-            await self.preload()
-
-        item = next((i for i in self._items if i["id"] == item_id), None)
+        item = await self._get_item_by_id(item_id)
         if not item:
             return ItemResult(item_id=item_id, error=f"Item {item_id} not found")
 
