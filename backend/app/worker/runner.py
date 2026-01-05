@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
@@ -396,39 +396,60 @@ class BenchmarkWorker:
             benchmark_result = await db.execute(
                 select(
                     BenchmarkRunBenchmark.run_id,
-                    BenchmarkRunBenchmark.benchmark_name,
                     BenchmarkRunBenchmark.status,
-                    BenchmarkRunBenchmark.updated_at,
+                    BenchmarkRunBenchmark.started_at,
+                    BenchmarkRunBenchmark.sampled_items,
                 ).where(BenchmarkRunBenchmark.run_id.in_(run_ids))
             )
-            benchmarks_by_run: dict[str, list[tuple[str, Optional[datetime]]]] = {}
-            for run_id, benchmark_name, status, updated_at in benchmark_result.all():
+            benchmarks_by_run: dict[str, list[tuple[Optional[datetime], Optional[int]]]] = {}
+            for run_id, status, started_at, sampled_items in benchmark_result.all():
                 if status in (
                     BenchmarkRunStatus.SUCCEEDED.value,
                     BenchmarkRunStatus.FAILED.value,
                     BenchmarkRunStatus.SKIPPED.value,
                 ):
                     continue
-                benchmarks_by_run.setdefault(run_id, []).append((benchmark_name, updated_at))
+                benchmarks_by_run.setdefault(run_id, []).append((started_at, sampled_items))
 
             now = datetime.utcnow()
             base_seconds = settings.worker_stale_run_minutes * 60
             buffer_seconds = max(settings.worker_heartbeat_seconds * 2, 60)
             stale_after_seconds = max(base_seconds, buffer_seconds)
+            item_timeout_seconds = max(settings.worker_item_timeout_seconds, 0)
+            item_result = await db.execute(
+                select(
+                    BenchmarkRunBenchmark.run_id,
+                    func.max(BenchmarkItemResult.created_at),
+                )
+                .join(
+                    BenchmarkItemResult,
+                    BenchmarkItemResult.run_benchmark_id == BenchmarkRunBenchmark.id,
+                )
+                .where(BenchmarkRunBenchmark.run_id.in_(run_ids))
+                .group_by(BenchmarkRunBenchmark.run_id)
+            )
+            last_item_by_run = {run_id: created_at for run_id, created_at in item_result.all()}
             for run in running_runs:
                 benchmark_entries = benchmarks_by_run.get(run.id, [])
-                benchmark_updated_at: list[datetime] = []
-                for benchmark_name, benchmark_updated in benchmark_entries:
-                    if benchmark_updated:
-                        benchmark_updated_at.append(benchmark_updated)
-                cutoff = now - timedelta(seconds=stale_after_seconds)
-                last_update_candidates = list(benchmark_updated_at)
-                if run.updated_at:
-                    last_update_candidates.append(run.updated_at)
-                elif run.started_at:
-                    last_update_candidates.append(run.started_at)
+                last_item_at = last_item_by_run.get(run.id)
+                if last_item_at:
+                    last_update = last_item_at
                 else:
-                    last_update_candidates.append(run.created_at)
+                    started_candidates: list[datetime] = [
+                        started_at for started_at, _ in benchmark_entries if started_at
+                    ]
+                    if run.started_at:
+                        started_candidates.append(run.started_at)
+                    last_update = max(started_candidates) if started_candidates else run.created_at
+
+                has_sampled_items = any(
+                    (sampled_items or 0) > 0 for _, sampled_items in benchmark_entries
+                )
+                run_stale_seconds = stale_after_seconds
+                if has_sampled_items and item_timeout_seconds:
+                    run_stale_seconds = max(run_stale_seconds, item_timeout_seconds)
+                cutoff = now - timedelta(seconds=run_stale_seconds)
+                last_update_candidates = [last_update] if last_update else []
                 last_update = max(last_update_candidates) if last_update_candidates else None
                 if last_update and last_update >= cutoff:
                     continue
