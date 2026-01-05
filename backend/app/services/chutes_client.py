@@ -389,6 +389,16 @@ class ChutesClient:
             return 1
         return max(1, available)
 
+    def _compute_safe_context_tokens(self, context_length: int, input_tokens: int) -> int:
+        margin = settings.chutes_max_tokens_margin
+        if context_length <= 0:
+            return 1
+        margin = max(0, min(margin, context_length))
+        available = context_length - input_tokens - margin
+        if available <= 0:
+            return 1
+        return max(1, available)
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -616,6 +626,13 @@ class ChutesClient:
 
         if max_output_length:
             safe_max_tokens = self._compute_safe_max_tokens(max_output_length, input_tokens)
+        if context_length:
+            safe_context_tokens = self._compute_safe_context_tokens(context_length, input_tokens)
+            safe_max_tokens = (
+                safe_context_tokens
+                if safe_max_tokens is None
+                else min(safe_max_tokens, safe_context_tokens)
+            )
             if max_tokens_cap:
                 safe_max_tokens = min(safe_max_tokens, max_tokens_cap)
             metadata["max_output_length"] = max_output_length
