@@ -158,13 +158,37 @@ async def cancel_run(db: AsyncSession, run_id: str) -> bool:
     if not run or run.status not in (RunStatus.QUEUED.value, RunStatus.RUNNING.value):
         return False
 
+    now = datetime.utcnow()
+    await db.execute(
+        update(BenchmarkRunBenchmark)
+        .where(BenchmarkRunBenchmark.run_id == run_id)
+        .where(BenchmarkRunBenchmark.status == BenchmarkRunStatus.RUNNING.value)
+        .values(
+            status=BenchmarkRunStatus.SKIPPED.value,
+            error_message="Run canceled",
+            completed_at=now,
+            updated_at=now,
+        )
+    )
+    await db.execute(
+        update(BenchmarkRunBenchmark)
+        .where(BenchmarkRunBenchmark.run_id == run_id)
+        .where(BenchmarkRunBenchmark.status == BenchmarkRunStatus.PENDING.value)
+        .values(
+            status=BenchmarkRunStatus.SKIPPED.value,
+            error_message="Run canceled",
+            completed_at=now,
+            updated_at=now,
+        )
+    )
     await db.execute(
         update(BenchmarkRun)
         .where(BenchmarkRun.id == run_id)
         .values(
             status=RunStatus.CANCELED.value,
-            canceled_at=datetime.utcnow(),
-            completed_at=datetime.utcnow(),
+            canceled_at=now,
+            completed_at=now,
+            updated_at=now,
         )
     )
     await db.commit()
