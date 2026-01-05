@@ -16,6 +16,7 @@ from app.services.sandy_service import SandyService
 logger = get_logger(__name__)
 
 LIVECODEBENCH_TOTAL_ITEMS = 164
+LIVECODEBENCH_STREAM_TIMEOUT_SECONDS = 300
 _LIVECODEBENCH_LOCK = asyncio.Lock()
 _LIVECODEBENCH_JSONL: Optional[Path] = None
 _LIVECODEBENCH_ITEMS: Optional[list[dict[str, Any]]] = None
@@ -96,8 +97,13 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         try:
             self._items = await self._load_streaming_items(target=target)
         except Exception as e:
-            logger.error("Failed to stream LiveCodeBench subset", error=str(e))
-            self._items = []
+            logger.warning("Failed to stream LiveCodeBench subset", error=str(e))
+            jsonl_path = await self._ensure_jsonl()
+            if jsonl_path:
+                items = self._load_items_from_jsonl(jsonl_path)
+                self._items = items[:target]
+            else:
+                self._items = []
 
         return total_items, [item["id"] for item in self._items]
 
@@ -180,7 +186,17 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
                 raise last_error
             return []
 
-        return await asyncio.to_thread(_load_items_sync)
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(_load_items_sync),
+                timeout=LIVECODEBENCH_STREAM_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            logger.warning(
+                "LiveCodeBench streaming timed out",
+                timeout_seconds=LIVECODEBENCH_STREAM_TIMEOUT_SECONDS,
+            )
+            raise exc
 
     def _load_items_from_jsonl(self, jsonl_path: Path) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
