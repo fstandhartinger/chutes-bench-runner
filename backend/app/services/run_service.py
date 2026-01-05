@@ -212,6 +212,7 @@ async def requeue_run(db: AsyncSession, run_id: str) -> bool:
             status=BenchmarkRunStatus.PENDING.value,
             error_message=None,
             completed_at=None,
+            started_at=None,
             updated_at=now,
         )
     )
@@ -222,6 +223,7 @@ async def requeue_run(db: AsyncSession, run_id: str) -> bool:
             status=RunStatus.QUEUED.value,
             error_message=None,
             completed_at=None,
+            started_at=None,
             canceled_at=None,
             updated_at=now,
         )

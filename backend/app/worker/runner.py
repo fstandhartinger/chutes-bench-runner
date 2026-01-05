@@ -407,6 +407,8 @@ class BenchmarkWorker:
                     .values(
                         status=BenchmarkRunStatus.PENDING.value,
                         error_message=None,
+                        started_at=None,
+                        completed_at=None,
                         updated_at=now,
                     )
                 )
@@ -416,6 +418,8 @@ class BenchmarkWorker:
                     .values(
                         status=RunStatus.QUEUED.value,
                         error_message=None,
+                        started_at=None,
+                        completed_at=None,
                         updated_at=now,
                     )
                 )

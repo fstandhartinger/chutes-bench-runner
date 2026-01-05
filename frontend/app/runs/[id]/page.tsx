@@ -987,7 +987,7 @@ export default function RunDetailPage() {
                       </Button>
                     </div>
                   </div>
-                  {itemsLoading ? (
+                  {itemsLoading && items.length === 0 ? (
                     <div className="flex justify-center py-8">
                       <Loader2 className="h-6 w-6 animate-spin text-moss" />
                     </div>
@@ -1022,6 +1022,12 @@ export default function RunDetailPage() {
                         />
                       ))}
 
+                      {(itemsLoading || showAllLoading) && (
+                        <div className="flex justify-center py-4">
+                          <Loader2 className="h-5 w-5 animate-spin text-moss" />
+                        </div>
+                      )}
+
                       {/* Load More Button */}
                       {itemsMode === "paged" && items.length < totalItems && (
                         <div className="flex flex-wrap items-center justify-center gap-3 pt-4">
@@ -1047,11 +1053,6 @@ export default function RunDetailPage() {
                           </Button>
                         </div>
                       )}
-                    </div>
-                  )}
-                  {showAllLoading && !itemsLoading && (
-                    <div className="flex justify-center py-4">
-                      <Loader2 className="h-5 w-5 animate-spin text-moss" />
                     </div>
                   )}
                 </div>
