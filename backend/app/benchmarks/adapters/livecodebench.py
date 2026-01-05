@@ -220,6 +220,27 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
 
             hf_token = os.environ.get("HF_TOKEN")
             logger.info("Downloading LiveCodeBench JSONL")
+            url = hf_hub_url(
+                "livecodebench/code_generation",
+                "test.jsonl",
+                repo_type="dataset",
+            )
+            headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else None
+            try:
+                self._jsonl_path = await download_http_file_async(
+                    url,
+                    cache_subdir="livecodebench",
+                    filename="test.jsonl",
+                    headers=headers,
+                    timeout_seconds=LIVECODEBENCH_JSONL_TIMEOUT_SECONDS,
+                )
+                return self._jsonl_path
+            except Exception as exc:
+                logger.warning(
+                    "Failed to download LiveCodeBench JSONL via HTTP",
+                    error=str(exc) or exc.__class__.__name__,
+                )
+
             for attempt in range(1, 3):
                 try:
                     self._jsonl_path = await asyncio.wait_for(
@@ -235,28 +256,13 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
                     break
                 except Exception as exc:
                     logger.warning(
-                        "Failed to download LiveCodeBench JSONL",
+                        "Failed to download LiveCodeBench JSONL via HF",
                         attempt=attempt,
                         error=str(exc) or exc.__class__.__name__,
                     )
                     if attempt >= 2:
                         raise
                     await asyncio.sleep(min(2**attempt, 10))
-
-            if not self._jsonl_path:
-                url = hf_hub_url(
-                    "livecodebench/code_generation",
-                    "test.jsonl",
-                    repo_type="dataset",
-                )
-                headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else None
-                self._jsonl_path = await download_http_file_async(
-                    url,
-                    cache_subdir="livecodebench",
-                    filename="test.jsonl",
-                    headers=headers,
-                    timeout_seconds=LIVECODEBENCH_JSONL_TIMEOUT_SECONDS,
-                )
             return self._jsonl_path
         except Exception as e:
             logger.error("Failed to download LiveCodeBench JSONL", error=str(e))
