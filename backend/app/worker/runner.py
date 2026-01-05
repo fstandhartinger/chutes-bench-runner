@@ -314,17 +314,36 @@ class BenchmarkWorker:
         if not self.current_run_ids:
             return
         now = datetime.utcnow()
-        for run_id in self.current_run_ids:
-            self.last_progress_at[run_id] = now
         async with async_session_maker() as db:
+            result = await db.execute(
+                select(
+                    BenchmarkRunBenchmark.run_id,
+                    BenchmarkRunBenchmark.benchmark_name,
+                    BenchmarkRun.model_slug,
+                )
+                .join(BenchmarkRun, BenchmarkRunBenchmark.run_id == BenchmarkRun.id)
+                .where(BenchmarkRunBenchmark.run_id.in_(self.current_run_ids))
+                .where(BenchmarkRunBenchmark.status == BenchmarkRunStatus.RUNNING.value)
+            )
+            active_ids: list[str] = []
+            for run_id, benchmark_name, model_slug in result.all():
+                timeout = self._get_benchmark_timeout(benchmark_name, model_slug)
+                threshold_seconds = max(timeout, settings.worker_stale_run_minutes * 60)
+                last_progress = self.last_progress_at.get(run_id)
+                if not last_progress or last_progress >= now - timedelta(seconds=threshold_seconds):
+                    active_ids.append(run_id)
+
+            if not active_ids:
+                return
+
             await db.execute(
                 update(BenchmarkRun)
-                .where(BenchmarkRun.id.in_(self.current_run_ids))
+                .where(BenchmarkRun.id.in_(active_ids))
                 .values(updated_at=now)
             )
             await db.execute(
                 update(BenchmarkRunBenchmark)
-                .where(BenchmarkRunBenchmark.run_id.in_(self.current_run_ids))
+                .where(BenchmarkRunBenchmark.run_id.in_(active_ids))
                 .where(BenchmarkRunBenchmark.status == BenchmarkRunStatus.RUNNING.value)
                 .values(updated_at=now)
             )
@@ -432,15 +451,21 @@ class BenchmarkWorker:
             for run in running_runs:
                 benchmark_entries = benchmarks_by_run.get(run.id, [])
                 last_item_at = last_item_by_run.get(run.id)
+                last_update_candidates: list[datetime] = []
                 if last_item_at:
-                    last_update = last_item_at
-                else:
+                    last_update_candidates.append(last_item_at)
+                if run.updated_at:
+                    last_update_candidates.append(run.updated_at)
+                if not last_item_at:
                     started_candidates: list[datetime] = [
                         started_at for started_at, _ in benchmark_entries if started_at
                     ]
                     if run.started_at:
                         started_candidates.append(run.started_at)
-                    last_update = max(started_candidates) if started_candidates else run.created_at
+                    if started_candidates:
+                        last_update_candidates.append(max(started_candidates))
+                    else:
+                        last_update_candidates.append(run.created_at)
 
                 has_sampled_items = any(
                     (sampled_items or 0) > 0 for _, sampled_items in benchmark_entries
@@ -449,7 +474,6 @@ class BenchmarkWorker:
                 if has_sampled_items and item_timeout_seconds:
                     run_stale_seconds = max(run_stale_seconds, item_timeout_seconds)
                 cutoff = now - timedelta(seconds=run_stale_seconds)
-                last_update_candidates = [last_update] if last_update else []
                 last_update = max(last_update_candidates) if last_update_candidates else None
                 if last_update and last_update >= cutoff:
                     continue

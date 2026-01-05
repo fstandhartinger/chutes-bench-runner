@@ -41,6 +41,12 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
     def requires_setup(self) -> bool:
         return False
 
+    def supports_parallel_items(self) -> bool:
+        return True
+
+    def get_item_timeout_seconds(self) -> Optional[int]:
+        return 1800
+
     def _looks_like_code(self, code: str) -> bool:
         if not code:
             return False

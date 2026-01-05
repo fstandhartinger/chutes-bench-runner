@@ -609,8 +609,9 @@ class ChutesClient:
         context_length = await self.get_model_context_length(model_slug)
         safe_max_tokens: Optional[int] = None
         desired_max_tokens = requested_max_tokens
-        if min_output_tokens and (desired_max_tokens is None or desired_max_tokens < min_output_tokens):
-            desired_max_tokens = min_output_tokens
+        if (max_output_length or context_length) and min_output_tokens:
+            if desired_max_tokens is None or desired_max_tokens < min_output_tokens:
+                desired_max_tokens = min_output_tokens
 
         input_tokens = self._estimate_tokens(prompt)
         if system_prompt:
@@ -678,6 +679,14 @@ class ChutesClient:
                     limit = _extract_max_tokens_limit(e.response_text)
                     if limit and limit > 0:
                         reduced = min(current_max, limit)
+                        if safe_max_tokens is None or limit < safe_max_tokens:
+                            safe_max_tokens = limit
+                        if self._llm_output_cache is None:
+                            self._llm_output_cache = {}
+                        existing_limit = self._llm_output_cache.get(model_slug)
+                        if existing_limit is None or limit < existing_limit:
+                            self._llm_output_cache[model_slug] = limit
+                            self._llm_cache_at = time.monotonic()
                     else:
                         reduced = max(512, int(current_max * 0.5))
                     if reduced < current_max:
