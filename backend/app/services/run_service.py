@@ -250,7 +250,11 @@ async def update_benchmark_status(
     update_data: dict[str, Any] = {"status": status.value, "updated_at": now}
 
     if status == BenchmarkRunStatus.RUNNING:
-        update_data["started_at"] = func.coalesce(BenchmarkRunBenchmark.started_at, now)
+        started_result = await db.execute(
+            select(BenchmarkRunBenchmark.started_at).where(BenchmarkRunBenchmark.id == run_benchmark_id)
+        )
+        if started_result.scalar_one_or_none() is None:
+            update_data["started_at"] = now
     elif status in (BenchmarkRunStatus.SUCCEEDED, BenchmarkRunStatus.FAILED, BenchmarkRunStatus.SKIPPED):
         update_data["completed_at"] = now
 
