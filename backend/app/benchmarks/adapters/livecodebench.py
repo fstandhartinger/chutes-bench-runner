@@ -17,6 +17,7 @@ logger = get_logger(__name__)
 
 LIVECODEBENCH_TOTAL_ITEMS = 164
 LIVECODEBENCH_STREAM_TIMEOUT_SECONDS = 300
+LIVECODEBENCH_JSONL_TIMEOUT_SECONDS = 180
 _LIVECODEBENCH_LOCK = asyncio.Lock()
 _LIVECODEBENCH_JSONL: Optional[Path] = None
 _LIVECODEBENCH_ITEMS: Optional[list[dict[str, Any]]] = None
@@ -94,15 +95,15 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
 
         target = max(1, int(total_items * subset_pct / 100))
         self._items = []
-        try:
-            self._items = await self._load_streaming_items(target=target)
-        except Exception as e:
-            logger.warning("Failed to stream LiveCodeBench subset", error=str(e))
-            jsonl_path = await self._ensure_jsonl()
-            if jsonl_path:
-                items = self._load_items_from_jsonl(jsonl_path)
-                self._items = items[:target]
-            else:
+        jsonl_path = await self._ensure_jsonl()
+        if jsonl_path:
+            items = self._load_items_from_jsonl(jsonl_path)
+            self._items = items[:target]
+        else:
+            try:
+                self._items = await self._load_streaming_items(target=target)
+            except Exception as e:
+                logger.warning("Failed to stream LiveCodeBench subset", error=str(e))
                 self._items = []
 
         return total_items, [item["id"] for item in self._items]
@@ -121,19 +122,20 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
                     return
 
                 logger.info("Loading LiveCodeBench dataset")
-                try:
-                    items = await self._load_streaming_items()
-                except Exception as exc:
-                    logger.warning(
-                        "Streaming LiveCodeBench failed, falling back to JSONL",
-                        error=str(exc) or exc.__class__.__name__,
-                    )
-                    jsonl_path = await self._ensure_jsonl()
-                    if not jsonl_path:
-                        raise RuntimeError("Could not download LiveCodeBench dataset file")
+                jsonl_path = await self._ensure_jsonl()
+                if jsonl_path:
                     items = self._load_items_from_jsonl(jsonl_path)
                     self._jsonl_path = jsonl_path
                     _LIVECODEBENCH_JSONL = jsonl_path
+                else:
+                    try:
+                        items = await self._load_streaming_items()
+                    except Exception as exc:
+                        logger.warning(
+                            "Streaming LiveCodeBench failed, no JSONL available",
+                            error=str(exc) or exc.__class__.__name__,
+                        )
+                        raise
 
                 logger.info("Loaded %s LiveCodeBench items", len(items))
                 self._items = items
@@ -217,7 +219,8 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             import os
 
             hf_token = os.environ.get("HF_TOKEN")
-            for attempt in range(1, 4):
+            logger.info("Downloading LiveCodeBench JSONL")
+            for attempt in range(1, 3):
                 try:
                     self._jsonl_path = await asyncio.wait_for(
                         download_hf_file_async(
@@ -227,7 +230,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
                             token=hf_token,
                             cache_subdir="livecodebench",
                         ),
-                        timeout=3600,
+                        timeout=LIVECODEBENCH_JSONL_TIMEOUT_SECONDS,
                     )
                     break
                 except Exception as exc:
@@ -236,7 +239,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
                         attempt=attempt,
                         error=str(exc) or exc.__class__.__name__,
                     )
-                    if attempt >= 3:
+                    if attempt >= 2:
                         raise
                     await asyncio.sleep(min(2**attempt, 10))
 
@@ -252,7 +255,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
                     cache_subdir="livecodebench",
                     filename="test.jsonl",
                     headers=headers,
-                    timeout_seconds=3600,
+                    timeout_seconds=LIVECODEBENCH_JSONL_TIMEOUT_SECONDS,
                 )
             return self._jsonl_path
         except Exception as e:
