@@ -64,6 +64,13 @@ async def list_models(
 ):
     """List available Chutes models."""
     models = await get_models(db, search=search, limit=limit, offset=offset)
+    llm_identifiers = await get_chutes_client().get_llm_identifiers()
+    if llm_identifiers:
+        models = [
+            model
+            for model in models
+            if model.slug in llm_identifiers or (model.chute_id and model.chute_id in llm_identifiers)
+        ]
     return ModelsListResponse(
         models=[ModelResponse.model_validate(m) for m in models],
         total=len(models),
