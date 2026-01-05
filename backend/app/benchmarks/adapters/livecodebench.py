@@ -9,7 +9,7 @@ from huggingface_hub import hf_hub_url
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import download_hf_file_async, download_http_file_async, load_dataset_with_retry
+from app.benchmarks.utils import download_hf_file_async, download_http_file_async
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -141,20 +141,46 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         import os
 
         hf_token = os.environ.get("HF_TOKEN")
-        dataset = await load_dataset_with_retry(
-            "livecodebench/code_generation",
-            split="test",
-            streaming=True,
-            token=hf_token,
-        )
-        items: list[dict[str, Any]] = []
-        for i, item in enumerate(dataset):
-            if target is not None and len(items) >= target:
-                break
-            parsed = self._parse_item(i, item)
-            if parsed:
-                items.append(parsed)
-        return items
+
+        def _load_items_sync() -> list[dict[str, Any]]:
+            from datasets import load_dataset
+
+            attempt = 0
+            delay_seconds = 2.0
+            last_error: Optional[Exception] = None
+            while attempt < 3:
+                attempt += 1
+                try:
+                    dataset = load_dataset(
+                        "livecodebench/code_generation",
+                        split="test",
+                        streaming=True,
+                        token=hf_token,
+                    )
+                    items: list[dict[str, Any]] = []
+                    for i, item in enumerate(dataset):
+                        if target is not None and len(items) >= target:
+                            break
+                        parsed = self._parse_item(i, item)
+                        if parsed:
+                            items.append(parsed)
+                    return items
+                except Exception as exc:
+                    last_error = exc
+                    logger.warning(
+                        "Failed to stream LiveCodeBench dataset",
+                        attempt=attempt,
+                        error=str(exc) or exc.__class__.__name__,
+                    )
+                    if attempt >= 3:
+                        break
+                    time.sleep(delay_seconds)
+                    delay_seconds = min(delay_seconds * 2, 30)
+            if last_error:
+                raise last_error
+            return []
+
+        return await asyncio.to_thread(_load_items_sync)
 
     def _load_items_from_jsonl(self, jsonl_path: Path) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
