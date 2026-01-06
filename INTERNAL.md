@@ -38,8 +38,8 @@ CHUTES_CLIENT_SECRET=<IDP client secret>
 CHUTES_IDP_URL=https://auth.chutes.ai
     FRONTEND_URL=https://chutes-bench-runner-ui.onrender.com
     ADMIN_SECRET=<secret for admin endpoints>
-    SANDY_BASE_URL=https://sandy.65.109.49.103.nip.io
-    SANDY_API_KEY=4e253b301b6934ec824c24565270713007dde805c937599449dc35ee078ca9d0
+    SANDY_BASE_URL=https://sandy.94.130.222.43.nip.io
+    SANDY_API_KEY=<sandy-api-key>
     BENCH_SIGNING_PRIVATE_KEY=<base64 or PEM Ed25519 private key>
     BENCH_SIGNING_PUBLIC_KEY=<optional public key>
     SKIP_MODEL_SYNC=true
@@ -115,7 +115,7 @@ NEXT_PUBLIC_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 **Fix**: Use Standard plan (2GB) for worker service
 
 ### 12. Hetzner Worker Pool (Preferred for Cost)
-We can run additional benchmark workers on the Hetzner server (65.109.49.103) to avoid scaling Render. Use Docker to avoid Python 3.11 install conflicts.
+We can run additional benchmark workers on the Hetzner server (94.130.222.43) to avoid scaling Render. Use Docker to avoid Python 3.11 install conflicts.
 
 **Why**: Hetzner has plenty of CPU/RAM and is cheaper than multiple Render instances.
 

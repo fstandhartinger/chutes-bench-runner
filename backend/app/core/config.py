@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     bench_data_dir: str = "/tmp/chutes-bench-data"
 
     # Sandy Sandbox
-    sandy_base_url: str = "https://sandy.65.109.49.103.nip.io"
+    sandy_base_url: str = "https://sandy.94.130.222.43.nip.io"
     sandy_api_key: Optional[str] = None
 
     # AA-LCR judge model (LLM-based equality checker)
