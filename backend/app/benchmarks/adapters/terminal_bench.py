@@ -193,7 +193,19 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     "docker compose version",
                 )
                 if install.get("exit_code") != 0 or compose_check.get("exit_code") != 0:
-                    compose_cmd = "docker-compose"
+                    compose_cmd = "/usr/local/bin/docker-compose-v2"
+                    download = await self.sandy.execute_command(
+                        sandbox_id,
+                        "curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 "
+                        "-o /usr/local/bin/docker-compose-v2 && chmod +x /usr/local/bin/docker-compose-v2",
+                        timeout_ms=300000,
+                    )
+                    version_check = await self.sandy.execute_command(
+                        sandbox_id,
+                        f"{compose_cmd} version",
+                    )
+                    if download.get("exit_code") != 0 or version_check.get("exit_code") != 0:
+                        compose_cmd = "docker-compose"
             await self._ensure_compose_context(sandbox_id, compose_path, cwd=task_dir)
             logs_dir = f"{task_dir}/logs"
             await self.sandy.execute_command(sandbox_id, f"mkdir -p {logs_dir}")
