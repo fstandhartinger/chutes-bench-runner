@@ -1,8 +1,7 @@
 """LiveCodeBench benchmark adapter."""
-import asyncio
 import json
 import time
-from typing import Any, AsyncIterator, Iterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
@@ -27,9 +26,6 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []
-        self._stream_iter: Optional[Iterator[dict[str, Any]]] = None
-        self._stream_index = -1
-        self._stream_lock = asyncio.Lock()
         self.sandy = SandyService()
 
     def get_name(self) -> str:
@@ -62,7 +58,9 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         return False
 
     async def get_total_items(self) -> int:
-        return LIVECODEBENCH_TOTAL_ITEMS
+        if not self._items:
+            await self.preload()
+        return len(self._items) or LIVECODEBENCH_TOTAL_ITEMS
 
     def _parse_item(self, index: int, item: dict[str, Any]) -> Optional[dict[str, Any]]:
         question = item.get("question_content") or ""
@@ -99,45 +97,25 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         return total_items, subset
 
     async def preload(self) -> None:
-        """Initialize the streaming dataset iterator."""
-        await self._ensure_streaming_iter()
-
-    async def _ensure_streaming_iter(self) -> None:
-        if self._stream_iter is not None:
+        """Load the LiveCodeBench dataset into memory."""
+        if self._items:
             return
         import os
 
         hf_token = os.environ.get("HF_TOKEN")
-        logger.info("Initializing LiveCodeBench streaming dataset")
+        logger.info("Loading LiveCodeBench dataset")
         dataset = await load_dataset_with_retry(
             "livecodebench/code_generation",
             split="test",
-            streaming=True,
             token=hf_token,
         )
-        self._stream_iter = iter(dataset)
-        self._stream_index = -1
-
-    async def _get_item_by_id(self, item_id: str) -> Optional[dict[str, Any]]:
-        try:
-            target_index = int(item_id)
-        except (TypeError, ValueError):
-            return None
-
-        async with self._stream_lock:
-            await self._ensure_streaming_iter()
-            while self._stream_index < target_index:
-                try:
-                    raw_item = await asyncio.to_thread(next, self._stream_iter)  # type: ignore[arg-type]
-                except StopIteration:
-                    break
-                self._stream_index += 1
-                parsed = self._parse_item(self._stream_index, raw_item)
-                self._items.append(parsed)
-
-            if target_index < len(self._items):
-                return self._items[target_index]
-        return None
+        items: list[dict[str, Any]] = []
+        for idx, raw_item in enumerate(dataset):
+            parsed = self._parse_item(idx, raw_item)
+            if parsed:
+                items.append(parsed)
+        self._items = items
+        logger.info("Loaded %s LiveCodeBench items", len(self._items))
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         total_items = await self.get_total_items()
@@ -197,7 +175,15 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single LiveCodeBench item."""
-        item = await self._get_item_by_id(item_id)
+        if not self._items:
+            await self.preload()
+        try:
+            target_index = int(item_id)
+        except (TypeError, ValueError):
+            return ItemResult(item_id=item_id, error=f"Item {item_id} not found")
+        if target_index < 0 or target_index >= len(self._items):
+            return ItemResult(item_id=item_id, error=f"Item {item_id} not found")
+        item = self._items[target_index]
         if not item:
             return ItemResult(item_id=item_id, error=f"Item {item_id} not found")
 

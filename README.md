@@ -139,6 +139,7 @@ Run Sandy separately and set:
 SANDY_BASE_URL=https://<sandy-host>
 SANDY_API_KEY=<sandy-key>
 ```
+Production uses the dedicated Sandy host `https://sandy.94.130.222.43.nip.io`.
 
 ## Configuration reference
 

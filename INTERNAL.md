@@ -47,6 +47,9 @@ CHUTES_IDP_URL=https://auth.chutes.ai
 
 **API Key Location**: System-wide `$CHUTES_API_KEY` environment variable. Use `echo $CHUTES_API_KEY` to access.
 
+**Sandy host**: Production sandboxes use the dedicated Sandy server at
+`https://sandy.94.130.222.43.nip.io` (old `65.109.49.103` deployment retired).
+
 ### Frontend
 
 ```
