@@ -152,6 +152,31 @@ AFFINE_ENV_SPECS: dict[str, AffineEnvSpec] = {
 }
 
 
+def _extract_json_from_output(output: str) -> dict[str, Any]:
+    stdout = output.strip()
+    if not stdout:
+        raise ValueError("Empty response from Affine env")
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+        for line in reversed(lines):
+            if not (line.startswith("{") and line.endswith("}")):
+                continue
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+        last_brace = stdout.rfind("{")
+        if last_brace != -1:
+            candidate = stdout[last_brace:]
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+    raise ValueError(f"Invalid JSON response from Affine env: {stdout[:500]}")
+
+
 AFFINE_RUNNER_SCRIPT = """#!/usr/bin/env python3
 import argparse
 import asyncio
@@ -164,6 +189,7 @@ import affinetes as af_env
 from affinetes.backends import local as local_backend
 
 _STARTUP_TIMEOUT_SECONDS = int(os.environ.get("AFFINETES_STARTUP_TIMEOUT", "300"))
+os.environ.setdefault("AFFINETES_LOG_LEVEL", "ERROR")
 
 
 _orig_wait_for_http_ready = local_backend.LocalBackend._wait_for_http_ready
@@ -388,13 +414,12 @@ class AffineEnvAdapter(BenchmarkAdapter):
                 error=error or "Affine eval failed",
             )
 
-        stdout = result.get("stdout", "").strip()
         try:
-            data = json.loads(stdout)
-        except json.JSONDecodeError:
+            data = _extract_json_from_output(result.get("stdout", ""))
+        except ValueError as exc:
             return ItemResult(
                 item_id=item_id,
-                error=f"Invalid JSON response from Affine env: {stdout[:500]}",
+                error=str(exc),
             )
 
         error_message = data.get("error") or data.get("error_type")
@@ -503,13 +528,13 @@ class AffineEnvAdapter(BenchmarkAdapter):
         if not result.get("success") or result.get("exit_code") not in (0, None):
             error = result.get("stderr") or result.get("error")
             if not error:
-                stdout = (result.get("stdout") or "").strip()
-                if stdout:
+                stdout = result.get("stdout") or ""
+                if stdout.strip():
                     try:
-                        data = json.loads(stdout)
-                        error = data.get("error") or data.get("error_type") or stdout
-                    except json.JSONDecodeError:
-                        error = stdout
+                        data = _extract_json_from_output(stdout)
+                        error = data.get("error") or data.get("error_type") or stdout.strip()
+                    except ValueError:
+                        error = stdout.strip()
             raise RuntimeError(error or "Affine init failed")
 
     async def _cleanup_containers(self, sandbox_id: str) -> None:
