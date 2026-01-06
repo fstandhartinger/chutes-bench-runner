@@ -64,6 +64,15 @@ async def create_run(
     """
     normalized_benchmarks = _normalize_benchmark_names(selected_benchmarks)
 
+    # Get enabled benchmarks
+    query = select(Benchmark).where(Benchmark.is_enabled == True)  # noqa: E712
+    if normalized_benchmarks:
+        query = query.where(Benchmark.name.in_(normalized_benchmarks))
+    result = await db.execute(query)
+    benchmarks = result.scalars().all()
+    if normalized_benchmarks and not benchmarks:
+        raise ValueError("No matching benchmarks found for selected_benchmarks")
+
     run = BenchmarkRun(
         model_id=model_id,
         model_slug=model_slug,
@@ -77,13 +86,6 @@ async def create_run(
     )
     db.add(run)
     await db.flush()
-
-    # Get enabled benchmarks
-    query = select(Benchmark).where(Benchmark.is_enabled == True)  # noqa: E712
-    if normalized_benchmarks:
-        query = query.where(Benchmark.name.in_(normalized_benchmarks))
-    result = await db.execute(query)
-    benchmarks = result.scalars().all()
 
     # Create benchmark run entries
     for benchmark in benchmarks:

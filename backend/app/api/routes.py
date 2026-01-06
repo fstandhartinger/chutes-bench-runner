@@ -229,16 +229,19 @@ async def create_benchmark_run(
                 status = status.HTTP_503_SERVICE_UNAVAILABLE
             raise HTTPException(status_code=status, detail=message)
 
-    run = await create_run(
-        db,
-        model_id=model.id,
-        model_slug=model.slug,
-        subset_pct=request.subset_pct,
-        selected_benchmarks=request.selected_benchmarks,
-        config=request.config,
-        auth_mode=auth_mode,
-        auth_session_id=auth_session_id,
-    )
+    try:
+        run = await create_run(
+            db,
+            model_id=model.id,
+            model_slug=model.slug,
+            subset_pct=request.subset_pct,
+            selected_benchmarks=request.selected_benchmarks,
+            config=request.config,
+            auth_mode=auth_mode,
+            auth_session_id=auth_session_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return RunResponse.model_validate(run)
 
@@ -287,16 +290,19 @@ async def create_benchmark_run_with_api_key(
                 status = status.HTTP_503_SERVICE_UNAVAILABLE
             raise HTTPException(status_code=status, detail=message)
 
-    run = await create_run(
-        db,
-        model_id=model.id,
-        model_slug=model.slug,
-        subset_pct=request.subset_pct,
-        selected_benchmarks=request.selected_benchmarks,
-        config=request.config,
-        auth_mode="api_key",
-        auth_api_key=api_key,
-    )
+    try:
+        run = await create_run(
+            db,
+            model_id=model.id,
+            model_slug=model.slug,
+            subset_pct=request.subset_pct,
+            selected_benchmarks=request.selected_benchmarks,
+            config=request.config,
+            auth_mode="api_key",
+            auth_api_key=api_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return RunResponse.model_validate(run)
 
