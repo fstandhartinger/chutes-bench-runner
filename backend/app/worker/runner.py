@@ -431,23 +431,26 @@ class BenchmarkWorker:
                     BenchmarkRunBenchmark.status,
                     BenchmarkRunBenchmark.started_at,
                     BenchmarkRunBenchmark.sampled_items,
+                    BenchmarkRunBenchmark.benchmark_name,
                 ).where(BenchmarkRunBenchmark.run_id.in_(run_ids))
             )
-            benchmarks_by_run: dict[str, list[tuple[Optional[datetime], Optional[int]]]] = {}
-            for run_id, status, started_at, sampled_items in benchmark_result.all():
+            benchmarks_by_run: dict[str, list[tuple[Optional[datetime], Optional[int], Optional[str]]]] = {}
+            for run_id, status, started_at, sampled_items, benchmark_name in benchmark_result.all():
                 if status in (
                     BenchmarkRunStatus.SUCCEEDED.value,
                     BenchmarkRunStatus.FAILED.value,
                     BenchmarkRunStatus.SKIPPED.value,
                 ):
                     continue
-                benchmarks_by_run.setdefault(run_id, []).append((started_at, sampled_items))
+                benchmarks_by_run.setdefault(run_id, []).append(
+                    (started_at, sampled_items, benchmark_name)
+                )
 
             now = datetime.utcnow()
             base_seconds = settings.worker_stale_run_minutes * 60
             buffer_seconds = max(settings.worker_heartbeat_seconds * 2, 60)
             stale_after_seconds = max(base_seconds, buffer_seconds)
-            item_timeout_seconds = max(settings.worker_item_timeout_seconds, 0)
+            default_item_timeout = max(settings.worker_item_timeout_seconds, 0)
             item_result = await db.execute(
                 select(
                     BenchmarkRunBenchmark.run_id,
@@ -481,11 +484,21 @@ class BenchmarkWorker:
                         last_update_candidates.append(run.created_at)
 
                 has_sampled_items = any(
-                    (sampled_items or 0) > 0 for _, sampled_items in benchmark_entries
+                    (sampled_items or 0) > 0 for _, sampled_items, _ in benchmark_entries
                 )
+                max_timeout = default_item_timeout
+                if benchmark_entries:
+                    timeouts: list[int] = []
+                    for _, _, benchmark_name in benchmark_entries:
+                        if benchmark_name:
+                            timeout = self._get_benchmark_timeout(benchmark_name, run.model_slug)
+                            if timeout:
+                                timeouts.append(timeout)
+                    if timeouts:
+                        max_timeout = max(max_timeout, max(timeouts))
                 run_stale_seconds = stale_after_seconds
-                if has_sampled_items and item_timeout_seconds:
-                    run_stale_seconds = max(run_stale_seconds, item_timeout_seconds)
+                if has_sampled_items and max_timeout:
+                    run_stale_seconds = max(run_stale_seconds, max_timeout)
                 cutoff = now - timedelta(seconds=run_stale_seconds)
                 last_update = max(last_update_candidates) if last_update_candidates else None
                 if last_update and last_update >= cutoff:
