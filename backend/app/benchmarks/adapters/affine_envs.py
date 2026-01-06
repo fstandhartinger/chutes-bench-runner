@@ -144,6 +144,7 @@ AFFINE_ENV_SPECS: dict[str, AffineEnvSpec] = {
         eval_params={"temperature": 0.0, "timeout": 1800, "max_iterations": 200},
         mem_limit="10g",
         item_timeout_seconds=2100,
+        max_replicas=1,
         volumes={
             "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
         },
@@ -156,9 +157,29 @@ import argparse
 import asyncio
 import base64
 import json
+import os
 import sys
 
 import affinetes as af_env
+from affinetes.backends import local as local_backend
+
+_STARTUP_TIMEOUT_SECONDS = int(os.environ.get("AFFINETES_STARTUP_TIMEOUT", "300"))
+
+
+_orig_wait_for_http_ready = local_backend.LocalBackend._wait_for_http_ready
+
+
+async def _patched_wait_for_http_ready(self, timeout: int = 60) -> bool:
+    return await _orig_wait_for_http_ready(self, timeout=max(timeout, _STARTUP_TIMEOUT_SECONDS))
+
+
+def _force_runtime_environment(self) -> str:
+    # Force IP-based access to avoid Docker DNS resolution issues inside sandboxes.
+    return "dind"
+
+
+local_backend.LocalBackend._wait_for_http_ready = _patched_wait_for_http_ready
+local_backend.LocalBackend._detect_runtime_environment = _force_runtime_environment
 
 
 def _decode_payload(value: str) -> dict:
