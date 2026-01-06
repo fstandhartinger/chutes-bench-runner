@@ -474,7 +474,9 @@ class BenchmarkWorker:
                     last_update_candidates.append(run.updated_at)
                 if not last_item_at:
                     started_candidates: list[datetime] = [
-                        started_at for started_at, _ in benchmark_entries if started_at
+                        started_at
+                        for started_at, _, _ in benchmark_entries
+                        if started_at
                     ]
                     if run.started_at:
                         started_candidates.append(run.started_at)
