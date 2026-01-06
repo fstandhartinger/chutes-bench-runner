@@ -183,7 +183,17 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             compose_cmd = "docker compose"
             compose_check = await self.sandy.execute_command(sandbox_id, "docker compose version")
             if compose_check.get("exit_code") != 0:
-                compose_cmd = "docker-compose"
+                install = await self.sandy.execute_command(
+                    sandbox_id,
+                    "apt-get update && apt-get install -y docker-compose-plugin",
+                    timeout_ms=600000,
+                )
+                compose_check = await self.sandy.execute_command(
+                    sandbox_id,
+                    "docker compose version",
+                )
+                if install.get("exit_code") != 0 or compose_check.get("exit_code") != 0:
+                    compose_cmd = "docker-compose"
             await self._ensure_compose_context(sandbox_id, compose_path, cwd=task_dir)
             logs_dir = f"{task_dir}/logs"
             await self.sandy.execute_command(sandbox_id, f"mkdir -p {logs_dir}")
