@@ -127,21 +127,27 @@ async def list_runs(
     model_slug: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
-) -> list[BenchmarkRun]:
-    """List runs with optional filtering."""
+) -> tuple[list[BenchmarkRun], int]:
+    """List runs with optional filtering and return total count."""
     query = select(BenchmarkRun)
+    count_query = select(func.count()).select_from(BenchmarkRun)
 
     if status:
         query = query.where(BenchmarkRun.status == status)
+        count_query = count_query.where(BenchmarkRun.status == status)
     if model_id:
         query = query.where(BenchmarkRun.model_id == model_id)
+        count_query = count_query.where(BenchmarkRun.model_id == model_id)
     if model_slug:
         query = query.where(BenchmarkRun.model_slug.ilike(f"%{model_slug}%"))
+        count_query = count_query.where(BenchmarkRun.model_slug.ilike(f"%{model_slug}%"))
 
     query = query.order_by(BenchmarkRun.created_at.desc()).offset(offset).limit(limit)
 
     result = await db.execute(query)
-    return list(result.scalars().all())
+    count_result = await db.execute(count_query)
+    total = int(count_result.scalar() or 0)
+    return list(result.scalars().all()), total
 
 
 async def update_run_status(

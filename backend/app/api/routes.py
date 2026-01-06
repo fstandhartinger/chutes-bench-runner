@@ -323,12 +323,12 @@ async def list_benchmark_runs(
     offset: int = Query(default=0, ge=0),
 ):
     """List benchmark runs."""
-    runs = await list_runs(
+    runs, total = await list_runs(
         db, status=status_filter, model_id=model_id, model_slug=model_slug, limit=limit, offset=offset
     )
     return RunsListResponse(
         runs=[RunResponse.model_validate(r) for r in runs],
-        total=len(runs),
+        total=total,
     )
 
 
