@@ -353,9 +353,18 @@ class AffineEnvAdapter(BenchmarkAdapter):
             timeout_ms=self.spec.item_timeout_seconds * 1000,
         )
         if not result.get("success") or result.get("exit_code") not in (0, None):
+            error = result.get("stderr") or result.get("error")
+            if not error:
+                stdout = (result.get("stdout") or "").strip()
+                if stdout:
+                    try:
+                        data = json.loads(stdout)
+                        error = data.get("error") or data.get("error_type") or stdout
+                    except json.JSONDecodeError:
+                        error = stdout
             return ItemResult(
                 item_id=item_id,
-                error=result.get("stderr") or result.get("error") or "Affine eval failed",
+                error=error or "Affine eval failed",
             )
 
         stdout = result.get("stdout", "").strip()
@@ -440,16 +449,23 @@ class AffineEnvAdapter(BenchmarkAdapter):
                     "apt-get update && apt-get install -y docker.io",
                     timeout_ms=300000,
                 )
-        await self.sandy.execute_command(
-            sandbox_id,
-            "python3 -m pip install --upgrade pip",
-            timeout_ms=300000,
-        )
-        await self.sandy.execute_command(
-            sandbox_id,
-            "python3 -m pip install 'affinetes @ git+https://github.com/AffineFoundation/affinetes.git'",
-            timeout_ms=900000,
-        )
+        pip_commands = [
+            ("python3 -m pip install --break-system-packages --upgrade pip", 300000),
+            (
+                "python3 -m pip install --break-system-packages "
+                "'affinetes @ git+https://github.com/AffineFoundation/affinetes.git'",
+                900000,
+            ),
+        ]
+        for command, timeout_ms in pip_commands:
+            result = await self.sandy.execute_command(
+                sandbox_id,
+                command,
+                timeout_ms=timeout_ms,
+            )
+            if result.get("exit_code") not in (0, None):
+                error = (result.get("stderr") or result.get("stdout") or result.get("error") or "").strip()
+                raise RuntimeError(f"Failed to install affinetes: {error[:500] or 'unknown error'}")
 
     async def _write_runner(self, sandbox_id: str) -> None:
         await self.sandy.write_file(sandbox_id, "/workspace/affine_runner.py", AFFINE_RUNNER_SCRIPT)
@@ -464,7 +480,16 @@ class AffineEnvAdapter(BenchmarkAdapter):
             timeout_ms=900000,
         )
         if not result.get("success") or result.get("exit_code") not in (0, None):
-            raise RuntimeError(result.get("stderr") or result.get("error") or "Affine init failed")
+            error = result.get("stderr") or result.get("error")
+            if not error:
+                stdout = (result.get("stdout") or "").strip()
+                if stdout:
+                    try:
+                        data = json.loads(stdout)
+                        error = data.get("error") or data.get("error_type") or stdout
+                    except json.JSONDecodeError:
+                        error = stdout
+            raise RuntimeError(error or "Affine init failed")
 
     async def _cleanup_containers(self, sandbox_id: str) -> None:
         for idx in range(self._replicas):
