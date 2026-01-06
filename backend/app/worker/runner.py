@@ -557,32 +557,42 @@ class BenchmarkWorker:
         try:
             available = await client.is_model_available(run.model_slug)
             if available is False:
-                message = f"Model {run.model_slug} not available for inference"
-                for rb in run_benchmarks:
-                    if rb.status in (
-                        BenchmarkRunStatus.SUCCEEDED.value,
-                        BenchmarkRunStatus.FAILED.value,
-                        BenchmarkRunStatus.SKIPPED.value,
-                    ):
-                        continue
-                    await self._safe_update_benchmark_status(
-                        rb.id,
-                        BenchmarkRunStatus.FAILED,
+                ok, status_code, detail = await client.probe_model_access(run.model_slug)
+                if ok:
+                    available = True
+                else:
+                    message = f"Model {run.model_slug} not available for inference"
+                    if status_code in (401, 403):
+                        message = f"Chutes credentials are not authorized for {run.model_slug}"
+                    elif status_code:
+                        message = f"Model access check failed for {run.model_slug}: {detail}"
+                    elif detail:
+                        message = f"Unable to validate model access for {run.model_slug}: {detail}"
+                    for rb in run_benchmarks:
+                        if rb.status in (
+                            BenchmarkRunStatus.SUCCEEDED.value,
+                            BenchmarkRunStatus.FAILED.value,
+                            BenchmarkRunStatus.SKIPPED.value,
+                        ):
+                            continue
+                        await self._safe_update_benchmark_status(
+                            rb.id,
+                            BenchmarkRunStatus.FAILED,
+                            error_message=message,
+                        )
+                        failed_benchmarks += 1
+                    await self._safe_update_run_status(
+                        run.id,
+                        RunStatus.FAILED,
                         error_message=message,
                     )
-                    failed_benchmarks += 1
-                await self._safe_update_run_status(
-                    run.id,
-                    RunStatus.FAILED,
-                    error_message=message,
-                )
-                await self._safe_add_run_event(
-                    run.id,
-                    "run_failed",
-                    message=message,
-                )
-                logger.error("Run failed", run_id=run.id, error=message)
-                return
+                    await self._safe_add_run_event(
+                        run.id,
+                        "run_failed",
+                        message=message,
+                    )
+                    logger.error("Run failed", run_id=run.id, error=message)
+                    return
 
             for rb in run_benchmarks:
                 # Check for cancellation
