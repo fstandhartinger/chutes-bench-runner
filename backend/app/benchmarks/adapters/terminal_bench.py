@@ -328,7 +328,8 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             if not isinstance(archive, (bytes, bytearray)):
                 return ItemResult(item_id=item_id, error="Missing task archive bytes")
 
-            sandbox_id = await self.sandy.create_sandbox()
+            # Terminal-Bench requires Docker socket access for running docker-compose
+            sandbox_id = await self.sandy.create_sandbox(enable_docker_socket=True)
             if not sandbox_id:
                 return ItemResult(item_id=item_id, error="Could not create sandbox")
 

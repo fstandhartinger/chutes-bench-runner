@@ -274,6 +274,22 @@ Each benchmark adapter in `backend/app/benchmarks/adapters/` uses official datas
 - **IFBench**: Uses the official IFEval checker.
 - **Terminal-Bench**: Follows the official Docker harness (agent + test phases).
 
+### Sandy Sandbox Security: Docker Socket Access
+
+**Docker socket access is disabled by default** in Sandy sandboxes for security reasons. However, some benchmarks require Docker access:
+
+| Benchmark | Requires Docker | Reason |
+|-----------|-----------------|--------|
+| `livecodebench` | No | Python code execution only |
+| `scicode` | No | Python code execution only |
+| `aa_lcr` | No | LLM judge evaluation |
+| `swe_bench_pro` | **Yes** | Runs `docker pull` and `docker run` to execute test harness |
+| `terminal_bench_hard` | **Yes** | Uses `docker-compose` and `docker build/run` for task environments |
+
+**Implementation**: The `sandy_service.create_sandbox()` method accepts an `enable_docker_socket` parameter. Terminal-Bench and SWE-Bench adapters pass `enable_docker_socket=True` when creating sandboxes. All other benchmarks use the default (Docker socket disabled).
+
+**Security note**: Docker socket access allows sandbox code to escape isolation. The Hetzner server should not store sensitive credentials in locations accessible via Docker volume mounts.
+
 ## File Reference
 
 | File | Purpose |

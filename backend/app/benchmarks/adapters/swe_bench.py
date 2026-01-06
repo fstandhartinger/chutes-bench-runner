@@ -208,7 +208,8 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                 )
 
             patch = self.extract_python_code(response_text)
-            sandbox_id = await self.sandy.create_sandbox()
+            # SWE-Bench requires Docker socket access for running docker pull/run
+            sandbox_id = await self.sandy.create_sandbox(enable_docker_socket=True)
             if not sandbox_id:
                 return ItemResult(item_id=item_id, error="Could not create sandbox")
 

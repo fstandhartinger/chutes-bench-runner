@@ -18,17 +18,31 @@ class SandyService:
             "Content-Type": "application/json"
         }
 
-    async def create_sandbox(self) -> Optional[str]:
-        """Create a new sandbox and return its ID."""
+    async def create_sandbox(self, enable_docker_socket: bool = False) -> Optional[str]:
+        """Create a new sandbox and return its ID.
+
+        Args:
+            enable_docker_socket: If True, the sandbox will have access to the Docker socket.
+                                  This is required for benchmarks that need to run Docker commands
+                                  (e.g., Terminal-Bench, SWE-Bench). Disabled by default for security.
+        """
         if not self.api_key:
             logger.error("Sandy API key is not configured")
             return None
         delay_seconds = 1
         last_error: Optional[str] = None
+        # Prepare payload with Docker socket option
+        payload = {}
+        if enable_docker_socket:
+            payload["enableDockerSocket"] = True
         for attempt in range(1, 4):
             async with httpx.AsyncClient(timeout=30.0) as client:
                 try:
-                    response = await client.post(f"{self.base_url}/api/sandboxes", headers=self.headers)
+                    response = await client.post(
+                        f"{self.base_url}/api/sandboxes",
+                        headers=self.headers,
+                        json=payload if payload else None,
+                    )
                     response.raise_for_status()
                     data = response.json()
                     sandbox_id = data.get("sandboxId")
