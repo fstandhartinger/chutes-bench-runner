@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.session import async_session_maker
 from app.models.benchmark import Benchmark
+from app.models.model import Model
 from app.models.run import (
     BenchmarkRun,
     BenchmarkRunBenchmark,
@@ -153,6 +154,36 @@ class BenchmarkWorker:
                 message=message,
                 data=data,
             )
+
+    async def _fail_run_for_model_access(
+        self,
+        run: BenchmarkRun,
+        run_benchmarks: list[BenchmarkRunBenchmark],
+        message: str,
+    ) -> None:
+        for rb in run_benchmarks:
+            if rb.status in (
+                BenchmarkRunStatus.SUCCEEDED.value,
+                BenchmarkRunStatus.FAILED.value,
+                BenchmarkRunStatus.SKIPPED.value,
+            ):
+                continue
+            await self._safe_update_benchmark_status(
+                rb.id,
+                BenchmarkRunStatus.FAILED,
+                error_message=message,
+            )
+        await self._safe_update_run_status(
+            run.id,
+            RunStatus.FAILED,
+            error_message=message,
+        )
+        await self._safe_add_run_event(
+            run.id,
+            "run_failed",
+            message=message,
+        )
+        logger.error("Run failed", run_id=run.id, error=message)
 
     async def _get_client_for_run(self, db: AsyncSession, run: BenchmarkRun) -> ChutesClient:
         if run.auth_mode == "idp":
@@ -576,44 +607,30 @@ class BenchmarkWorker:
         client = await self._get_client_for_run(db, run)
 
         try:
-            available = await client.is_model_available(run.model_slug)
+            model = await db.get(Model, run.model_id)
+            chute_id = model.chute_id if model else None
+            available = await client.is_model_available(run.model_slug, chute_id)
             if available is False:
                 ok, status_code, detail = await client.probe_model_access(run.model_slug)
                 if ok:
                     available = True
-                else:
-                    message = f"Model {run.model_slug} not available for inference"
-                    if status_code in (401, 403):
-                        message = f"Chutes credentials are not authorized for {run.model_slug}"
-                    elif status_code:
-                        message = f"Model access check failed for {run.model_slug}: {detail}"
-                    elif detail:
-                        message = f"Unable to validate model access for {run.model_slug}: {detail}"
-                    for rb in run_benchmarks:
-                        if rb.status in (
-                            BenchmarkRunStatus.SUCCEEDED.value,
-                            BenchmarkRunStatus.FAILED.value,
-                            BenchmarkRunStatus.SKIPPED.value,
-                        ):
-                            continue
-                        await self._safe_update_benchmark_status(
-                            rb.id,
-                            BenchmarkRunStatus.FAILED,
-                            error_message=message,
-                        )
-                        failed_benchmarks += 1
-                    await self._safe_update_run_status(
-                        run.id,
-                        RunStatus.FAILED,
-                        error_message=message,
-                    )
-                    await self._safe_add_run_event(
-                        run.id,
-                        "run_failed",
-                        message=message,
-                    )
-                    logger.error("Run failed", run_id=run.id, error=message)
+                elif status_code in (401, 403):
+                    message = f"Chutes credentials are not authorized for {run.model_slug}"
+                    await self._fail_run_for_model_access(run, run_benchmarks, message)
                     return
+                elif status_code == 404:
+                    message = f"Model {run.model_slug} not found on Chutes"
+                    await self._fail_run_for_model_access(run, run_benchmarks, message)
+                    return
+                else:
+                    logger.warning(
+                        "Model availability check failed; continuing",
+                        run_id=run.id,
+                        model=run.model_slug,
+                        status_code=status_code,
+                        detail=detail,
+                    )
+                    available = True
 
             for rb in run_benchmarks:
                 # Check for cancellation
@@ -886,22 +903,34 @@ class BenchmarkWorker:
                 delay_seconds = 1
                 last_result: Optional[ItemResult] = None
                 max_attempts = max(getattr(settings, "worker_item_attempts", 1), 1)
+                deadline = None
+                if item_timeout:
+                    deadline = time.monotonic() + item_timeout
 
                 while attempt < max_attempts:
                     attempt += 1
                     self.last_progress_at[run.id] = datetime.utcnow()
                     try:
+                        timeout_remaining = None
+                        if deadline is not None:
+                            timeout_remaining = max(0.0, deadline - time.monotonic())
+                            if timeout_remaining <= 0:
+                                raise asyncio.TimeoutError
                         if item_timeout:
                             result = await asyncio.wait_for(
                                 adapter.evaluate_item(item_id),
-                                timeout=item_timeout,
+                                timeout=timeout_remaining,
                             )
                         else:
                             result = await adapter.evaluate_item(item_id)
                     except asyncio.TimeoutError:
                         result = ItemResult(
                             item_id=item_id,
-                            error=f"Item evaluation timed out after {item_timeout}s",
+                            error=(
+                                f"Item evaluation timed out after {item_timeout}s"
+                                if item_timeout
+                                else "Item evaluation timed out"
+                            ),
                         )
                     except Exception as exc:
                         detail = str(exc) or exc.__class__.__name__

@@ -32,6 +32,7 @@ from app.models.run import BenchmarkItemResult, BenchmarkRun, BenchmarkRunBenchm
 from app.services import auth_service
 from app.services.export_service import generate_csv_export, generate_pdf_export
 from app.core.config import get_settings
+from app.core.logging import get_logger
 from app.services.chutes_client import get_chutes_client
 from app.services.model_service import get_model_by_id, get_models, resolve_model_identifier, sync_models
 from app.services.run_service import (
@@ -51,6 +52,7 @@ from app.services.signed_export_service import (
     verify_signed_zip_export,
 )
 
+logger = get_logger(__name__)
 router = APIRouter(prefix="/api")
 
 
@@ -216,24 +218,30 @@ async def create_benchmark_run(
     )
     try:
         available = await client.is_model_available(model.slug, model.chute_id)
+        if available is False:
+            ok, status_code, detail = await client.probe_model_access(model.slug)
+            if ok:
+                available = True
+            elif status_code in (401, 403):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Chutes credentials are not authorized for this model.",
+                )
+            elif status_code == 404:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Model not available for inference on Chutes.",
+                )
+            else:
+                logger.warning(
+                    "Model access probe failed; allowing run creation",
+                    model=model.slug,
+                    status_code=status_code,
+                    detail=detail,
+                )
     finally:
         if access_token:
             await client.close()
-    if available is False:
-        ok, status_code, detail = await client.probe_model_access(model.slug)
-        if not ok:
-            message = "Model not available for inference on Chutes."
-            status = status.HTTP_404_NOT_FOUND
-            if status_code in (401, 403):
-                message = "Chutes credentials are not authorized for this model."
-                status = status.HTTP_403_FORBIDDEN
-            elif status_code:
-                message = f"Model access check failed: {detail}"
-                status = status.HTTP_400_BAD_REQUEST
-            elif detail:
-                message = f"Unable to validate model access: {detail}"
-                status = status.HTTP_503_SERVICE_UNAVAILABLE
-            raise HTTPException(status_code=status, detail=message)
 
     try:
         run = await create_run(
@@ -280,19 +288,25 @@ async def create_benchmark_run_with_api_key(
         available = await client.is_model_available(model.slug, model.chute_id)
         if available is False:
             ok, status_code, detail = await client.probe_model_access(model.slug)
-            if not ok:
-                message = "Model not available for inference on Chutes."
-                http_status = status.HTTP_404_NOT_FOUND
-                if status_code in (401, 403):
-                    message = "Chutes API key is not authorized for this model."
-                    http_status = status.HTTP_403_FORBIDDEN
-                elif status_code:
-                    message = f"Model access check failed: {detail}"
-                    http_status = status.HTTP_400_BAD_REQUEST
-                elif detail:
-                    message = f"Unable to validate model access: {detail}"
-                    http_status = status.HTTP_503_SERVICE_UNAVAILABLE
-                raise HTTPException(status_code=http_status, detail=message)
+            if ok:
+                available = True
+            elif status_code in (401, 403):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Chutes API key is not authorized for this model.",
+                )
+            elif status_code == 404:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Model not available for inference on Chutes.",
+                )
+            else:
+                logger.warning(
+                    "Model access probe failed; allowing run creation",
+                    model=model.slug,
+                    status_code=status_code,
+                    detail=detail,
+                )
     finally:
         await client.close()
 
