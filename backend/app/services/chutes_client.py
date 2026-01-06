@@ -123,6 +123,15 @@ class ChutesClient:
         self._llm_cache_at: float = 0.0
         self._chutes_pricing_cache: Optional[dict[str, tuple[float, float]]] = None
         self._chutes_pricing_cache_at: float = 0.0
+        self._rate_limit_until: float = 0.0
+
+    async def _wait_for_rate_limit(self) -> None:
+        cooldown_until = self._rate_limit_until
+        if cooldown_until <= 0:
+            return
+        now = time.monotonic()
+        if cooldown_until > now:
+            await asyncio.sleep(cooldown_until - now)
 
     @property
     def using_user_token(self) -> bool:
@@ -481,6 +490,7 @@ class ChutesClient:
             payload["stop"] = stop
         payload.update(kwargs)
 
+        await self._wait_for_rate_limit()
         logger.debug(
             "Running inference",
             model=model_slug,
@@ -531,6 +541,18 @@ class ChutesClient:
             ) from exc
 
         if response.status_code >= 400:
+            if response.status_code in (429, 503):
+                retry_after = response.headers.get("retry-after")
+                delay = settings.chutes_rate_limit_sleep_seconds
+                if retry_after:
+                    try:
+                        delay = max(delay, int(float(retry_after)))
+                    except ValueError:
+                        pass
+                self._rate_limit_until = max(
+                    self._rate_limit_until,
+                    time.monotonic() + max(delay, 1),
+                )
             request_id = response.headers.get("x-request-id") or response.headers.get("x-requestid")
             raise InferenceHTTPError(
                 status_code=response.status_code,
