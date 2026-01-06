@@ -222,7 +222,7 @@ Problem:
                 self.model_slug,
                 prompt,
                 system_prompt=system_prompt,
-                max_tokens=8192,
+                max_tokens=4096,
                 min_output_tokens=0,
                 stop=["<END>"],
                 temperature=0.0,
