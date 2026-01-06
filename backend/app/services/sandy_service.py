@@ -20,6 +20,9 @@ class SandyService:
 
     async def create_sandbox(self) -> Optional[str]:
         """Create a new sandbox and return its ID."""
+        if not self.api_key:
+            logger.error("Sandy API key is not configured")
+            return None
         delay_seconds = 1
         last_error: Optional[str] = None
         for attempt in range(1, 4):

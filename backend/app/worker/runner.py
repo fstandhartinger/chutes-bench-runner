@@ -46,6 +46,12 @@ def _is_retryable_item_error(error: Optional[str]) -> bool:
         return True
     if "http 5" in message:
         return True
+    if "empty response" in message:
+        return True
+    if "response truncated" in message:
+        return True
+    if "no instances available" in message:
+        return True
     if "service unavailable" in message or "temporarily unavailable" in message:
         return True
     if "connection reset" in message or "connection aborted" in message:

@@ -19,6 +19,23 @@ from app.models.run import (
 
 logger = get_logger(__name__)
 
+_BENCHMARK_NAME_ALIASES = {
+    "if_bench": "ifbench",
+    "if-bench": "ifbench",
+}
+
+
+def _normalize_benchmark_names(selected: Optional[list[str]]) -> Optional[list[str]]:
+    if not selected:
+        return None
+    normalized: list[str] = []
+    for name in selected:
+        if not name:
+            continue
+        key = name.strip().lower()
+        normalized.append(_BENCHMARK_NAME_ALIASES.get(key, key))
+    return normalized or None
+
 
 async def create_run(
     db: AsyncSession,
@@ -45,11 +62,13 @@ async def create_run(
     Returns:
         Created BenchmarkRun
     """
+    normalized_benchmarks = _normalize_benchmark_names(selected_benchmarks)
+
     run = BenchmarkRun(
         model_id=model_id,
         model_slug=model_slug,
         subset_pct=subset_pct,
-        selected_benchmarks=selected_benchmarks,
+        selected_benchmarks=normalized_benchmarks,
         config=config,
         auth_mode=auth_mode,
         auth_session_id=auth_session_id,
@@ -61,8 +80,8 @@ async def create_run(
 
     # Get enabled benchmarks
     query = select(Benchmark).where(Benchmark.is_enabled == True)  # noqa: E712
-    if selected_benchmarks:
-        query = query.where(Benchmark.name.in_(selected_benchmarks))
+    if normalized_benchmarks:
+        query = query.where(Benchmark.name.in_(normalized_benchmarks))
     result = await db.execute(query)
     benchmarks = result.scalars().all()
 

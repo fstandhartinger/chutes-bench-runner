@@ -199,8 +199,12 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 "DOCKER_HOST": "unix:///var/run/docker.sock",
             }
             env_lines = [f"{key}={value}" for key, value in env.items()]
-            await self.sandy.write_file(sandbox_id, "task/.env", "\n".join(env_lines) + "\n")
-            up_cmd = f"{compose_cmd} -f {compose_path} up --build -d"
+            await self.sandy.write_file(
+                sandbox_id,
+                f"{task_dir}/.env",
+                "\n".join(env_lines) + "\n",
+            )
+            up_cmd = f"{compose_cmd} --env-file .env -f {compose_path} up --build -d"
             up_result = await self.sandy.execute_command(
                 sandbox_id,
                 up_cmd,
