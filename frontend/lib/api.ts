@@ -20,10 +20,12 @@ export interface Benchmark {
   name: string;
   display_name: string;
   description?: string;
+  category?: string;
   is_enabled: boolean;
   supports_subset: boolean;
   requires_setup: boolean;
   setup_notes?: string;
+  default_selected?: boolean;
   total_items: number;
   avg_item_latency_ms?: number;
 }

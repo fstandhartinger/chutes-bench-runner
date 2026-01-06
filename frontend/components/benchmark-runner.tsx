@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -74,6 +74,25 @@ export function BenchmarkRunner() {
   const runningRef = useRef(false);
   const workerSlots = getWorkerSlots();
   const subsetValue = Number(subsetPct);
+  const benchmarksByCategory = useMemo(() => {
+    const groups = new Map<string, Benchmark[]>();
+    for (const benchmark of benchmarks) {
+      const category = benchmark.category || "Core Benchmarks";
+      if (!groups.has(category)) {
+        groups.set(category, []);
+      }
+      groups.get(category)?.push(benchmark);
+    }
+    const categoryOrder = ["Core Benchmarks", "Affine Environments"];
+    return Array.from(groups.entries()).sort(([a], [b]) => {
+      const aIndex = categoryOrder.indexOf(a);
+      const bIndex = categoryOrder.indexOf(b);
+      if (aIndex !== -1 || bIndex !== -1) {
+        return (aIndex === -1 ? 99 : aIndex) - (bIndex === -1 ? 99 : bIndex);
+      }
+      return a.localeCompare(b);
+    });
+  }, [benchmarks]);
 
   useEffect(() => {
     runningRef.current = running;
@@ -165,11 +184,11 @@ export function BenchmarkRunner() {
         ]);
         setModels(modelsRes.models);
         setBenchmarks(benchmarksRes.benchmarks);
-        // Select all enabled benchmarks by default
+        // Select benchmarks based on backend defaults.
         setSelectedBenchmarks(
           new Set(
             benchmarksRes.benchmarks
-              .filter((b) => b.is_enabled)
+              .filter((b) => (b.default_selected ?? b.is_enabled))
               .map((b) => b.name)
           )
         );
@@ -441,54 +460,68 @@ export function BenchmarkRunner() {
             <label className="text-sm font-medium text-ink-200">
               Benchmarks
             </label>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {benchmarks.map((benchmark) => {
-                const totalItems = benchmark.total_items || 0;
-                const sampledItems =
-                  totalItems > 0
-                    ? Math.max(1, Math.floor((totalItems * subsetValue) / 100))
-                    : 0;
-                const estSeconds =
-                  benchmark.avg_item_latency_ms && sampledItems > 0
-                    ? (benchmark.avg_item_latency_ms / 1000) * sampledItems
-                    : null;
+            <div className="space-y-4">
+              {benchmarksByCategory.map(([category, items]) => (
+                <div key={category} className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-ink-400">
+                      {category}
+                    </span>
+                    <span className="text-xs text-ink-500">
+                      {items.length} benchmark{items.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {items.map((benchmark) => {
+                      const totalItems = benchmark.total_items || 0;
+                      const sampledItems =
+                        totalItems > 0
+                          ? Math.max(1, Math.floor((totalItems * subsetValue) / 100))
+                          : 0;
+                      const estSeconds =
+                        benchmark.avg_item_latency_ms && sampledItems > 0
+                          ? (benchmark.avg_item_latency_ms / 1000) * sampledItems
+                          : null;
 
-                return (
-                  <label
-                    key={benchmark.name}
-                    className={cn(
-                      "flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors",
-                      selectedBenchmarks.has(benchmark.name)
-                        ? "border-moss/50 bg-moss/5"
-                        : "border-ink-500 bg-ink-700/50 hover:border-ink-400"
-                    )}
-                  >
-                    <Checkbox
-                      checked={selectedBenchmarks.has(benchmark.name)}
-                      onCheckedChange={() => toggleBenchmark(benchmark.name)}
-                      disabled={!benchmark.is_enabled}
-                    />
-                    <div className="flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{benchmark.display_name}</span>
-                      </div>
-                      <p className="mt-1 text-xs text-ink-400">
-                        {totalItems > 0
-                          ? `${sampledItems}/${totalItems} tests`
-                          : "Test count unavailable"}
-                        {estSeconds !== null
-                          ? ` · Est. ${formatDurationSeconds(estSeconds)}`
-                          : ""}
-                      </p>
-                      {benchmark.description && (
-                        <p className="mt-1 text-xs text-ink-400 line-clamp-2">
-                          {benchmark.description}
-                        </p>
-                      )}
-                    </div>
-                  </label>
-                );
-              })}
+                      return (
+                        <label
+                          key={benchmark.name}
+                          className={cn(
+                            "flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors",
+                            selectedBenchmarks.has(benchmark.name)
+                              ? "border-moss/50 bg-moss/5"
+                              : "border-ink-500 bg-ink-700/50 hover:border-ink-400"
+                          )}
+                        >
+                          <Checkbox
+                            checked={selectedBenchmarks.has(benchmark.name)}
+                            onCheckedChange={() => toggleBenchmark(benchmark.name)}
+                            disabled={!benchmark.is_enabled}
+                          />
+                          <div className="flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium">{benchmark.display_name}</span>
+                            </div>
+                            <p className="mt-1 text-xs text-ink-400">
+                              {totalItems > 0
+                                ? `${sampledItems}/${totalItems} tests`
+                                : "Test count unavailable"}
+                              {estSeconds !== null
+                                ? ` · Est. ${formatDurationSeconds(estSeconds)}`
+                                : ""}
+                            </p>
+                            {benchmark.description && (
+                              <p className="mt-1 text-xs text-ink-400 line-clamp-2">
+                                {benchmark.description}
+                              </p>
+                            )}
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 

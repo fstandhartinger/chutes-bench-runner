@@ -156,10 +156,16 @@ async def list_benchmarks(db: SessionDep):
                 name=b.name,
                 display_name=b.display_name,
                 description=b.description,
+                category=(b.config or {}).get("category") or "Core Benchmarks",
                 is_enabled=b.is_enabled,
                 supports_subset=b.supports_subset,
                 requires_setup=b.requires_setup,
                 setup_notes=b.setup_notes,
+                default_selected=(
+                    (b.config or {}).get("default_selected")
+                    if (b.config or {}).get("default_selected") is not None
+                    else b.is_enabled
+                ),
                 total_items=b.total_items,
                 avg_item_latency_ms=avg_latency_by_id.get(b.id),
             )

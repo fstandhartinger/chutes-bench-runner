@@ -44,10 +44,12 @@ class BenchmarkInfo(APIModel):
     name: str
     display_name: str
     description: Optional[str] = None
+    category: Optional[str] = None
     is_enabled: bool = True
     supports_subset: bool = True
     requires_setup: bool = False
     setup_notes: Optional[str] = None
+    default_selected: Optional[bool] = None
     total_items: int = 0
     avg_item_latency_ms: Optional[float] = None
 

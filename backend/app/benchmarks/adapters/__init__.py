@@ -10,6 +10,7 @@ from app.benchmarks.adapters.aalcr import AALCRAdapter
 from app.benchmarks.adapters.terminal_bench import TerminalBenchHardAdapter
 from app.benchmarks.adapters.tau_bench import TauBenchTelecomAdapter
 from app.benchmarks.adapters.swe_bench import SWEBenchProAdapter
+from app.benchmarks.adapters.affine_envs import AffineEnvAdapter
 
 __all__ = [
     "MMLUProAdapter",
@@ -23,7 +24,9 @@ __all__ = [
     "TerminalBenchHardAdapter",
     "TauBenchTelecomAdapter",
     "SWEBenchProAdapter",
+    "AffineEnvAdapter",
 ]
+
 
 
 

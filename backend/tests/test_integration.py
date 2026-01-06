@@ -66,7 +66,7 @@ class TestBenchmarksAPI:
         assert response.status_code == 200
         data = response.json()
         assert "benchmarks" in data
-        assert len(data["benchmarks"]) == 11
+        assert len(data["benchmarks"]) == 19
 
     def test_benchmarks_have_required_fields(self, client):
         """Test benchmarks have required fields."""
@@ -161,4 +161,3 @@ class TestExportValidation:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
