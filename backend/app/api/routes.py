@@ -272,23 +272,23 @@ async def create_benchmark_run_with_api_key(
     client = get_chutes_client(api_key=api_key)
     try:
         available = await client.is_model_available(model.slug, model.chute_id)
+        if available is False:
+            ok, status_code, detail = await client.probe_model_access(model.slug)
+            if not ok:
+                message = "Model not available for inference on Chutes."
+                http_status = status.HTTP_404_NOT_FOUND
+                if status_code in (401, 403):
+                    message = "Chutes API key is not authorized for this model."
+                    http_status = status.HTTP_403_FORBIDDEN
+                elif status_code:
+                    message = f"Model access check failed: {detail}"
+                    http_status = status.HTTP_400_BAD_REQUEST
+                elif detail:
+                    message = f"Unable to validate model access: {detail}"
+                    http_status = status.HTTP_503_SERVICE_UNAVAILABLE
+                raise HTTPException(status_code=http_status, detail=message)
     finally:
         await client.close()
-    if available is False:
-        ok, status_code, detail = await client.probe_model_access(model.slug)
-        if not ok:
-            message = "Model not available for inference on Chutes."
-            status = status.HTTP_404_NOT_FOUND
-            if status_code in (401, 403):
-                message = "Chutes API key is not authorized for this model."
-                status = status.HTTP_403_FORBIDDEN
-            elif status_code:
-                message = f"Model access check failed: {detail}"
-                status = status.HTTP_400_BAD_REQUEST
-            elif detail:
-                message = f"Unable to validate model access: {detail}"
-                status = status.HTTP_503_SERVICE_UNAVAILABLE
-            raise HTTPException(status_code=status, detail=message)
 
     try:
         run = await create_run(
