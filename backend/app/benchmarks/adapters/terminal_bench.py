@@ -305,6 +305,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 prompt,
                 system_prompt=system_prompt,
                 max_tokens=4096,
+                min_output_tokens=0,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)

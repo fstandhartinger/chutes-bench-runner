@@ -358,6 +358,7 @@ class SciCodeAdapter(BenchmarkAdapter):
                     prompt,
                     system_prompt=system_prompt,
                     max_tokens=8192,
+                    min_output_tokens=0,
                     temperature=0.0,
                 )
                 if not response_text:
