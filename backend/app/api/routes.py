@@ -214,10 +214,20 @@ async def create_benchmark_run(
         if access_token:
             await client.close()
     if available is False:
-        raise HTTPException(
-            status_code=404,
-            detail="Model not available for inference on Chutes.",
-        )
+        ok, status_code, detail = await client.probe_model_access(model.slug)
+        if not ok:
+            message = "Model not available for inference on Chutes."
+            status = status.HTTP_404_NOT_FOUND
+            if status_code in (401, 403):
+                message = "Chutes credentials are not authorized for this model."
+                status = status.HTTP_403_FORBIDDEN
+            elif status_code:
+                message = f"Model access check failed: {detail}"
+                status = status.HTTP_400_BAD_REQUEST
+            elif detail:
+                message = f"Unable to validate model access: {detail}"
+                status = status.HTTP_503_SERVICE_UNAVAILABLE
+            raise HTTPException(status_code=status, detail=message)
 
     run = await create_run(
         db,
@@ -262,10 +272,20 @@ async def create_benchmark_run_with_api_key(
     finally:
         await client.close()
     if available is False:
-        raise HTTPException(
-            status_code=404,
-            detail="Model not available for inference on Chutes.",
-        )
+        ok, status_code, detail = await client.probe_model_access(model.slug)
+        if not ok:
+            message = "Model not available for inference on Chutes."
+            status = status.HTTP_404_NOT_FOUND
+            if status_code in (401, 403):
+                message = "Chutes API key is not authorized for this model."
+                status = status.HTTP_403_FORBIDDEN
+            elif status_code:
+                message = f"Model access check failed: {detail}"
+                status = status.HTTP_400_BAD_REQUEST
+            elif detail:
+                message = f"Unable to validate model access: {detail}"
+                status = status.HTTP_503_SERVICE_UNAVAILABLE
+            raise HTTPException(status_code=status, detail=message)
 
     run = await create_run(
         db,

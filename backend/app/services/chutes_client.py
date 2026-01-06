@@ -361,6 +361,22 @@ class ChutesClient:
             return None
         return any(identifier in llm_identifiers for identifier in candidates)
 
+    async def probe_model_access(self, model_slug: str) -> tuple[bool, Optional[int], Optional[str]]:
+        """Probe model access with a minimal inference request."""
+        try:
+            await self.run_inference(
+                model_slug,
+                [{"role": "user", "content": "ping"}],
+                temperature=0.0,
+                max_tokens=1,
+                timeout=20.0,
+            )
+            return True, None, None
+        except InferenceHTTPError as exc:
+            return False, exc.status_code, exc.response_text
+        except Exception as exc:
+            return False, None, str(exc) or exc.__class__.__name__
+
     async def get_model_max_output_length(self, model_identifier: str) -> Optional[int]:
         limits = await self._get_llm_model_limits()
         if not limits:

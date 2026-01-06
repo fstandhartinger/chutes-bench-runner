@@ -151,22 +151,20 @@ class BenchmarkWorker:
     async def _get_client_for_run(self, db: AsyncSession, run: BenchmarkRun) -> ChutesClient:
         if run.auth_mode == "idp":
             if not run.auth_session_id:
-                logger.warning("Missing auth session for run, falling back to system key", run_id=run.id)
-                return self.client
+                raise RuntimeError("Run is missing Chutes session credentials")
             session = await auth_service.get_session(db, run.auth_session_id)
             if not session:
-                logger.warning("Chutes session not found, falling back to system key", run_id=run.id)
-                return self.client
+                raise RuntimeError("Chutes session not found for run")
             if not session.can_invoke_chutes():
-                logger.warning("Chutes session missing chutes:invoke, falling back to system key", run_id=run.id)
-                return self.client
+                raise RuntimeError("Chutes session missing chutes:invoke scope")
             access_token = await auth_service.get_valid_access_token(db, session)
             if not access_token:
-                logger.warning("Chutes session expired, falling back to system key", run_id=run.id)
-                return self.client
+                raise RuntimeError("Chutes session expired or invalid")
             return get_chutes_client(user_access_token=access_token)
 
-        if run.auth_mode == "api_key" and run.auth_api_key:
+        if run.auth_mode == "api_key":
+            if not run.auth_api_key:
+                raise RuntimeError("Run is missing API key credentials")
             return get_chutes_client(api_key=run.auth_api_key)
 
         return self.client
