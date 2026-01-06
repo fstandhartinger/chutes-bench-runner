@@ -663,7 +663,9 @@ class ChutesClient:
             "finish_reason": None,
         }
 
-        min_output_tokens = settings.chutes_min_output_tokens
+        min_output_tokens = kwargs.pop("min_output_tokens", None)
+        if min_output_tokens is None:
+            min_output_tokens = settings.chutes_min_output_tokens
         max_tokens_cap = settings.chutes_max_output_tokens_cap
         max_output_length = await self.get_model_max_output_length(model_slug)
         context_length = await self.get_model_context_length(model_slug)

@@ -111,6 +111,7 @@ class MMLUProAdapter(BenchmarkAdapter):
                 prompt,
                 system_prompt=system_prompt,
                 max_tokens=4096,
+                min_output_tokens=1024,
                 temperature=0.0,
                 timeout=60,
                 response_attempts=2,

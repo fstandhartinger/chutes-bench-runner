@@ -134,6 +134,7 @@ Answer:"""
                 prompt,
                 system_prompt="You are an expert scientist. Answer the question with only the letter of the correct answer.",
                 max_tokens=4096,
+                min_output_tokens=1024,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)
