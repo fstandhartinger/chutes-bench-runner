@@ -320,6 +320,24 @@ async def update_benchmark_status(
     await db.commit()
 
 
+def sanitize_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if "\x00" not in value:
+        return value
+    return value.replace("\x00", "")
+
+
+def sanitize_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        return sanitize_text(value)
+    if isinstance(value, list):
+        return [sanitize_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {key: sanitize_payload(val) for key, val in value.items()}
+    return value
+
+
 async def save_item_result(
     db: AsyncSession,
     run_benchmark_id: str,
@@ -343,18 +361,18 @@ async def save_item_result(
         run_benchmark_id=run_benchmark_id,
         item_id=item_id,
         item_hash=item_hash,
-        prompt=prompt,
-        response=response,
-        expected=expected,
+        prompt=sanitize_text(prompt),
+        response=sanitize_text(response),
+        expected=sanitize_text(expected),
         is_correct=is_correct,
         score=score,
-        judge_output=judge_output,
+        judge_output=sanitize_payload(judge_output),
         latency_ms=latency_ms,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        error=error,
-        test_code=test_code,
-        item_metadata=item_metadata,
+        error=sanitize_text(error),
+        test_code=sanitize_text(test_code),
+        item_metadata=sanitize_payload(item_metadata),
     )
     db.add(result)
     try:

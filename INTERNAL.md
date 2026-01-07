@@ -9,10 +9,9 @@
 | Service | Type | Plan | Purpose |
 |---------|------|------|---------|
 | `chutes-bench-runner-api-v2` | Web Service | Starter | FastAPI backend + API |
-| `chutes-bench-runner-worker-v2` | Web Service | Standard (2GB RAM) | Benchmark execution worker |
 | `chutes-bench-runner-ui` | Web Service | Starter | Next.js frontend |
 
-**Note**: The worker uses "Standard" plan (2GB RAM) because benchmark execution (especially with `datasets` library) requires more memory than the Starter plan's 512MB.
+**Note**: Benchmark execution is now on the dedicated Sandy server (Hetzner). The Render worker remains deployed but is disabled; keep it off to avoid duplicate workers.
 
 ### Database (Neon.tech)
 
@@ -36,14 +35,14 @@ CHUTES_API_KEY=<system API key>
 CHUTES_CLIENT_ID=<IDP client ID>
 CHUTES_CLIENT_SECRET=<IDP client secret>
 CHUTES_IDP_URL=https://auth.chutes.ai
-    FRONTEND_URL=https://chutes-bench-runner-ui.onrender.com
-    ADMIN_SECRET=<secret for admin endpoints>
-    SANDY_BASE_URL=https://sandy.94.130.222.43.nip.io
-    SANDY_API_KEY=<sandy-api-key>
-    BENCH_SIGNING_PRIVATE_KEY=<base64 or PEM Ed25519 private key>
-    BENCH_SIGNING_PUBLIC_KEY=<optional public key>
-    SKIP_MODEL_SYNC=true
-    ```
+FRONTEND_URL=https://chutes-bench-runner-ui.onrender.com
+ADMIN_SECRET=<secret for admin endpoints>
+SANDY_BASE_URL=https://sandy.94.130.222.43.nip.io
+SANDY_API_KEY=<sandy-api-key>
+BENCH_SIGNING_PRIVATE_KEY=<base64 or PEM Ed25519 private key>
+BENCH_SIGNING_PUBLIC_KEY=<optional public key>
+SKIP_MODEL_SYNC=true
+```
 
 **API Key Location**: System-wide `$CHUTES_API_KEY` environment variable. Use `echo $CHUTES_API_KEY` to access.
 
@@ -117,8 +116,8 @@ NEXT_PUBLIC_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 **Problem**: Starter plan (512MB) insufficient for loading benchmark datasets
 **Fix**: Use Standard plan (2GB) for worker service
 
-### 12. Hetzner Worker Pool (Preferred for Cost)
-We can run additional benchmark workers on the Hetzner server (94.130.222.43) to avoid scaling Render. Use Docker to avoid Python 3.11 install conflicts.
+### 12. Hetzner Worker Pool (Production)
+Benchmark workers run on the Hetzner Sandy server (`94.130.222.43`) to avoid Render OOMs and reduce cost. Render worker should stay disabled.
 
 **Why**: Hetzner has plenty of CPU/RAM and is cheaper than multiple Render instances.
 
@@ -171,8 +170,16 @@ We can run additional benchmark workers on the Hetzner server (94.130.222.43) to
 
 **Notes**:
 - Use `app.worker.runner` (no health server) to avoid port conflicts.
-- Safe to run 4–8 workers; monitor memory/CPU with `htop` or `docker stats`.
+- Current stable range is 4–6 workers; monitor memory with `docker stats` before scaling higher.
 - Keep existing services intact (Sandy, TAO trader, dashboards, nginx).
+
+**Scaling beyond 4 workers (extra project)**:
+If `docker-compose` refuses to create `worker-5`, launch an extra compose project to add 1–2 workers:
+```bash
+cd /opt/chutes-bench-runner
+docker-compose -p chutes-bench-runner-extra -f docker-compose.worker.yml --env-file .env.worker up -d --scale worker=2 --no-build
+```
+This creates `chutes-bench-runner-extra-worker-*` containers without name conflicts.
 
 ### 5. Frontend lib/ Directory Ignored
 **Problem**: Root `.gitignore` had `lib/` which ignored `frontend/lib/`
