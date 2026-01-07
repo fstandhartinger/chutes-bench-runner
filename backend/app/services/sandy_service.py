@@ -126,32 +126,72 @@ class SandyService:
 
     async def write_file(self, sandbox_id: str, path: str, content: str) -> bool:
         """Write a file to the sandbox."""
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.post(
-                    f"{self.base_url}/api/sandboxes/{sandbox_id}/files/write",
-                    headers=self.headers,
-                    json={"path": path, "content": content}
+        delay_seconds = 1
+        last_error: Optional[str] = None
+        self.last_error = None
+        for attempt in range(1, 4):
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                try:
+                    response = await client.post(
+                        f"{self.base_url}/api/sandboxes/{sandbox_id}/files/write",
+                        headers=self.headers,
+                        json={"path": path, "content": content},
+                    )
+                    response.raise_for_status()
+                    self.last_error = None
+                    return True
+                except httpx.HTTPStatusError as e:
+                    detail = e.response.text or e.response.reason_phrase or str(e)
+                    last_error = f"HTTP {e.response.status_code}: {detail}".strip()
+                    if e.response.status_code not in {408, 429, 502, 503, 504}:
+                        break
+                except Exception as e:
+                    last_error = str(e) or e.__class__.__name__
+            if attempt < 3:
+                logger.warning(
+                    "Retrying sandbox file write",
+                    attempt=attempt,
+                    error=last_error,
                 )
-                response.raise_for_status()
-                return True
-            except Exception as e:
-                logger.error(f"Failed to write file to sandbox {sandbox_id}", error=str(e))
-                return False
+                await asyncio.sleep(delay_seconds)
+                delay_seconds = min(delay_seconds * 2, 10)
+        if last_error:
+            self.last_error = last_error
+        logger.error(f"Failed to write file to sandbox {sandbox_id}", error=last_error)
+        return False
 
     async def terminate_sandbox(self, sandbox_id: str) -> bool:
         """Terminate a sandbox."""
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.post(
-                    f"{self.base_url}/api/sandboxes/{sandbox_id}/terminate",
-                    headers=self.headers
+        delay_seconds = 1
+        last_error: Optional[str] = None
+        for attempt in range(1, 3):
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                try:
+                    response = await client.post(
+                        f"{self.base_url}/api/sandboxes/{sandbox_id}/terminate",
+                        headers=self.headers,
+                    )
+                    if response.status_code == 404:
+                        return True
+                    response.raise_for_status()
+                    return True
+                except httpx.HTTPStatusError as e:
+                    detail = e.response.text or e.response.reason_phrase or str(e)
+                    last_error = f"HTTP {e.response.status_code}: {detail}".strip()
+                    if e.response.status_code not in {408, 429, 502, 503, 504}:
+                        break
+                except Exception as e:
+                    last_error = str(e) or e.__class__.__name__
+            if attempt < 2:
+                logger.warning(
+                    "Retrying sandbox termination",
+                    attempt=attempt,
+                    error=last_error,
                 )
-                response.raise_for_status()
-                return True
-            except Exception as e:
-                logger.error(f"Failed to terminate sandbox {sandbox_id}", error=str(e))
-                return False
+                await asyncio.sleep(delay_seconds)
+                delay_seconds = min(delay_seconds * 2, 5)
+        logger.error(f"Failed to terminate sandbox {sandbox_id}", error=last_error)
+        return False
 
     async def run_python_code(self, code: str, timeout_ms: Optional[int] = None) -> Dict[str, Any]:
         """Convenience method to create a sandbox, run Python code, and terminate."""

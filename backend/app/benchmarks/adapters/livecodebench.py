@@ -12,6 +12,7 @@ from app.services.sandy_service import SandyService
 logger = get_logger(__name__)
 
 LIVECODEBENCH_TOTAL_ITEMS = 164
+LIVECODEBENCH_LOG_CHAR_LIMIT = 8000
 
 
 @register_adapter("livecodebench")
@@ -56,6 +57,15 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             if stripped.startswith(("def ", "class ", "import ", "from ")):
                 return True
         return False
+
+    def _truncate_log(self, value: str, limit: int = LIVECODEBENCH_LOG_CHAR_LIMIT) -> str:
+        if value is None:
+            return ""
+        text = str(value)
+        if len(text) <= limit:
+            return text
+        overflow = len(text) - limit
+        return f"{text[:limit]}... [truncated {overflow} chars]"
 
     async def get_total_items(self) -> int:
         if not self._items:
@@ -134,13 +144,17 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         if not tests:
             return True, None, []
 
-        await self.sandy.write_file(sandbox_id, "main.py", code)
+        if not await self.sandy.write_file(sandbox_id, "main.py", code):
+            error_detail = self.sandy.last_error or "Failed to write main.py"
+            return False, {"test_index": 0, "error": error_detail}, []
 
         test_runs: list[dict[str, Any]] = []
         for idx, test in enumerate(tests, start=1):
             input_text = test.get("input", "")
             expected = (test.get("output", "") or "").strip()
-            await self.sandy.write_file(sandbox_id, "input.txt", input_text)
+            if not await self.sandy.write_file(sandbox_id, "input.txt", input_text):
+                error_detail = self.sandy.last_error or "Failed to write input file"
+                return False, {"test_index": idx, "error": error_detail}, test_runs
             result = await self.sandy.execute_command(
                 sandbox_id,
                 "bash -lc 'python3 main.py < input.txt'",
@@ -148,29 +162,39 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             )
             stdout = (result.get("stdout") or "").strip()
             stderr = (result.get("stderr") or "").strip()
+            input_log = self._truncate_log(input_text)
+            expected_log = self._truncate_log(expected)
+            stdout_log = self._truncate_log(stdout)
+            stderr_log = self._truncate_log(stderr)
             test_log = {
                 "test_index": idx,
-                "input": input_text,
-                "expected": expected,
-                "stdout": stdout,
-                "stderr": stderr,
+                "input": input_log,
+                "expected": expected_log,
+                "stdout": stdout_log,
+                "stderr": stderr_log,
                 "exit_code": result.get("exit_code"),
+                "input_length": len(input_text),
+                "expected_length": len(expected),
+                "stdout_length": len(stdout),
+                "stderr_length": len(stderr),
             }
             if result.get("exit_code") != 0:
                 test_log["status"] = "error"
                 test_runs.append(test_log)
                 return False, {
                     "test_index": idx,
-                    "error": result.get("stderr") or result.get("error"),
+                    "error": self._truncate_log(result.get("stderr") or result.get("error") or ""),
                 }, test_runs
             if stdout != expected:
                 test_log["status"] = "failed"
-                test_log["received"] = stdout
+                test_log["received"] = stdout_log
                 test_runs.append(test_log)
                 return False, {
                     "test_index": idx,
-                    "expected": expected,
-                    "received": stdout,
+                    "expected": expected_log,
+                    "received": stdout_log,
+                    "expected_length": len(expected),
+                    "received_length": len(stdout),
                 }, test_runs
             test_log["status"] = "passed"
             test_runs.append(test_log)
