@@ -5,5 +5,7 @@ services:
       dockerfile: Dockerfile
     env_file:
       - .env.worker
+    volumes:
+      - /var/lib/chutes-bench-data:/var/lib/chutes-bench-data
     command: python -m app.worker.runner
     restart: unless-stopped

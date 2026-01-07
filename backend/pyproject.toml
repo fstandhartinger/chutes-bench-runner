@@ -42,6 +42,7 @@ benchmarks = [
     "h5py>=3.10.0",
     "immutabledict>=4.2.0",
     "loguru>=0.7.2",
+    "toml>=0.10.2",
 ]
 
 [build-system]

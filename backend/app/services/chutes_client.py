@@ -655,6 +655,7 @@ class ChutesClient:
         applied_max_tokens = requested_max_tokens
         if "timeout" not in kwargs:
             kwargs["timeout"] = settings.chutes_inference_timeout_seconds
+        extra_max_token_retry_used = False
 
         # Initialize defaults
         metadata = {
@@ -733,8 +734,7 @@ class ChutesClient:
                     metadata["response_error_detail"] = e.response_text
                     return "", metadata
                 if (
-                    attempt < max_attempts
-                    and _is_max_tokens_error(e)
+                    _is_max_tokens_error(e)
                     and isinstance(kwargs.get("max_tokens"), int)
                 ):
                     current_max = kwargs.get("max_tokens")
@@ -761,6 +761,9 @@ class ChutesClient:
                             requested=current_max,
                             applied=reduced,
                         )
+                        if attempt >= max_attempts and not extra_max_token_retry_used:
+                            max_attempts += 1
+                            extra_max_token_retry_used = True
                         await asyncio.sleep(delay_seconds)
                         delay_seconds = min(delay_seconds * 2, 10)
                         continue

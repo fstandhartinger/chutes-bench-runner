@@ -156,6 +156,10 @@ async def load_dataset_with_retry(
     """Load a Hugging Face dataset with retries."""
     from datasets import load_dataset
 
+    cache_root = get_bench_data_dir() / "hf"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    kwargs.setdefault("cache_dir", str(cache_root))
+
     attempt = 0
     delay_seconds = initial_delay_seconds
     last_error: Optional[Exception] = None
