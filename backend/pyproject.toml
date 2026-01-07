@@ -44,6 +44,7 @@ benchmarks = [
     "loguru>=0.7.2",
     "toml>=0.10.2",
     "deepdiff>=7.0.1",
+    "litellm>=1.30.0",
 ]
 
 [build-system]
