@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     # Sandy Sandbox
     sandy_base_url: str = "https://sandy.94.130.222.43.nip.io"
     sandy_api_key: Optional[str] = None
+    sandy_volume_root: str = "/var/lib/sandy/volumes"
 
     # AA-LCR judge model (LLM-based equality checker)
     aa_lcr_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"

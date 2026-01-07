@@ -128,6 +128,7 @@ Benchmark workers run on the Hetzner Sandy server (`94.130.222.43`) to avoid Ren
 - `CHUTES_CLIENT_SECRET` (needed to refresh IDP tokens)
 - `HF_TOKEN` (for gated datasets like HLE/GPQA)
 - `SANDY_BASE_URL` + `SANDY_API_KEY` (for code benchmarks)
+- `SANDY_VOLUME_ROOT` (host path for Sandy volumes, default `/var/lib/sandy/volumes`)
 - Optional: `WORKER_MAX_CONCURRENT`, `WORKER_ITEM_CONCURRENCY`, `WORKER_STALE_RUN_MINUTES`
 
 **Setup Steps (Hetzner)**:

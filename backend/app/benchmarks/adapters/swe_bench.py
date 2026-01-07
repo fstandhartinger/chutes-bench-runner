@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Optional
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
 from app.benchmarks.utils import download_http_file, load_dataset_with_retry
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -167,6 +168,17 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
         result = await self.sandy.execute_command(sandbox_id, f"printenv {key}")
         return result.get("stdout", "")
 
+    async def _get_host_volume(self, sandbox_id: str) -> Optional[str]:
+        result = await self.sandy.execute_command(sandbox_id, "printenv SANDY_HOST_VOLUME")
+        host_volume = (result.get("stdout") or "").strip()
+        if host_volume:
+            return host_volume
+        settings = get_settings()
+        fallback_root = (settings.sandy_volume_root or "").rstrip("/")
+        if fallback_root:
+            return f"{fallback_root}/{sandbox_id}"
+        return None
+
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single SWE-Bench Pro item."""
         if not self._items:
@@ -238,8 +250,7 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                         metadata={"instance_id": item.get("instance_id")},
                     )
 
-                host_volume = await self._get_env(sandbox_id, "SANDY_HOST_VOLUME")
-                host_volume = host_volume.strip()
+                host_volume = await self._get_host_volume(sandbox_id)
                 if not host_volume:
                     return ItemResult(item_id=item_id, error="Sandy host volume path unavailable")
 
