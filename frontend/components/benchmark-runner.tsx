@@ -528,8 +528,8 @@ export function BenchmarkRunner() {
           {/* Start Button */}
           {queueStats && queueStats.running >= workerSlots && !currentRun && (
             <div className="rounded-lg bg-ink-800/70 p-3 text-sm text-ink-300">
-              All worker slots are busy ({queueStats.running}/{workerSlots}). New runs
-              will queue until a slot is free.
+              All worker slots are busy (running {queueStats.running}, capacity {workerSlots}).
+              New runs will queue until a slot is free.
             </div>
           )}
 

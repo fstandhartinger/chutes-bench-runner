@@ -332,7 +332,8 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             # Terminal-Bench requires Docker socket access for running docker-compose
             sandbox_id = await self.sandy.create_sandbox(enable_docker_socket=True)
             if not sandbox_id:
-                return ItemResult(item_id=item_id, error="Could not create sandbox")
+                sandbox_error = self.sandy.last_error or "Could not create sandbox"
+                return ItemResult(item_id=item_id, error=sandbox_error)
 
             try:
                 extracted = await self._extract_archive(sandbox_id, archive)

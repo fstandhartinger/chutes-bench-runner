@@ -13,6 +13,7 @@ class SandyService:
         settings = get_settings()
         self.base_url = settings.sandy_base_url.rstrip("/")
         self.api_key = settings.sandy_api_key
+        self.last_error: Optional[str] = None
         self.headers = {
             "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
             "Content-Type": "application/json"
@@ -31,12 +32,14 @@ class SandyService:
             return None
         delay_seconds = 1
         last_error: Optional[str] = None
+        self.last_error = None
         # Prepare payload with Docker socket option
         payload = {}
         if enable_docker_socket:
             payload["enableDockerSocket"] = True
+        timeout = httpx.Timeout(90.0, connect=10.0)
         for attempt in range(1, 4):
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 try:
                     response = await client.post(
                         f"{self.base_url}/api/sandboxes",
@@ -47,12 +50,16 @@ class SandyService:
                     data = response.json()
                     sandbox_id = data.get("sandboxId")
                     if sandbox_id:
+                        self.last_error = None
                         return sandbox_id
                     last_error = "Missing sandboxId in response"
                 except httpx.HTTPStatusError as e:
-                    last_error = e.response.text or str(e)
+                    detail = e.response.text or e.response.reason_phrase or str(e)
+                    last_error = f"HTTP {e.response.status_code}: {detail}".strip()
                 except Exception as e:
                     last_error = str(e) or e.__class__.__name__
+                if last_error and len(last_error) > 500:
+                    last_error = last_error[:500].rstrip() + "…"
 
             if attempt < 3:
                 logger.warning(
@@ -63,6 +70,8 @@ class SandyService:
                 await asyncio.sleep(delay_seconds)
                 delay_seconds = min(delay_seconds * 2, 10)
 
+        if last_error:
+            self.last_error = last_error
         logger.error("Failed to create sandbox", error=last_error)
         return None
 

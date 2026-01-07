@@ -212,7 +212,8 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             # SWE-Bench requires Docker socket access for running docker pull/run
             sandbox_id = await self.sandy.create_sandbox(enable_docker_socket=True)
             if not sandbox_id:
-                return ItemResult(item_id=item_id, error="Could not create sandbox")
+                sandbox_error = self.sandy.last_error or "Could not create sandbox"
+                return ItemResult(item_id=item_id, error=sandbox_error)
 
             try:
                 entryscript = self._create_entryscript(item)

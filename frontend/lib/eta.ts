@@ -30,6 +30,20 @@ function expectedItems(rb: BenchmarkRunBenchmark, subsetPct: number): number {
   return 0;
 }
 
+export function getRunProgress(run: Run): { completed: number; total: number; percent: number } {
+  let total = 0;
+  let completed = 0;
+  for (const rb of run.benchmarks) {
+    total += expectedItems(rb, run.subset_pct);
+    completed += rb.completed_items || 0;
+  }
+  if (total <= 0) {
+    return { completed, total, percent: 0 };
+  }
+  const percent = Math.min(100, Math.max(0, (completed / total) * 100));
+  return { completed, total, percent };
+}
+
 function perItemSeconds(rb: BenchmarkRunBenchmark, now: Date): number | null {
   if (!rb.completed_items || rb.completed_items <= 0) return null;
   const start = parseDate(rb.started_at);

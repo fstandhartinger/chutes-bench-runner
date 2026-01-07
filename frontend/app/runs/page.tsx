@@ -4,10 +4,12 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { getRuns, type Run } from "@/lib/api";
 import {
   computeQueueSchedule,
   estimateRunRemainingSeconds,
+  getRunProgress,
   getWorkerSlots,
 } from "@/lib/eta";
 import {
@@ -134,6 +136,7 @@ export default function RunsPage() {
             const queueInfo =
               run.status === "queued" ? queueSchedule[run.id] : undefined;
             const queueDelaySeconds = queueInfo?.startDelaySeconds ?? null;
+            const progress = getRunProgress(run);
 
             return (
               <Card key={run.id} className="overflow-hidden">
@@ -173,6 +176,20 @@ export default function RunsPage() {
                         ? `· start in ~${formatDurationSeconds(queueDelaySeconds)}`
                         : "· waiting for worker"}
                     </p>
+                  )}
+                  {["running", "queued"].includes(run.status) && progress.total > 0 && (
+                    <div className="max-w-sm space-y-1 pt-2">
+                      <div className="flex items-center justify-between text-xs text-ink-400">
+                        <span>
+                          {progress.completed}/{progress.total} items
+                        </span>
+                        <span>{Math.round(progress.percent)}%</span>
+                      </div>
+                      <Progress
+                        value={progress.percent}
+                        className={run.status === "running" ? "progress-animate" : ""}
+                      />
+                    </div>
                   )}
                   {["succeeded", "failed", "canceled"].includes(run.status) &&
                     elapsedMs !== null && (

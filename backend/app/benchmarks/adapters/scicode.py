@@ -305,7 +305,8 @@ class SciCodeAdapter(BenchmarkAdapter):
 
         sandbox_id = await self._ensure_sandbox()
         if not sandbox_id:
-            return ItemResult(item_id=item_id, error="Could not create sandbox")
+            sandbox_error = self.sandy.last_error or "Could not create sandbox"
+            return ItemResult(item_id=item_id, error=sandbox_error)
 
         h5_path = await self._ensure_h5_in_sandbox(sandbox_id)
 

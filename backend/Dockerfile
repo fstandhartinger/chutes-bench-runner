@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python dependencies
 COPY pyproject.toml .
+COPY README.md .
 RUN pip install --no-cache-dir -e ".[benchmarks]"
 
 # Copy application

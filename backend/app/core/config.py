@@ -1,6 +1,7 @@
 """Application configuration."""
 from functools import lru_cache
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -50,6 +51,7 @@ class Settings(BaseSettings):
     worker_stale_check_interval: int = 60
     worker_heartbeat_seconds: int = 60
     worker_exclusive_benchmarks: list[str] = []
+    worker_disabled: bool = False
 
     # Startup
     skip_model_sync: bool = False
@@ -97,6 +99,12 @@ class Settings(BaseSettings):
         
         # Convert sslmode to ssl for asyncpg compatibility
         url = url.replace("sslmode=", "ssl=")
+        # Remove channel_binding (asyncpg does not accept it)
+        parts = urlsplit(url)
+        if parts.query:
+            params = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "channel_binding"]
+            query = urlencode(params)
+            url = urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
         return url
 
     @property

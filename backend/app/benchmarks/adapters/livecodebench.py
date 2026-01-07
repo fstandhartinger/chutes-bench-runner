@@ -258,12 +258,13 @@ Problem:
                 )
             sandbox_id = await self.sandy.create_sandbox()
             if not sandbox_id:
+                sandbox_error = self.sandy.last_error or "Could not create sandbox"
                 return ItemResult(
                     item_id=item_id,
                     item_hash=self.compute_item_hash(item["question"]),
                     prompt=prompt,
                     response=response_text.strip(),
-                    error="Could not create sandbox",
+                    error=sandbox_error,
                     latency_ms=latency_ms,
                     metadata={"system_prompt": system_prompt},
                 )

@@ -781,11 +781,12 @@ class BenchmarkWorker:
             existing_results: list[ItemResult] = []
 
             if needs_postprocess:
-                result = await db.execute(
-                    select(BenchmarkItemResult)
-                    .where(BenchmarkItemResult.run_benchmark_id == rb.id)
-                )
-                existing_rows = list(result.scalars().all())
+                async with async_session_maker() as read_db:
+                    result = await read_db.execute(
+                        select(BenchmarkItemResult)
+                        .where(BenchmarkItemResult.run_benchmark_id == rb.id)
+                    )
+                    existing_rows = list(result.scalars().all())
                 completed_item_ids = {row.item_id for row in existing_rows}
                 correct = sum(1 for row in existing_rows if row.is_correct)
                 existing_results = [
@@ -808,11 +809,12 @@ class BenchmarkWorker:
                     for row in existing_rows
                 ]
             else:
-                result = await db.execute(
-                    select(BenchmarkItemResult.item_id, BenchmarkItemResult.is_correct)
-                    .where(BenchmarkItemResult.run_benchmark_id == rb.id)
-                )
-                existing_rows = list(result.all())
+                async with async_session_maker() as read_db:
+                    result = await read_db.execute(
+                        select(BenchmarkItemResult.item_id, BenchmarkItemResult.is_correct)
+                        .where(BenchmarkItemResult.run_benchmark_id == rb.id)
+                    )
+                    existing_rows = list(result.all())
                 completed_item_ids = {row.item_id for row in existing_rows}
                 correct = sum(1 for row in existing_rows if row.is_correct)
 
@@ -1010,9 +1012,6 @@ class BenchmarkWorker:
                         )
 
             if max_concurrency > 1 and len(pending_item_ids) > 1:
-                if db.in_transaction():
-                    await db.commit()
-
                 semaphore = asyncio.Semaphore(max_concurrency)
 
                 async def run_item(item_id: str) -> ItemResult:
@@ -1062,8 +1061,6 @@ class BenchmarkWorker:
                     if i % 10 == 0:
                         if await self._is_run_canceled(run.id):
                             raise Exception("Run canceled")
-                    if db.in_transaction():
-                        await db.commit()
 
                     result = await evaluate_item(item_id)
                     await record_result(result)
@@ -1126,6 +1123,11 @@ async def run_worker() -> None:
     """Entry point for worker process."""
     from app.core.logging import setup_logging
     setup_logging()
+
+    if settings.worker_disabled:
+        logger.warning("Worker disabled via WORKER_DISABLED, skipping run loop.")
+        while True:
+            await asyncio.sleep(3600)
 
     worker = BenchmarkWorker()
 

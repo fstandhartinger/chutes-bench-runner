@@ -301,6 +301,7 @@ class AffineEnvAdapter(BenchmarkAdapter):
         self.spec = spec
         self.sandy = SandyService()
         self._sandbox_id: Optional[str] = None
+        self._sandbox_error: Optional[str] = None
         self._container_prefix = f"{spec.env_name.replace(':', '-')}-{uuid4().hex[:8]}"
         self._prepared = False
         self._total_items: Optional[int] = None
@@ -388,7 +389,8 @@ class AffineEnvAdapter(BenchmarkAdapter):
     async def evaluate_item(self, item_id: str) -> ItemResult:
         await self.preload()
         if not self._sandbox_id:
-            return ItemResult(item_id=item_id, error="Sandbox initialization failed")
+            sandbox_error = self._sandbox_error or "Sandbox initialization failed"
+            return ItemResult(item_id=item_id, error=sandbox_error)
 
         task_id = int(item_id)
         payload = self._build_payload(task_id)
@@ -464,6 +466,8 @@ class AffineEnvAdapter(BenchmarkAdapter):
         if self._sandbox_id:
             return self._sandbox_id
         sandbox_id = await self.sandy.create_sandbox(enable_docker_socket=True)
+        if not sandbox_id:
+            self._sandbox_error = self.sandy.last_error or "Could not create sandbox"
         self._sandbox_id = sandbox_id
         return sandbox_id
 
