@@ -45,6 +45,14 @@ benchmarks = [
     "toml>=0.10.2",
     "deepdiff>=7.0.1",
     "litellm>=1.30.0",
+    "fs",
+    "watchdog>=6.0.0",
+    "plotly>=6.0.0",
+    "pydantic-argparse>=0.10.0",
+    "psutil>=7.0.0",
+    "redis>=5.2.1",
+    "langfuse>=2.60.7",
+    "gymnasium>=1.2.2",
 ]
 
 [build-system]
