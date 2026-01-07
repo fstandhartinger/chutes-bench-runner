@@ -46,7 +46,7 @@ services:
       - key: WORKER_POLL_INTERVAL
         value: "5"
       - key: WORKER_MAX_CONCURRENT
-        value: "2"
+        value: "3"
       - key: WORKER_ITEM_CONCURRENCY
         value: "2"
       - key: WORKER_STALE_RUN_MINUTES
