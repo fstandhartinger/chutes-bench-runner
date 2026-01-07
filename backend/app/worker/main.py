@@ -31,6 +31,12 @@ async def run_health_server():
 
 async def main():
     """Run both the worker and health check server."""
+    disabled = os.environ.get("WORKER_DISABLED", "").strip().lower() in {"1", "true", "yes"}
+    if disabled:
+        print("Worker disabled via WORKER_DISABLED; running health server only")
+        await run_health_server()
+        return
+
     # Run both tasks concurrently
     await asyncio.gather(
         run_health_server(),
