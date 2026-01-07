@@ -181,6 +181,31 @@ docker-compose -p chutes-bench-runner-extra -f docker-compose.worker.yml --env-f
 ```
 This creates `chutes-bench-runner-extra-worker-*` containers without name conflicts.
 
+### Autoscaler (Hetzner Sandy)
+
+The autoscaler runs on the Sandy server and adjusts worker counts based on the
+current queue size. It scales base workers (0–4) and, when needed, extra workers
+in a separate compose project (up to 2) for a total of 6.
+
+**Install:**
+```bash
+sudo cp /opt/chutes-bench-runner/scripts/chutes-bench-runner-autoscaler.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now chutes-bench-runner-autoscaler
+```
+
+**Logs:**
+```bash
+tail -n 200 /var/log/chutes-bench-runner-autoscaler.log
+```
+
+**Config (env vars):**
+- `BACKEND_URL` (default `https://chutes-bench-runner-api-v2.onrender.com`)
+- `MIN_WORKERS` / `MAX_WORKERS` / `BASE_MAX_WORKERS` / `EXTRA_MAX_WORKERS`
+- `WORKER_MAX_CONCURRENT` (must match `.env.worker`)
+- `SCALE_INTERVAL_SECONDS`
+- `LOG_PATH`
+
 ### 5. Frontend lib/ Directory Ignored
 **Problem**: Root `.gitignore` had `lib/` which ignored `frontend/lib/`
 **Fix**: Added `!frontend/lib/` to `.gitignore` to explicitly include it
