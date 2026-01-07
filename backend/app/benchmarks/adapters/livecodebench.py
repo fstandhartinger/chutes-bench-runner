@@ -5,7 +5,7 @@ from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import load_dataset_with_retry
+from app.benchmarks.utils import get_bench_data_dir, load_dataset_with_retry
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -103,11 +103,14 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         import os
 
         hf_token = os.environ.get("HF_TOKEN")
+        cache_dir = get_bench_data_dir()
         logger.info("Loading LiveCodeBench dataset")
         dataset = await load_dataset_with_retry(
             "livecodebench/code_generation",
             split="test",
             token=hf_token,
+            cache_dir=str(cache_dir),
+            timeout_seconds=1800.0,
         )
         items: list[dict[str, Any]] = []
         for idx, raw_item in enumerate(dataset):
