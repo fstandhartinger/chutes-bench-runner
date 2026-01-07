@@ -43,6 +43,7 @@ benchmarks = [
     "immutabledict>=4.2.0",
     "loguru>=0.7.2",
     "toml>=0.10.2",
+    "deepdiff>=7.0.1",
 ]
 
 [build-system]
