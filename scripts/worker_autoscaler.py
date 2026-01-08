@@ -76,11 +76,15 @@ def fetch_runs_total(base_url: str, status: str, timeout: int, logger: logging.L
     return None
 
 
-def run_compose(cmd: list[str], logger: logging.Logger, dry_run: bool) -> bool:
+def run_compose(cmd: list[str], logger: logging.Logger, dry_run: bool, timeout: int) -> bool:
     logger.info("Compose command: %s", " ".join(cmd))
     if dry_run:
         return True
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        logger.warning("Compose command timed out after %ss", timeout)
+        return False
     if result.stdout:
         logger.info("Compose stdout: %s", result.stdout.strip())
     if result.stderr:
@@ -94,6 +98,7 @@ def scale_base(
     workers: int,
     logger: logging.Logger,
     dry_run: bool,
+    timeout: int,
 ) -> bool:
     cmd = [
         "docker-compose",
@@ -107,7 +112,7 @@ def scale_base(
         "--scale",
         f"worker={workers}",
     ]
-    return run_compose(cmd, logger, dry_run)
+    return run_compose(cmd, logger, dry_run, timeout)
 
 
 def scale_extra(
@@ -117,6 +122,7 @@ def scale_extra(
     workers: int,
     logger: logging.Logger,
     dry_run: bool,
+    timeout: int,
 ) -> bool:
     if workers <= 0:
         cmd = [
@@ -130,7 +136,7 @@ def scale_extra(
             "down",
             "--remove-orphans",
         ]
-        return run_compose(cmd, logger, dry_run)
+        return run_compose(cmd, logger, dry_run, timeout)
 
     cmd = [
         "docker-compose",
@@ -146,7 +152,7 @@ def scale_extra(
         "--scale",
         f"worker={workers}",
     ]
-    return run_compose(cmd, logger, dry_run)
+    return run_compose(cmd, logger, dry_run, timeout)
 
 
 def compute_target_workers(
@@ -178,6 +184,7 @@ def main() -> int:
     min_workers = _int_env("MIN_WORKERS", 1)
     worker_max_concurrent = _int_env("WORKER_MAX_CONCURRENT", 2)
     poll_seconds = _int_env("SCALE_INTERVAL_SECONDS", 30)
+    compose_timeout = _int_env("COMPOSE_TIMEOUT_SECONDS", 120)
     extra_project = _str_env("EXTRA_PROJECT", "chutes-bench-runner-extra")
     dry_run = _int_env("DRY_RUN", 0) == 1
     timeout = _int_env("API_TIMEOUT_SECONDS", 10)
@@ -218,8 +225,16 @@ def main() -> int:
             if target != last_target:
                 base_workers = min(base_max, target)
                 extra_workers = max(0, target - base_max)
-                ok_base = scale_base(compose_file, env_file, base_workers, logger, dry_run)
-                ok_extra = scale_extra(extra_project, compose_file, env_file, extra_workers, logger, dry_run)
+                ok_base = scale_base(compose_file, env_file, base_workers, logger, dry_run, compose_timeout)
+                ok_extra = scale_extra(
+                    extra_project,
+                    compose_file,
+                    env_file,
+                    extra_workers,
+                    logger,
+                    dry_run,
+                    compose_timeout,
+                )
                 if ok_base and ok_extra:
                     last_target = target
                     logger.info("Scaling applied base=%s extra=%s", base_workers, extra_workers)
