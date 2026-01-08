@@ -99,7 +99,15 @@ export default function VerifyPage() {
               </div>
               <div className="rounded bg-ink-900 p-3">
                 <div className="text-xs text-ink-400">Subset</div>
-                <div>{result.subset_pct ?? "-"}</div>
+                <div>
+                  {result.subset_count
+                    ? `${result.subset_count} items`
+                    : result.subset_pct ?? "-"}
+                </div>
+              </div>
+              <div className="rounded bg-ink-900 p-3">
+                <div className="text-xs text-ink-400">Subset Seed</div>
+                <div>{result.subset_seed || "-"}</div>
               </div>
               <div className="rounded bg-ink-900 p-3">
                 <div className="text-xs text-ink-400">Exported At</div>

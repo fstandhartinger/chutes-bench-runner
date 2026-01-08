@@ -46,6 +46,15 @@ export default function ApiDocsPage() {
                 1, 5, 10, 25, 50, 100). Minimum sample size is 1 item.
               </li>
               <li>
+                <span className="text-ink-100">subset_count</span>: optional fixed item count
+                (takes precedence over <span className="text-ink-100">subset_pct</span>).
+                Recommended for Affine environments where 1% can be large.
+              </li>
+              <li>
+                <span className="text-ink-100">subset_seed</span>: optional deterministic seed.
+                Use the same seed across runs to align samples between models.
+              </li>
+              <li>
                 <span className="text-ink-100">selected_benchmarks</span>: optional list of
                 benchmark names (use <span className="text-ink-100">/api/benchmarks</span> to
                 discover valid values).
@@ -58,6 +67,8 @@ export default function ApiDocsPage() {
   -d '{
     "model_id": "<model-uuid | chute_id | model-slug>",
     "subset_pct": 1,
+    "subset_count": 25,
+    "subset_seed": "affine-seed-001",
     "selected_benchmarks": ["mmlu_pro", "ifbench"]
   }'`}</CodeBlock>
         </CardContent>
@@ -78,7 +89,17 @@ curl -N ${BACKEND_URL}/api/runs/<run-id>/events`}</CodeBlock>
 
       <Card>
         <CardHeader>
-          <CardTitle>3) Download Results</CardTitle>
+          <CardTitle>3) Cancel a Run</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-ink-300">
+          <p>Cancel a queued or running run.</p>
+          <CodeBlock>{`curl -X POST ${BACKEND_URL}/api/runs/<run-id>/cancel`}</CodeBlock>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>4) Download Results</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-ink-300">
           <p>Exports are available after the run completes (succeeded or failed).</p>
@@ -95,7 +116,7 @@ curl -O ${BACKEND_URL}/api/runs/<run-id>/export?format=zip`}</CodeBlock>
 
       <Card>
         <CardHeader>
-          <CardTitle>4) Verify a Signed ZIP</CardTitle>
+          <CardTitle>5) Verify a Signed ZIP</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-ink-300">
           <p>Upload a signed zip to confirm it was produced by the official bench runner.</p>
@@ -106,7 +127,7 @@ curl -O ${BACKEND_URL}/api/runs/<run-id>/export?format=zip`}</CodeBlock>
 
       <Card>
         <CardHeader>
-          <CardTitle>5) Public Key</CardTitle>
+          <CardTitle>6) Public Key</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-ink-300">
           <p>Fetch the public key for offline verification.</p>

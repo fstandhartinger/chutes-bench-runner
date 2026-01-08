@@ -1,5 +1,7 @@
 """Background worker for running benchmarks."""
 import asyncio
+import os
+import socket
 import time
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -31,6 +33,7 @@ from app.services.run_service import (
     update_benchmark_status,
     update_run_status,
 )
+from app.services.worker_service import record_worker_heartbeat
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -95,6 +98,8 @@ class BenchmarkWorker:
         self.client = get_chutes_client()
         self._last_stale_check = 0.0
         self._last_heartbeat = 0.0
+        self.worker_id = os.getenv("WORKER_INSTANCE_ID") or socket.gethostname()
+        self.hostname = socket.gethostname()
 
     async def _is_run_canceled(self, run_id: str) -> bool:
         async with async_session_maker() as db:
@@ -239,6 +244,7 @@ class BenchmarkWorker:
                     self._last_stale_check = now
                 if now - self._last_heartbeat >= settings.worker_heartbeat_seconds:
                     await self.touch_active_runs()
+                    await self.touch_worker_heartbeat()
                     self._last_heartbeat = now
                 await self.reap_completed_runs()
                 await self.launch_runs()
@@ -406,6 +412,18 @@ class BenchmarkWorker:
                 .values(updated_at=now)
             )
             await db.commit()
+
+    async def touch_worker_heartbeat(self) -> None:
+        """Record worker liveness and capacity for ops monitoring."""
+        async with async_session_maker() as db:
+            await record_worker_heartbeat(
+                db,
+                worker_id=self.worker_id,
+                hostname=self.hostname,
+                running_runs=len(self.run_tasks),
+                max_concurrent_runs=settings.worker_max_concurrent,
+                item_concurrency=settings.worker_item_concurrency,
+            )
 
     async def requeue_stale_runs(self) -> None:
         """Requeue stale running runs after a worker restart or stall."""
@@ -760,8 +778,13 @@ class BenchmarkWorker:
                 completed_items=rb.completed_items,
             )
             # Get items and apply subset
-            seed = f"{run.id}_{rb.benchmark_name}"
-            total_items, items_to_evaluate = await adapter.get_items_for_evaluation(run.subset_pct, seed)
+            seed_base = run.subset_seed or run.id
+            seed = f"{seed_base}:{rb.benchmark_name}"
+            total_items, items_to_evaluate = await adapter.get_items_for_evaluation(
+                run.subset_pct,
+                seed,
+                run.subset_count,
+            )
 
             if total_items <= 0 or not items_to_evaluate:
                 await self._safe_update_benchmark_status(
@@ -863,6 +886,8 @@ class BenchmarkWorker:
                     "total_items": total_items,
                     "sampled_items": len(items_to_evaluate),
                     "sampled_pct": run.subset_pct,
+                    "subset_count": run.subset_count,
+                    "subset_seed": run.subset_seed,
                     "correct": correct,
                     **additional_metrics,
                 }
@@ -1084,6 +1109,8 @@ class BenchmarkWorker:
                 "total_items": total_items,
                 "sampled_items": len(items_to_evaluate),
                 "sampled_pct": run.subset_pct,
+                "subset_count": run.subset_count,
+                "subset_seed": run.subset_seed,
                 "correct": correct,
                 **additional_metrics,
             }

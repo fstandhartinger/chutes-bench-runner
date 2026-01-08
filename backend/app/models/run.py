@@ -41,6 +41,8 @@ class BenchmarkRun(Base):
     model_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("models.id"), nullable=False)
     model_slug: Mapped[str] = mapped_column(String(255), nullable=False)
     subset_pct: Mapped[int] = mapped_column(Integer, default=100)
+    subset_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    subset_seed: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default=RunStatus.QUEUED.value)
     auth_mode: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     auth_session_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

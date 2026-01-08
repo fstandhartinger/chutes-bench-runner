@@ -49,6 +49,8 @@ export interface Run {
   model_id: string;
   model_slug: string;
   subset_pct: number;
+  subset_count?: number | null;
+  subset_seed?: string | null;
   status: string;
   selected_benchmarks?: string[];
   overall_score?: number;
@@ -112,6 +114,8 @@ export interface SignedExportVerification {
   run_id?: string;
   model_slug?: string;
   subset_pct?: number;
+  subset_count?: number;
+  subset_seed?: string;
   overall_score?: number;
   exported_at?: string;
   benchmark_count?: number;
@@ -174,16 +178,64 @@ export async function getRun(runId: string): Promise<Run> {
 export async function createRun(
   modelId: string,
   subsetPct: number,
-  selectedBenchmarks?: string[]
+  selectedBenchmarks?: string[],
+  subsetCount?: number | null,
+  subsetSeed?: string | null
 ): Promise<Run> {
   return fetchAPI("/api/runs", {
     method: "POST",
     body: JSON.stringify({
       model_id: modelId,
       subset_pct: subsetPct,
+      subset_count: subsetCount ?? undefined,
+      subset_seed: subsetSeed ?? undefined,
       selected_benchmarks: selectedBenchmarks,
     }),
   });
+}
+
+export interface WorkerHeartbeatInfo {
+  worker_id: string;
+  hostname?: string | null;
+  running_runs: number;
+  max_concurrent_runs: number;
+  item_concurrency: number;
+  last_seen: string;
+}
+
+export interface WorkerTimeseriesPoint {
+  timestamp: string;
+  worker_count: number;
+  running_runs: number;
+}
+
+export interface RunSummary {
+  id: string;
+  model_slug: string;
+  subset_pct: number;
+  subset_count?: number | null;
+  subset_seed?: string | null;
+  status: string;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface OpsOverview {
+  workers: WorkerHeartbeatInfo[];
+  timeseries: WorkerTimeseriesPoint[];
+  queue_counts: Record<string, number>;
+  queued_runs: RunSummary[];
+  running_runs: RunSummary[];
+  completed_runs: RunSummary[];
+  worker_config: {
+    worker_max_concurrent: number;
+    worker_item_concurrency: number;
+  };
+}
+
+export async function getOpsOverview(): Promise<OpsOverview> {
+  return fetchAPI("/api/ops/overview");
 }
 
 export async function cancelRun(runId: string): Promise<{ success: boolean; message: string }> {

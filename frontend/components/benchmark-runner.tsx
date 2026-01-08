@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -57,6 +58,9 @@ export function BenchmarkRunner() {
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [subsetPct, setSubsetPct] = useState<string>("10");
+  const [subsetMode, setSubsetMode] = useState<"percent" | "count">("percent");
+  const [subsetCount, setSubsetCount] = useState<string>("25");
+  const [subsetSeed, setSubsetSeed] = useState<string>("");
   const [selectedBenchmarks, setSelectedBenchmarks] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
@@ -74,6 +78,15 @@ export function BenchmarkRunner() {
   const runningRef = useRef(false);
   const workerSlots = getWorkerSlots();
   const subsetValue = Number(subsetPct);
+  const subsetCountValue = Number(subsetCount);
+  const isAffineSelected = useMemo(() => {
+    for (const name of selectedBenchmarks) {
+      if (name.startsWith("affine_")) {
+        return true;
+      }
+    }
+    return false;
+  }, [selectedBenchmarks]);
   const benchmarksByCategory = useMemo(() => {
     const groups = new Map<string, Benchmark[]>();
     for (const benchmark of benchmarks) {
@@ -236,7 +249,9 @@ export function BenchmarkRunner() {
       const run = await createRun(
         selectedModel,
         parseInt(subsetPct),
-        Array.from(selectedBenchmarks)
+        Array.from(selectedBenchmarks),
+        subsetMode === "count" ? (Number(subsetCount) || 1) : null,
+        subsetSeed.trim() ? subsetSeed.trim() : null
       );
       setCurrentRun(run);
 
@@ -434,22 +449,84 @@ export function BenchmarkRunner() {
           </div>
 
           {/* Subset Selection */}
-          <div className="space-y-2">
+          <div className="space-y-3">
             <label className="text-sm font-medium text-ink-200">
               Subset Size
             </label>
-            <Select value={subsetPct} onValueChange={setSubsetPct}>
-              <SelectTrigger className="w-full max-w-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {SUBSET_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-xs uppercase tracking-wide text-ink-500">
+                  Mode
+                </label>
+                <Select
+                  value={subsetMode}
+                  onValueChange={(value) =>
+                    setSubsetMode(value as "percent" | "count")
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="percent">Percentage</SelectItem>
+                    <SelectItem value="count">Fixed Item Count</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {subsetMode === "percent" ? (
+                <div className="space-y-2">
+                  <label className="text-xs uppercase tracking-wide text-ink-500">
+                    Percentage
+                  </label>
+                  <Select value={subsetPct} onValueChange={setSubsetPct}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SUBSET_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <label className="text-xs uppercase tracking-wide text-ink-500">
+                    Item Count
+                  </label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={subsetCount}
+                    onChange={(e) => setSubsetCount(e.target.value)}
+                    className="bg-ink-800/60 border-ink-600 text-ink-100"
+                  />
+                </div>
+              )}
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-xs uppercase tracking-wide text-ink-500">
+                  Seed (optional)
+                </label>
+                <Input
+                  value={subsetSeed}
+                  onChange={(e) => setSubsetSeed(e.target.value)}
+                  placeholder="affine-seed-001"
+                  className="bg-ink-800/60 border-ink-600 text-ink-100"
+                />
+              </div>
+              <div className="flex items-end text-xs text-ink-400">
+                Use the same seed across runs to align samples between models.
+              </div>
+            </div>
+            {isAffineSelected && subsetMode === "percent" && (
+              <p className="text-xs text-amber-300">
+                Affine environments are large; consider using a fixed item count instead of %.
+              </p>
+            )}
             <p className="text-xs text-ink-400">
               Deterministic sampling ensures reproducible results. Minimum sample size is 1 item.
             </p>
@@ -475,7 +552,13 @@ export function BenchmarkRunner() {
                     {items.map((benchmark) => {
                       const totalItems = benchmark.total_items || 0;
                       const sampledItems =
-                        totalItems > 0
+                        subsetMode === "count"
+                          ? subsetCountValue > 0
+                            ? totalItems > 0
+                              ? Math.min(subsetCountValue, totalItems)
+                              : subsetCountValue
+                            : 0
+                          : totalItems > 0
                           ? Math.max(1, Math.floor((totalItems * subsetValue) / 100))
                           : 0;
                       const estSeconds =

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { getRuns, type Run } from "@/lib/api";
+import { cancelRun, getRuns, type Run } from "@/lib/api";
 import {
   computeQueueSchedule,
   estimateRunRemainingSeconds,
@@ -30,6 +30,7 @@ export default function RunsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modelFilter, setModelFilter] = useState("");
+  const [cancelingRunId, setCancelingRunId] = useState<string | null>(null);
 
   const loadRuns = useCallback(async () => {
     try {
@@ -51,6 +52,19 @@ export default function RunsPage() {
     const interval = window.setInterval(loadRuns, 15000);
     return () => window.clearInterval(interval);
   }, [runs, loadRuns]);
+
+  const handleCancel = async (runId: string) => {
+    if (!confirm("Cancel this benchmark run?")) return;
+    setCancelingRunId(runId);
+    try {
+      await cancelRun(runId);
+      await loadRuns();
+    } catch (e) {
+      console.error("Failed to cancel run", e);
+    } finally {
+      setCancelingRunId(null);
+    }
+  };
 
   const filteredRuns = runs.filter((run) =>
     run.model_slug.toLowerCase().includes(modelFilter.toLowerCase())
@@ -155,8 +169,10 @@ export default function RunsPage() {
                     </span>
                   </div>
                   <p className="text-sm text-ink-400">
-                    {run.subset_pct}% subset · {run.benchmarks.length} benchmarks ·{" "}
-                    {formatDate(run.created_at)}
+                    {run.subset_count
+                      ? `${run.subset_count} items`
+                      : `${run.subset_pct}% subset`}{" "}
+                    · {run.benchmarks.length} benchmarks · {formatDate(run.created_at)}
                   </p>
                   {run.status === "running" && (
                     <p className="text-xs text-ink-400">
@@ -216,6 +232,24 @@ export default function RunsPage() {
                         View
                       </Link>
                     </Button>
+                    {["queued", "running"].includes(run.status) && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full sm:w-auto"
+                        onClick={() => handleCancel(run.id)}
+                        disabled={cancelingRunId === run.id}
+                      >
+                        {cancelingRunId === run.id ? (
+                          <>
+                            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                            Canceling
+                          </>
+                        ) : (
+                          "Cancel"
+                        )}
+                      </Button>
+                    )}
                     {(run.status === "succeeded" || run.status === "failed") && (
                       <Button variant="outline" size="sm" asChild className="w-full sm:w-auto">
                         <a

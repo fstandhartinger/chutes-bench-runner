@@ -42,6 +42,8 @@ async def create_run(
     model_id: str,
     model_slug: str,
     subset_pct: int,
+    subset_count: Optional[int] = None,
+    subset_seed: Optional[str] = None,
     selected_benchmarks: Optional[list[str]] = None,
     config: Optional[dict[str, Any]] = None,
     auth_mode: Optional[str] = None,
@@ -56,6 +58,8 @@ async def create_run(
         model_id: Model UUID
         model_slug: Model slug for display
         subset_pct: Percentage of items to sample (1, 5, 10, 25, 50, 100)
+        subset_count: Optional fixed number of items to sample
+        subset_seed: Optional seed for deterministic sampling
         selected_benchmarks: Optional list of benchmark names to run (None = all enabled)
         config: Optional additional configuration
         
@@ -63,6 +67,10 @@ async def create_run(
         Created BenchmarkRun
     """
     normalized_benchmarks = _normalize_benchmark_names(selected_benchmarks)
+    if subset_count is not None and subset_count < 1:
+        raise ValueError("subset_count must be >= 1")
+    if subset_seed is not None:
+        subset_seed = subset_seed.strip() or None
 
     # Get enabled benchmarks
     query = select(Benchmark).where(Benchmark.is_enabled == True)  # noqa: E712
@@ -77,6 +85,8 @@ async def create_run(
         model_id=model_id,
         model_slug=model_slug,
         subset_pct=subset_pct,
+        subset_count=subset_count,
+        subset_seed=subset_seed,
         selected_benchmarks=normalized_benchmarks,
         config=config,
         auth_mode=auth_mode,
@@ -102,12 +112,21 @@ async def create_run(
     await db.refresh(run)
 
     # Create initial event
+    subset_label = f"{subset_pct}% subset"
+    if subset_count:
+        subset_label = f"{subset_count} items"
     await add_run_event(
         db,
         run.id,
         "run_created",
-        message=f"Run created for model {model_slug} with {subset_pct}% subset",
-        data={"model_slug": model_slug, "subset_pct": subset_pct, "benchmark_count": len(benchmarks)},
+        message=f"Run created for model {model_slug} with {subset_label}",
+        data={
+            "model_slug": model_slug,
+            "subset_pct": subset_pct,
+            "subset_count": subset_count,
+            "subset_seed": subset_seed,
+            "benchmark_count": len(benchmarks),
+        },
     )
 
     logger.info("Created run", run_id=run.id, model=model_slug, benchmarks=len(benchmarks))

@@ -49,6 +49,12 @@ export function Header() {
               API
             </Link>
             <Link
+              href="/ops"
+              className="text-sm text-ink-300 transition-colors hover:text-ink-100"
+            >
+              Ops
+            </Link>
+            <Link
               href="/verify"
               className="text-sm text-ink-300 transition-colors hover:text-ink-100"
             >
@@ -110,7 +116,6 @@ export function Header() {
     </header>
   );
 }
-
 
 
 

@@ -38,6 +38,8 @@ async def generate_csv_export(
         "run_id",
         "model_slug",
         "subset_pct",
+        "subset_count",
+        "subset_seed",
         "run_status",
         "run_started_at",
         "run_completed_at",
@@ -74,6 +76,8 @@ async def generate_csv_export(
             run.id,
             run.model_slug,
             run.subset_pct,
+            run.subset_count or "",
+            run.subset_seed or "",
             run.status,
             run.started_at.isoformat() if run.started_at else "",
             run.completed_at.isoformat() if run.completed_at else "",
@@ -148,7 +152,12 @@ async def generate_pdf_export(
     summary_style = styles["Normal"]
     story.append(Paragraph(f"<b>Run ID:</b> {run.id}", summary_style))
     story.append(Paragraph(f"<b>Model:</b> {run.model_slug}", summary_style))
-    story.append(Paragraph(f"<b>Subset:</b> {run.subset_pct}%", summary_style))
+    subset_line = f"{run.subset_pct}%"
+    if run.subset_count:
+        subset_line = f"{run.subset_count} items"
+    story.append(Paragraph(f"<b>Subset:</b> {subset_line}", summary_style))
+    if run.subset_seed:
+        story.append(Paragraph(f"<b>Subset Seed:</b> {run.subset_seed}", summary_style))
     story.append(Paragraph(f"<b>Status:</b> {run.status}", summary_style))
     if run.started_at:
         story.append(Paragraph(f"<b>Started:</b> {run.started_at.isoformat()}", summary_style))
@@ -196,19 +205,19 @@ async def generate_pdf_export(
     story.append(
         Paragraph(
             f"This report was generated on {datetime.utcnow().isoformat()}. "
-            f"The benchmark run evaluated {len(run_benchmarks)} benchmarks with a {run.subset_pct}% "
+            f"The benchmark run evaluated {len(run_benchmarks)} benchmarks with a {subset_line} "
             f"sample of items for deterministic subset evaluation.",
             summary_style,
         )
     )
 
-    if run.subset_pct < 100:
+    if run.subset_count or run.subset_pct < 100:
         story.append(Spacer(1, 8))
         story.append(
             Paragraph(
-                f"<b>Note:</b> This run used deterministic subsampling at {run.subset_pct}%. "
+                f"<b>Note:</b> This run used deterministic subsampling ({subset_line}). "
                 f"Metrics should be interpreted with this context. Full benchmark evaluation "
-                f"requires running at 100%.",
+                f"requires running at 100% or the full task count.",
                 summary_style,
             )
         )
@@ -248,7 +257,6 @@ async def get_export(db: AsyncSession, run_id: str, format: str) -> Optional[Exp
         .order_by(Export.generated_at.desc())
     )
     return result.scalar_one_or_none()
-
 
 
 

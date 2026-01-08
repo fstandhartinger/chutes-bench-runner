@@ -70,7 +70,26 @@ class CreateRunRequest(BaseModel):
         default=100,
         ge=1,
         le=100,
-        description="Percentage of items to sample (1-100). Common values: 1, 5, 10, 25, 50, 100.",
+        description=(
+            "Percentage of items to sample (1-100). Common values: 1, 5, 10, 25, 50, 100. "
+            "Ignored when subset_count is provided."
+        ),
+    )
+    subset_count: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Fixed number of items to sample. Takes precedence over subset_pct when set. "
+            "Useful for Affine environments where 1% can still be large."
+        ),
+    )
+    subset_seed: Optional[str] = Field(
+        default=None,
+        max_length=128,
+        description=(
+            "Optional seed used to deterministically select items. "
+            "Use the same seed across runs to align samples between models."
+        ),
     )
     selected_benchmarks: Optional[list[str]] = Field(
         default=None,
@@ -103,6 +122,8 @@ class RunResponse(APIModel):
     model_id: str
     model_slug: str
     subset_pct: int
+    subset_count: Optional[int] = None
+    subset_seed: Optional[str] = None
     status: str
     selected_benchmarks: Optional[list[str]] = None
     overall_score: Optional[float] = None
@@ -209,6 +230,8 @@ class SignedExportVerifyResponse(BaseModel):
     run_id: Optional[str] = None
     model_slug: Optional[str] = None
     subset_pct: Optional[int] = None
+    subset_count: Optional[int] = None
+    subset_seed: Optional[str] = None
     overall_score: Optional[float] = None
     exported_at: Optional[str] = None
     benchmark_count: Optional[int] = None
@@ -226,3 +249,44 @@ class MaintenanceStatusResponse(BaseModel):
     """Maintenance status response."""
     maintenance_mode: bool
     message: str
+
+
+class WorkerHeartbeatInfo(APIModel):
+    """Worker heartbeat info."""
+    worker_id: str
+    hostname: Optional[str] = None
+    running_runs: int
+    max_concurrent_runs: int
+    item_concurrency: int
+    last_seen: datetime
+
+
+class WorkerTimeseriesPoint(APIModel):
+    """Aggregated worker counts for charting."""
+    timestamp: datetime
+    worker_count: int
+    running_runs: int
+
+
+class RunSummaryResponse(APIModel):
+    """Lightweight run summary."""
+    id: str
+    model_slug: str
+    subset_pct: int
+    subset_count: Optional[int] = None
+    subset_seed: Optional[str] = None
+    status: str
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class OpsOverviewResponse(BaseModel):
+    """Ops overview response."""
+    workers: list[WorkerHeartbeatInfo]
+    timeseries: list[WorkerTimeseriesPoint]
+    queue_counts: dict[str, int]
+    queued_runs: list[RunSummaryResponse]
+    running_runs: list[RunSummaryResponse]
+    completed_runs: list[RunSummaryResponse]
+    worker_config: dict[str, int]

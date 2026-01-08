@@ -20,12 +20,16 @@ from app.api.schemas import (
     ModelsListResponse,
     PublicKeyResponse,
     MaintenanceStatusResponse,
+    OpsOverviewResponse,
     RunBenchmarkDetailsResponse,
     RunEventResponse,
     RunResponse,
+    RunSummaryResponse,
     RunsListResponse,
     SignedExportVerifyResponse,
     SyncModelsResponse,
+    WorkerHeartbeatInfo,
+    WorkerTimeseriesPoint,
 )
 from app.models.benchmark import Benchmark
 from app.models.run import BenchmarkItemResult, BenchmarkRun, BenchmarkRunBenchmark, RunEvent
@@ -45,6 +49,7 @@ from app.services.run_service import (
     list_runs,
     requeue_run,
 )
+from app.services.worker_service import get_worker_timeseries, list_active_workers
 from app.services.signed_export_service import (
     SigningKeyError,
     generate_signed_zip_export,
@@ -249,6 +254,8 @@ async def create_benchmark_run(
             model_id=model.id,
             model_slug=model.slug,
             subset_pct=request.subset_pct,
+            subset_count=request.subset_count,
+            subset_seed=request.subset_seed,
             selected_benchmarks=request.selected_benchmarks,
             config=request.config,
             auth_mode=auth_mode,
@@ -316,6 +323,8 @@ async def create_benchmark_run_with_api_key(
             model_id=model.id,
             model_slug=model.slug,
             subset_pct=request.subset_pct,
+            subset_count=request.subset_count,
+            subset_seed=request.subset_seed,
             selected_benchmarks=request.selected_benchmarks,
             config=request.config,
             auth_mode="api_key",
@@ -624,6 +633,55 @@ async def verify_signed_export(file: UploadFile = File(...)):
     """Verify a signed benchmark results zip."""
     content = await file.read()
     return SignedExportVerifyResponse.model_validate(verify_signed_zip_export(content))
+
+
+# Ops endpoints
+@router.get("/ops/overview", response_model=OpsOverviewResponse)
+async def ops_overview(db: SessionDep):
+    """Get worker heartbeats, queue counts, and recent runs for ops dashboard."""
+    settings = get_settings()
+    stale_seconds = max(settings.worker_heartbeat_seconds * 3, 180)
+    workers = await list_active_workers(db, stale_seconds=stale_seconds)
+    timeseries = await get_worker_timeseries(db, minutes=360)
+
+    counts_result = await db.execute(
+        select(BenchmarkRun.status, func.count()).group_by(BenchmarkRun.status)
+    )
+    queue_counts = {status: int(count) for status, count in counts_result.all()}
+    for status_name in ["queued", "running", "succeeded", "failed", "canceled"]:
+        queue_counts.setdefault(status_name, 0)
+
+    queued_runs_result = await db.execute(
+        select(BenchmarkRun)
+        .where(BenchmarkRun.status == "queued")
+        .order_by(BenchmarkRun.created_at.asc())
+        .limit(25)
+    )
+    running_runs_result = await db.execute(
+        select(BenchmarkRun)
+        .where(BenchmarkRun.status == "running")
+        .order_by(BenchmarkRun.started_at.desc().nullslast())
+        .limit(25)
+    )
+    completed_runs_result = await db.execute(
+        select(BenchmarkRun)
+        .where(BenchmarkRun.status.in_(["succeeded", "failed", "canceled"]))
+        .order_by(BenchmarkRun.completed_at.desc().nullslast(), BenchmarkRun.created_at.desc())
+        .limit(25)
+    )
+
+    return OpsOverviewResponse(
+        workers=[WorkerHeartbeatInfo.model_validate(worker) for worker in workers],
+        timeseries=[WorkerTimeseriesPoint.model_validate(point) for point in timeseries],
+        queue_counts=queue_counts,
+        queued_runs=[RunSummaryResponse.model_validate(run) for run in queued_runs_result.scalars().all()],
+        running_runs=[RunSummaryResponse.model_validate(run) for run in running_runs_result.scalars().all()],
+        completed_runs=[RunSummaryResponse.model_validate(run) for run in completed_runs_result.scalars().all()],
+        worker_config={
+            "worker_max_concurrent": settings.worker_max_concurrent,
+            "worker_item_concurrency": settings.worker_item_concurrency,
+        },
+    )
 
 
 # Health endpoint

@@ -382,17 +382,24 @@ class AffineEnvAdapter(BenchmarkAdapter):
         for idx in range(total):
             yield str(idx)
 
-    async def get_items_for_evaluation(self, subset_pct: int, seed: str) -> tuple[int, list[str]]:
+    async def get_items_for_evaluation(
+        self,
+        subset_pct: int,
+        seed: str,
+        subset_count: Optional[int] = None,
+    ) -> tuple[int, list[str]]:
         total = await self.get_total_items()
         if total <= 0:
             return 0, []
-        if subset_pct >= 100:
-            subset_count = total
-        else:
-            subset_count = max(1, int(total * subset_pct / 100))
+        task_space = self._task_space_size or total
+        if subset_count is None:
+            if subset_pct >= 100:
+                subset_count = total
+            else:
+                subset_count = max(1, int(total * subset_pct / 100))
+        subset_count = max(1, min(subset_count, task_space))
         seed_int = int(hashlib.sha256(seed.encode()).hexdigest()[:16], 16)
         rng = random.Random(seed_int)
-        task_space = self._task_space_size or total
         if subset_count >= total and task_space == total:
             items = list(range(total))
         else:

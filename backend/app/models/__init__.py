@@ -9,6 +9,7 @@ from app.models.run import (
     RunEvent,
     RunStatus,
 )
+from app.models.worker import WorkerHeartbeat, WorkerHeartbeatLog
 
 __all__ = [
     "Model",
@@ -20,8 +21,9 @@ __all__ = [
     "RunEvent",
     "Export",
     "RunStatus",
+    "WorkerHeartbeat",
+    "WorkerHeartbeatLog",
 ]
-
 
 
 

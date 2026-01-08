@@ -143,18 +143,24 @@ class BenchmarkAdapter(ABC):
         """Cleanup any resources allocated by the adapter."""
         return None
 
-    async def get_items_for_evaluation(self, subset_pct: int, seed: str) -> tuple[int, list[str]]:
+    async def get_items_for_evaluation(
+        self,
+        subset_pct: int,
+        seed: str,
+        subset_count: Optional[int] = None,
+    ) -> tuple[int, list[str]]:
         all_items: list[str] = []
         async for item_id in self.enumerate_items():
             all_items.append(item_id)
         total_items = len(all_items)
-        return total_items, self.get_deterministic_subset(all_items, subset_pct, seed)
+        return total_items, self.get_deterministic_subset(all_items, subset_pct, seed, subset_count)
 
     def get_deterministic_subset(
         self,
         item_ids: list[str],
         subset_pct: int,
         seed: str,
+        subset_count: Optional[int] = None,
     ) -> list[str]:
         """
         Get deterministic subset of items.
@@ -170,7 +176,10 @@ class BenchmarkAdapter(ABC):
         Returns:
             Deterministically sampled list of item IDs
         """
-        if subset_pct >= 100:
+        if subset_count is not None:
+            if subset_count >= len(item_ids):
+                return item_ids
+        elif subset_pct >= 100:
             return item_ids
 
         # Create deterministic seed from string
@@ -180,7 +189,10 @@ class BenchmarkAdapter(ABC):
         # Shuffle and take top K
         shuffled = item_ids.copy()
         rng.shuffle(shuffled)
-        k = max(1, int(len(item_ids) * subset_pct / 100))
+        if subset_count is not None:
+            k = max(1, min(len(item_ids), subset_count))
+        else:
+            k = max(1, int(len(item_ids) * subset_pct / 100))
         return shuffled[:k]
 
     def compute_item_hash(self, item_data: Any) -> str:

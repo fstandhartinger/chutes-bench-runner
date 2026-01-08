@@ -20,12 +20,18 @@ function parseDate(value?: string | null): Date | null {
   return parseDateValue(value);
 }
 
-function expectedItems(rb: BenchmarkRunBenchmark, subsetPct: number): number {
+function expectedItems(rb: BenchmarkRunBenchmark, run: Run): number {
   if (rb.sampled_items && rb.sampled_items > 0) {
     return rb.sampled_items;
   }
+  if (run.subset_count && run.subset_count > 0) {
+    if (rb.total_items && rb.total_items > 0) {
+      return Math.min(run.subset_count, rb.total_items);
+    }
+    return run.subset_count;
+  }
   if (rb.total_items && rb.total_items > 0) {
-    return Math.max(1, Math.floor((rb.total_items * subsetPct) / 100));
+    return Math.max(1, Math.floor((rb.total_items * run.subset_pct) / 100));
   }
   return 0;
 }
@@ -34,7 +40,7 @@ export function getRunProgress(run: Run): { completed: number; total: number; pe
   let total = 0;
   let completed = 0;
   for (const rb of run.benchmarks) {
-    total += expectedItems(rb, run.subset_pct);
+    total += expectedItems(rb, run);
     completed += rb.completed_items || 0;
   }
   if (total <= 0) {
@@ -90,7 +96,7 @@ export function estimateRunRemainingSeconds(run: Run, now = new Date()): number 
     if (["succeeded", "failed", "skipped", "needs_setup"].includes(rb.status)) {
       continue;
     }
-    const total = expectedItems(rb, run.subset_pct);
+    const total = expectedItems(rb, run);
     if (total <= 0) continue;
     const remainingItems = Math.max(0, total - (rb.completed_items || 0));
     const perItem = perItemByBenchmark.get(rb.benchmark_name) ?? avgPerItem;
@@ -107,7 +113,7 @@ export function estimateRunTotalSeconds(
   if (!avgPerItemSeconds || avgPerItemSeconds <= 0) return null;
   let totalItems = 0;
   for (const rb of run.benchmarks) {
-    totalItems += expectedItems(rb, run.subset_pct);
+    totalItems += expectedItems(rb, run);
   }
   if (totalItems <= 0) return null;
   return totalItems * avgPerItemSeconds;

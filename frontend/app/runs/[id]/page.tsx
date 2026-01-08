@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import {
   getRuns,
   getRun,
+  cancelRun,
   getBenchmarkDetails,
   getExportUrl,
   type Run,
@@ -352,6 +353,7 @@ export default function RunDetailPage() {
   const [exportingMarkdown, setExportingMarkdown] = useState(false);
   const [showErrorBreakdown, setShowErrorBreakdown] = useState(false);
   const [queueSchedule, setQueueSchedule] = useState<Record<string, QueueEstimate>>({});
+  const [canceling, setCanceling] = useState(false);
   const workerSlots = getWorkerSlots();
 
   const fetchAllItems = useCallback(async () => {
@@ -559,7 +561,13 @@ export default function RunDetailPage() {
       lines.push(`- Run ID: ${run.id}`);
       lines.push(`- Model: ${run.model_slug}`);
       lines.push(`- Benchmark: ${selectedBenchmark}`);
-      lines.push(`- Subset: ${run.subset_pct}%`);
+      const subsetLabel = run.subset_count
+        ? `${run.subset_count} items`
+        : `${run.subset_pct}%`;
+      lines.push(`- Subset: ${subsetLabel}`);
+      if (run.subset_seed) {
+        lines.push(`- Subset Seed: ${run.subset_seed}`);
+      }
       lines.push(`- Sampled Items: ${selectedRb.sampled_items}/${selectedRb.total_items}`);
       lines.push(`- Status: ${selectedRb.status}`);
       lines.push(`- Generated: ${new Date().toISOString()}`);
@@ -648,6 +656,21 @@ export default function RunDetailPage() {
     }
   };
 
+  const handleCancelRun = async () => {
+    if (!run) return;
+    if (!confirm("Cancel this benchmark run?")) return;
+    setCanceling(true);
+    try {
+      await cancelRun(run.id);
+      const updated = await getRun(run.id);
+      setRun(updated);
+    } catch (e) {
+      console.error("Failed to cancel run", e);
+    } finally {
+      setCanceling(false);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-screen-xl px-6 py-10">
       {/* Header */}
@@ -678,6 +701,23 @@ export default function RunDetailPage() {
             >
               {run.status}
             </span>
+            {["queued", "running"].includes(run.status) && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCancelRun}
+                disabled={canceling}
+              >
+                {canceling ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Canceling
+                  </>
+                ) : (
+                  "Cancel Run"
+                )}
+              </Button>
+            )}
             {run.overall_score !== undefined && run.overall_score !== null && (
               <div className="rounded-lg bg-moss/10 px-4 py-2 text-center">
                 <div className="text-2xl font-semibold text-moss">
@@ -700,7 +740,12 @@ export default function RunDetailPage() {
         <CardContent className="grid gap-6 p-6 sm:grid-cols-2 lg:grid-cols-6">
           <div>
             <div className="text-sm text-ink-400">Subset</div>
-            <div className="text-xl font-medium">{run.subset_pct}%</div>
+            <div className="text-xl font-medium">
+              {run.subset_count ? `${run.subset_count} items` : `${run.subset_pct}%`}
+            </div>
+            {run.subset_seed && (
+              <div className="text-xs text-ink-400">Seed {run.subset_seed}</div>
+            )}
           </div>
           <div>
             <div className="text-sm text-ink-400">Benchmarks</div>

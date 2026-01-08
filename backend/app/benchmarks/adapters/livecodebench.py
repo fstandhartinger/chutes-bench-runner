@@ -96,13 +96,20 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
             "metadata": item.get("metadata") or {},
         }
 
-    async def get_items_for_evaluation(self, subset_pct: int, seed: str) -> tuple[int, list[str]]:
+    async def get_items_for_evaluation(
+        self,
+        subset_pct: int,
+        seed: str,
+        subset_count: Optional[int] = None,
+    ) -> tuple[int, list[str]]:
         total_items = await self.get_total_items()
         item_ids = [str(i) for i in range(total_items)]
-        if subset_pct >= 100:
+        if subset_count is not None and subset_count >= total_items:
+            return total_items, item_ids
+        if subset_count is None and subset_pct >= 100:
             return total_items, item_ids
 
-        subset = self.get_deterministic_subset(item_ids, subset_pct, seed)
+        subset = self.get_deterministic_subset(item_ids, subset_pct, seed, subset_count)
         subset.sort(key=int)
         return total_items, subset
 
