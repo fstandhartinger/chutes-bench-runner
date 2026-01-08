@@ -87,42 +87,56 @@ class SandyService:
         timeout_seconds = 60.0
         if timeout_ms is not None:
             timeout_seconds = max(timeout_seconds, timeout_ms / 1000 + 30)
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=10.0)) as client:
-            try:
-                payload: dict[str, Any] = {"command": command}
-                if cwd:
-                    payload["cwd"] = cwd
-                if env:
-                    payload["env"] = env
-                if timeout_ms is not None:
-                    payload["timeoutMs"] = timeout_ms
-                response = await client.post(
-                    f"{self.base_url}/api/sandboxes/{sandbox_id}/exec",
-                    headers=self.headers,
-                    json=payload,
+        delay_seconds = 1
+        last_error: Optional[str] = None
+        for attempt in range(1, 3):
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=10.0)) as client:
+                try:
+                    payload: dict[str, Any] = {"command": command}
+                    if cwd:
+                        payload["cwd"] = cwd
+                    if env:
+                        payload["env"] = env
+                    if timeout_ms is not None:
+                        payload["timeoutMs"] = timeout_ms
+                    response = await client.post(
+                        f"{self.base_url}/api/sandboxes/{sandbox_id}/exec",
+                        headers=self.headers,
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    return {
+                        "success": True,
+                        "stdout": data.get("stdout", ""),
+                        "stderr": data.get("stderr", ""),
+                        "exit_code": data.get("exitCode", 0),
+                    }
+                except httpx.HTTPStatusError as e:
+                    error_detail = e.response.text or str(e)
+                    last_error = error_detail
+                    logger.error(
+                        f"Failed to execute command in sandbox {sandbox_id}",
+                        status_code=e.response.status_code,
+                        error=error_detail,
+                    )
+                    if e.response.status_code not in {408, 429, 500, 502, 503, 504}:
+                        break
+                except Exception as e:
+                    last_error = str(e) or e.__class__.__name__
+                    logger.error(
+                        f"Failed to execute command in sandbox {sandbox_id}",
+                        error=last_error,
+                    )
+            if attempt < 2:
+                logger.warning(
+                    "Retrying sandbox exec",
+                    attempt=attempt,
+                    error=last_error,
                 )
-                response.raise_for_status()
-                data = response.json()
-                return {
-                    "success": True,
-                    "stdout": data.get("stdout", ""),
-                    "stderr": data.get("stderr", ""),
-                    "exit_code": data.get("exitCode", 0)
-                }
-            except httpx.HTTPStatusError as e:
-                error_detail = e.response.text or str(e)
-                logger.error(
-                    f"Failed to execute command in sandbox {sandbox_id}",
-                    status_code=e.response.status_code,
-                    error=error_detail,
-                )
-                return {"success": False, "error": error_detail, "exit_code": -1}
-            except Exception as e:
-                logger.error(
-                    f"Failed to execute command in sandbox {sandbox_id}",
-                    error=str(e) or e.__class__.__name__,
-                )
-                return {"success": False, "error": str(e), "exit_code": -1}
+                await asyncio.sleep(delay_seconds)
+                delay_seconds = min(delay_seconds * 2, 10)
+        return {"success": False, "error": last_error or "sandbox exec failed", "exit_code": -1}
 
     async def write_file(self, sandbox_id: str, path: str, content: str) -> bool:
         """Write a file to the sandbox."""
@@ -143,7 +157,7 @@ class SandyService:
                 except httpx.HTTPStatusError as e:
                     detail = e.response.text or e.response.reason_phrase or str(e)
                     last_error = f"HTTP {e.response.status_code}: {detail}".strip()
-                    if e.response.status_code not in {408, 429, 502, 503, 504}:
+                    if e.response.status_code not in {408, 429, 500, 502, 503, 504}:
                         break
                 except Exception as e:
                     last_error = str(e) or e.__class__.__name__
@@ -178,7 +192,7 @@ class SandyService:
                 except httpx.HTTPStatusError as e:
                     detail = e.response.text or e.response.reason_phrase or str(e)
                     last_error = f"HTTP {e.response.status_code}: {detail}".strip()
-                    if e.response.status_code not in {408, 429, 502, 503, 504}:
+                    if e.response.status_code not in {408, 429, 500, 502, 503, 504}:
                         break
                 except Exception as e:
                     last_error = str(e) or e.__class__.__name__

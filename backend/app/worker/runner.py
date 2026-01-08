@@ -57,6 +57,14 @@ def _is_retryable_item_error(error: Optional[str]) -> bool:
         return True
     if "connection reset" in message or "connection aborted" in message:
         return True
+    if "sandbox" in message and (
+        "could not create" in message
+        or "failed to create" in message
+        or "failed to write file" in message
+        or "failed to execute command" in message
+        or "failed to terminate" in message
+    ):
+        return True
     return False
 
 
