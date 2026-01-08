@@ -1,5 +1,6 @@
 services:
   worker:
+    image: chutes-bench-runner-worker
     build:
       context: ./backend
       dockerfile: Dockerfile
