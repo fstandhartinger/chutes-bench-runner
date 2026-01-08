@@ -32,6 +32,7 @@ class AffineEnvSpec:
     mem_limit: str = "10g"
     cpu_limit: Optional[str] = None
     item_timeout_seconds: int = 1200
+    proxy_timeout: Optional[int] = None
     task_space_size: Optional[int] = None
     dataset_name: Optional[str] = None
     dataset_subset: Optional[str] = None
@@ -52,6 +53,7 @@ AFFINE_ENV_SPECS: dict[str, AffineEnvSpec] = {
         eval_params={"temperature": 0.0, "timeout": 600},
         mem_limit="10g",
         item_timeout_seconds=900,
+        proxy_timeout=600,
     ),
     "affine_lgc_v2": AffineEnvSpec(
         name="affine_lgc_v2",
@@ -65,6 +67,7 @@ AFFINE_ENV_SPECS: dict[str, AffineEnvSpec] = {
         mem_limit="20g",
         item_timeout_seconds=1500,
         task_space_size=100_000_000 * 4,
+        proxy_timeout=1300,
     ),
     "affine_game": AffineEnvSpec(
         name="affine_game",
@@ -79,6 +82,7 @@ AFFINE_ENV_SPECS: dict[str, AffineEnvSpec] = {
         cpu_limit="2000m",
         item_timeout_seconds=7500,
         task_space_size=10**11,
+        proxy_timeout=7400,
     ),
     "affine_ded": AffineEnvSpec(
         name="affine_ded",
@@ -92,6 +96,7 @@ AFFINE_ENV_SPECS: dict[str, AffineEnvSpec] = {
         mem_limit="10g",
         item_timeout_seconds=900,
         dataset_name="AffineFoundation/rl-python",
+        proxy_timeout=600,
     ),
     "affine_cde": AffineEnvSpec(
         name="affine_cde",
@@ -106,6 +111,7 @@ AFFINE_ENV_SPECS: dict[str, AffineEnvSpec] = {
         item_timeout_seconds=900,
         dataset_name="PrimeIntellect/INTELLECT-3-RL",
         dataset_subset="code",
+        proxy_timeout=600,
     ),
     "affine_lgc": AffineEnvSpec(
         name="affine_lgc",
@@ -119,6 +125,7 @@ AFFINE_ENV_SPECS: dict[str, AffineEnvSpec] = {
         mem_limit="20g",
         item_timeout_seconds=1500,
         dataset_name="AffineFoundation/affine-lgc-xlarge",
+        proxy_timeout=1300,
     ),
     "affine_abd": AffineEnvSpec(
         name="affine_abd",
@@ -132,6 +139,7 @@ AFFINE_ENV_SPECS: dict[str, AffineEnvSpec] = {
         mem_limit="10g",
         item_timeout_seconds=900,
         dataset_name="AffineFoundation/rl-python",
+        proxy_timeout=600,
     ),
     "affine_swe_pro": AffineEnvSpec(
         name="affine_swe_pro",
@@ -148,6 +156,7 @@ AFFINE_ENV_SPECS: dict[str, AffineEnvSpec] = {
         volumes={
             "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
         },
+        proxy_timeout=2000,
     ),
 }
 
@@ -252,6 +261,7 @@ async def _handle_eval(payload: dict) -> None:
         volumes=payload.get("volumes"),
     )
     eval_params = payload.get("eval_params") or {}
+    proxy_timeout = payload.get("proxy_timeout")
     eval_params.update(
         {
             "model": payload["model"],
@@ -265,7 +275,10 @@ async def _handle_eval(payload: dict) -> None:
     seed = payload.get("seed")
     if seed is not None:
         eval_params["seed"] = seed
-    result = await env.evaluate(**eval_params)
+    if proxy_timeout is not None:
+        result = await env.evaluate(_timeout=proxy_timeout, **eval_params)
+    else:
+        result = await env.evaluate(**eval_params)
     print(json.dumps(result))
 
 
@@ -458,6 +471,7 @@ class AffineEnvAdapter(BenchmarkAdapter):
             metadata={
                 "env": self.spec.env_name,
                 "task_id": task_id,
+                "seed": payload.get("seed"),
                 "task_space": self._task_space_size,
             },
         )
@@ -554,6 +568,9 @@ class AffineEnvAdapter(BenchmarkAdapter):
             "HF_TOKEN": os.getenv("HF_TOKEN", ""),
             "HUGGINGFACE_HUB_TOKEN": os.getenv("HF_TOKEN", ""),
         }
+        task_type = self.spec.eval_params.get("task_type")
+        if task_type:
+            env_vars["ENV_NAME"] = task_type
         env_vars.update(self.spec.env_vars)
         payload = {
             "image": self.spec.image,
@@ -568,10 +585,17 @@ class AffineEnvAdapter(BenchmarkAdapter):
             "model": self.model_slug,
             "base_url": settings.chutes_api_base_url,
             "api_key": api_key,
+            "proxy_timeout": self.spec.proxy_timeout,
         }
         if include_task:
             payload["task_id"] = task_id
+            payload["seed"] = self._generate_seed(task_id)
         return payload
+
+    def _generate_seed(self, task_id: int) -> int:
+        seed_string = f"{self.spec.env_name}:{task_id}"
+        hash_bytes = hashlib.sha256(seed_string.encode()).digest()[:8]
+        return int.from_bytes(hash_bytes, byteorder="big") % (2**32)
 
     async def _get_dataset_size(
         self,

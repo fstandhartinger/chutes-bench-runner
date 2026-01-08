@@ -186,7 +186,7 @@ This creates `chutes-bench-runner-extra-worker-*` containers without name confli
 
 The autoscaler runs on the Sandy server and adjusts worker counts based on the
 current queue size. It scales base workers (0–4) and, when needed, extra workers
-in a separate compose project (up to 2) for a total of 6.
+in a separate compose project (up to 6) for a total of 10.
 
 **Install:**
 ```bash
