@@ -93,6 +93,7 @@ def run_compose(cmd: list[str], logger: logging.Logger, dry_run: bool, timeout: 
 
 
 def scale_base(
+    project: str,
     compose_file: str,
     env_file: str,
     workers: int,
@@ -102,6 +103,8 @@ def scale_base(
 ) -> bool:
     cmd = [
         "docker-compose",
+        "-p",
+        project,
         "-f",
         compose_file,
         "--env-file",
@@ -186,6 +189,7 @@ def main() -> int:
     poll_seconds = _int_env("SCALE_INTERVAL_SECONDS", 30)
     compose_timeout = _int_env("COMPOSE_TIMEOUT_SECONDS", 120)
     extra_project = _str_env("EXTRA_PROJECT", "chutes-bench-runner-extra")
+    base_project = _str_env("BASE_PROJECT", "chutes-bench-runner")
     dry_run = _int_env("DRY_RUN", 0) == 1
     timeout = _int_env("API_TIMEOUT_SECONDS", 10)
     log_path = _str_env("LOG_PATH", "/var/log/chutes-bench-runner-autoscaler.log")
@@ -225,7 +229,15 @@ def main() -> int:
             if target != last_target:
                 base_workers = min(base_max, target)
                 extra_workers = max(0, target - base_max)
-                ok_base = scale_base(compose_file, env_file, base_workers, logger, dry_run, compose_timeout)
+                ok_base = scale_base(
+                    base_project,
+                    compose_file,
+                    env_file,
+                    base_workers,
+                    logger,
+                    dry_run,
+                    compose_timeout,
+                )
                 ok_extra = scale_extra(
                     extra_project,
                     compose_file,

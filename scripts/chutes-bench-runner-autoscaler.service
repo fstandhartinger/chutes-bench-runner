@@ -19,6 +19,7 @@ Environment=MIN_WORKERS=1
 Environment=WORKER_MAX_CONCURRENT=3
 Environment=SCALE_INTERVAL_SECONDS=30
 Environment=COMPOSE_TIMEOUT_SECONDS=90
+Environment=BASE_PROJECT=chutes-bench-runner
 Environment=EXTRA_PROJECT=chutes-bench-runner-extra
 Environment=LOG_PATH=/var/log/chutes-bench-runner-autoscaler.log
 Environment=LOG_LEVEL=INFO
