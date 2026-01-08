@@ -15,7 +15,7 @@ Environment=ENV_FILE=/opt/chutes-bench-runner/.env.worker
 Environment=BASE_MAX_WORKERS=4
 Environment=EXTRA_MAX_WORKERS=6
 Environment=MAX_WORKERS=10
-Environment=MIN_WORKERS=2
+Environment=MIN_WORKERS=1
 Environment=WORKER_MAX_CONCURRENT=3
 Environment=SCALE_INTERVAL_SECONDS=30
 Environment=EXTRA_PROJECT=chutes-bench-runner-extra
