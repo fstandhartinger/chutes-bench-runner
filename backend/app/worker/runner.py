@@ -25,7 +25,9 @@ from app.models.run import (
     RunStatus,
 )
 from app.services import auth_service
-from app.services.chutes_client import ChutesClient, get_chutes_client
+from app.services.chutes_client import get_chutes_client
+from app.services.gremium_client import GremiumClient
+from app.services.inference_client import InferenceClient
 from app.services.run_service import (
     add_run_event,
     get_run,
@@ -198,7 +200,13 @@ class BenchmarkWorker:
         )
         logger.error("Run failed", run_id=run.id, error=message)
 
-    async def _get_client_for_run(self, db: AsyncSession, run: BenchmarkRun) -> ChutesClient:
+    async def _get_client_for_run(self, db: AsyncSession, run: BenchmarkRun) -> InferenceClient:
+        if run.provider and run.provider.startswith("gremium"):
+            return GremiumClient(
+                api_key=settings.gremium_api_key or settings.chutes_api_key,
+                provider=run.provider,
+                base_url=settings.gremium_api_base_url,
+            )
         if run.auth_mode == "idp":
             if not run.auth_session_id:
                 raise RuntimeError("Run is missing Chutes session credentials")
@@ -631,32 +639,35 @@ class BenchmarkWorker:
         completed_benchmarks = 0
         failed_benchmarks = 0
         client = await self._get_client_for_run(db, run)
+        judge_client: Optional[InferenceClient] = None
+        if run.provider != "chutes":
+            judge_client = get_chutes_client()
 
         try:
-            model = await db.get(Model, run.model_id)
-            chute_id = model.chute_id if model else None
-            available = await client.is_model_available(run.model_slug, chute_id)
-            if available is False:
-                ok, status_code, detail = await client.probe_model_access(run.model_slug)
-                if ok:
-                    available = True
-                elif status_code in (401, 403):
-                    message = f"Chutes credentials are not authorized for {run.model_slug}"
-                    await self._fail_run_for_model_access(run, run_benchmarks, message)
-                    return
-                elif status_code == 404:
-                    message = f"Model {run.model_slug} not found on Chutes"
-                    await self._fail_run_for_model_access(run, run_benchmarks, message)
-                    return
-                else:
-                    logger.warning(
-                        "Model availability check failed; continuing",
-                        run_id=run.id,
-                        model=run.model_slug,
-                        status_code=status_code,
-                        detail=detail,
-                    )
-                    available = True
+            if run.provider == "chutes":
+                model = await db.get(Model, run.model_id)
+                chute_id = model.chute_id if model else None
+                available = await client.is_model_available(run.model_slug, chute_id)
+                if available is False:
+                    ok, status_code, detail = await client.probe_model_access(run.model_slug)
+                    if ok:
+                        available = True
+                    elif status_code in (401, 403):
+                        message = f"Chutes credentials are not authorized for {run.model_slug}"
+                        await self._fail_run_for_model_access(run, run_benchmarks, message)
+                        return
+                    elif status_code == 404:
+                        message = f"Model {run.model_slug} not found on Chutes"
+                        await self._fail_run_for_model_access(run, run_benchmarks, message)
+                        return
+                    else:
+                        logger.warning(
+                            "Model availability check failed; continuing",
+                            run_id=run.id,
+                            model=run.model_slug,
+                            status_code=status_code,
+                            detail=detail,
+                        )
 
             for rb in run_benchmarks:
                 # Check for cancellation
@@ -676,7 +687,7 @@ class BenchmarkWorker:
                     continue
 
                 try:
-                    score = await self.execute_benchmark(db, run, rb, client)
+                    score = await self.execute_benchmark(db, run, rb, client, judge_client=judge_client)
                     if score is not None:
                         total_score += score
                         completed_benchmarks += 1
@@ -702,6 +713,8 @@ class BenchmarkWorker:
         finally:
             if client is not self.client:
                 await client.close()
+            if judge_client:
+                await judge_client.close()
 
         # Compute overall score
         if completed_benchmarks == 0 and failed_benchmarks > 0:
@@ -745,13 +758,14 @@ class BenchmarkWorker:
         db: AsyncSession,
         run: BenchmarkRun,
         rb: BenchmarkRunBenchmark,
-        client: ChutesClient,
+        client: InferenceClient,
+        judge_client: Optional[InferenceClient] = None,
     ) -> Optional[float]:
         """Execute a single benchmark."""
         logger.info("Starting benchmark", run_id=run.id, benchmark=rb.benchmark_name)
 
         # Get adapter
-        adapter = get_adapter(rb.benchmark_name, client, run.model_slug)
+        adapter = get_adapter(rb.benchmark_name, client, run.model_slug, judge_client=judge_client)
         if not adapter:
             await self._safe_update_benchmark_status(
                 rb.id,

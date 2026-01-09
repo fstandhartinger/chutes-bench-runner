@@ -148,19 +148,19 @@ class TauBenchTelecomAdapter(BenchmarkAdapter):
 
         await self._ensure_tau2_repo()
         settings = get_settings()
-        token = self.client.user_access_token or self.client.api_key
+        token = self.client.get_api_key()
         if not token:
             return ItemResult(item_id=item_id, error="Missing Chutes API key for τ²-Bench evaluation")
 
         os.environ["OPENAI_API_KEY"] = token
-        os.environ["OPENAI_API_BASE"] = settings.chutes_api_base_url
+        os.environ["OPENAI_API_BASE"] = self.client.get_api_base_url()
 
         agent_model = f"openai/{self.model_slug}"
         user_model = f"openai/{settings.tau2_user_model}" if settings.tau2_user_model else agent_model
         llm_args = {
             "temperature": 0.0,
             "api_key": token,
-            "api_base": settings.chutes_api_base_url,
+            "api_base": self.client.get_api_base_url(),
         }
 
         try:

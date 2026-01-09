@@ -100,6 +100,8 @@ class ChutesClient:
     2. User token mode: Uses user's OAuth access token for inference (BYOC)
     """
 
+    provider = "chutes"
+
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -157,6 +159,12 @@ class ChutesClient:
         """Close the HTTP client."""
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+
+    def get_api_base_url(self) -> str:
+        return self.base_url
+
+    def get_api_key(self) -> Optional[str]:
+        return self.user_access_token or self.api_key
 
     async def list_models(self) -> list[dict[str, Any]]:
         """

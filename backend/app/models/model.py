@@ -18,6 +18,7 @@ class Model(Base):
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
     slug: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), default="chutes", index=True)
     tagline: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     user: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     logo: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -29,7 +30,6 @@ class Model(Base):
 
     def __repr__(self) -> str:
         return f"<Model(slug={self.slug}, name={self.name})>"
-
 
 
 

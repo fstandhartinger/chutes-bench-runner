@@ -8,6 +8,7 @@ export interface Model {
   id: string;
   slug: string;
   name: string;
+  provider: string;
   tagline?: string;
   user?: string;
   logo?: string;
@@ -48,6 +49,7 @@ export interface Run {
   id: string;
   model_id: string;
   model_slug: string;
+  provider: string;
   subset_pct: number;
   subset_count?: number | null;
   subset_seed?: string | null;
@@ -55,6 +57,7 @@ export interface Run {
   selected_benchmarks?: string[];
   overall_score?: number;
   error_message?: string;
+  provider_metadata?: Record<string, unknown> | null;
   started_at?: string;
   completed_at?: string;
   created_at: string;
@@ -151,9 +154,13 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> 
   return response.json();
 }
 
-export async function getModels(search?: string): Promise<{ models: Model[]; total: number }> {
+export async function getModels(
+  search?: string,
+  provider?: string
+): Promise<{ models: Model[]; total: number }> {
   const params = new URLSearchParams();
   if (search) params.set("search", search);
+  if (provider) params.set("provider", provider);
   return fetchAPI(`/api/models?${params}`);
 }
 
@@ -180,7 +187,8 @@ export async function createRun(
   subsetPct: number,
   selectedBenchmarks?: string[],
   subsetCount?: number | null,
-  subsetSeed?: string | null
+  subsetSeed?: string | null,
+  provider?: string
 ): Promise<Run> {
   return fetchAPI("/api/runs", {
     method: "POST",
@@ -190,6 +198,7 @@ export async function createRun(
       subset_count: subsetCount ?? undefined,
       subset_seed: subsetSeed ?? undefined,
       selected_benchmarks: selectedBenchmarks,
+      provider,
     }),
   });
 }
@@ -212,6 +221,7 @@ export interface WorkerTimeseriesPoint {
 export interface RunSummary {
   id: string;
   model_slug: string;
+  provider: string;
   subset_pct: number;
   subset_count?: number | null;
   subset_seed?: string | null;

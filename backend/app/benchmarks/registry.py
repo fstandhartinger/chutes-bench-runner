@@ -2,7 +2,7 @@
 from typing import Optional, Type
 
 from app.benchmarks.base import BenchmarkAdapter
-from app.services.chutes_client import ChutesClient
+from app.services.inference_client import InferenceClient
 
 # Registry of benchmark adapters
 _adapters: dict[str, Type[BenchmarkAdapter]] = {}
@@ -18,11 +18,16 @@ def register_adapter(name: str) -> callable:
     return decorator
 
 
-def get_adapter(name: str, client: ChutesClient, model_slug: str) -> Optional[BenchmarkAdapter]:
+def get_adapter(
+    name: str,
+    client: InferenceClient,
+    model_slug: str,
+    judge_client: Optional[InferenceClient] = None,
+) -> Optional[BenchmarkAdapter]:
     """Get an adapter instance by name."""
     if name not in _adapters:
         return None
-    return _adapters[name](client, model_slug)
+    return _adapters[name](client, model_slug, judge_client=judge_client)
 
 
 def get_all_adapters() -> dict[str, Type[BenchmarkAdapter]]:
@@ -32,8 +37,6 @@ def get_all_adapters() -> dict[str, Type[BenchmarkAdapter]]:
 
 # Import adapters to trigger registration
 from app.benchmarks.adapters import *  # noqa: F401, F403, E402
-
-
 
 
 

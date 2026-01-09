@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Optional
 
-from app.services.chutes_client import ChutesClient
+from app.services.inference_client import InferenceClient
 
 
 @dataclass
@@ -61,9 +61,15 @@ class BenchmarkAdapter(ABC):
     - postprocess(): Called after all items are evaluated
     """
 
-    def __init__(self, client: ChutesClient, model_slug: str):
-        """Initialize adapter with Chutes client and model."""
+    def __init__(
+        self,
+        client: InferenceClient,
+        model_slug: str,
+        judge_client: Optional[InferenceClient] = None,
+    ):
+        """Initialize adapter with inference client and model."""
         self.client = client
+        self.judge_client = judge_client or client
         self.model_slug = model_slug
         self._items_cache: Optional[list[str]] = None
 

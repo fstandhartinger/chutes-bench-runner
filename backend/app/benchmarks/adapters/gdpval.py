@@ -185,7 +185,7 @@ class GDPvalAAAdapter(BenchmarkAdapter):
             predicted_answer=response,
         )
         start_time = time.time()
-        judge_text, judge_meta = await self.client.get_completion_text(
+        judge_text, judge_meta = await self.judge_client.get_completion_text(
             settings.gdpval_judge_model,
             judge_prompt,
             temperature=0.0,

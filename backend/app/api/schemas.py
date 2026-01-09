@@ -24,6 +24,7 @@ class ModelResponse(APIModel):
     id: str
     slug: str
     name: str
+    provider: str = "chutes"
     tagline: Optional[str] = None
     user: Optional[str] = None
     logo: Optional[str] = None
@@ -99,6 +100,10 @@ class CreateRunRequest(BaseModel):
         default=None,
         description="Optional per-run configuration overrides.",
     )
+    provider: Optional[str] = Field(
+        default=None,
+        description="Inference provider (chutes, gremium-openai, gremium-anthropic).",
+    )
 
 
 class BenchmarkRunBenchmarkResponse(APIModel):
@@ -121,6 +126,7 @@ class RunResponse(APIModel):
     id: str
     model_id: str
     model_slug: str
+    provider: str
     subset_pct: int
     subset_count: Optional[int] = None
     subset_seed: Optional[str] = None
@@ -128,6 +134,7 @@ class RunResponse(APIModel):
     selected_benchmarks: Optional[list[str]] = None
     overall_score: Optional[float] = None
     error_message: Optional[str] = None
+    provider_metadata: Optional[dict[str, Any]] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     created_at: datetime
@@ -272,6 +279,7 @@ class RunSummaryResponse(APIModel):
     """Lightweight run summary."""
     id: str
     model_slug: str
+    provider: str
     subset_pct: int
     subset_count: Optional[int] = None
     subset_seed: Optional[str] = None

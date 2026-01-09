@@ -56,6 +56,7 @@ const SUBSET_OPTIONS = [
 export function BenchmarkRunner() {
   const [models, setModels] = useState<Model[]>([]);
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
+  const [provider, setProvider] = useState<string>("chutes");
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [subsetPct, setSubsetPct] = useState<string>("10");
   const [subsetMode, setSubsetMode] = useState<"percent" | "count">("percent");
@@ -192,7 +193,7 @@ export function BenchmarkRunner() {
     async function load() {
       try {
         const [modelsRes, benchmarksRes] = await Promise.all([
-          getModels(),
+          getModels(undefined, provider),
           getBenchmarks(),
         ]);
         setModels(modelsRes.models);
@@ -205,6 +206,11 @@ export function BenchmarkRunner() {
               .map((b) => b.name)
           )
         );
+        if (modelsRes.models.length > 0) {
+          setSelectedModel(modelsRes.models[0].id);
+        } else {
+          setSelectedModel("");
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load data");
       } finally {
@@ -212,7 +218,7 @@ export function BenchmarkRunner() {
       }
     }
     load();
-  }, []);
+  }, [provider]);
 
   // Handle benchmark selection
   const toggleBenchmark = (name: string) => {
@@ -251,7 +257,8 @@ export function BenchmarkRunner() {
         parseInt(subsetPct),
         Array.from(selectedBenchmarks),
         subsetMode === "count" ? (Number(subsetCount) || 1) : null,
-        subsetSeed.trim() ? subsetSeed.trim() : null
+        subsetSeed.trim() ? subsetSeed.trim() : null,
+        provider
       );
       setCurrentRun(run);
 
@@ -429,23 +436,45 @@ export function BenchmarkRunner() {
             </div>
           )}
 
-          {/* Model Selection */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-ink-200">Model</label>
-            <Select value={selectedModel} onValueChange={setSelectedModel}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select a model..." />
-              </SelectTrigger>
-              <SelectContent>
-                {models
-                  .filter((model) => model.is_active && model.instance_count > 0)
-                  .map((model) => (
-                    <SelectItem key={model.id} value={model.id}>
-                      <span>{model.name}</span>
-                    </SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
+          {/* Provider + Model Selection */}
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-ink-200">Provider</label>
+              <Select value={provider} onValueChange={setProvider}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select a provider..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="chutes">Chutes (direct)</SelectItem>
+                  <SelectItem value="gremium-openai">Gremium (OpenAI)</SelectItem>
+                  <SelectItem value="gremium-anthropic">Gremium (Anthropic)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-ink-400">
+                Gremium runs use the consensus router and include version + participant metadata.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-ink-200">Model</label>
+              <Select value={selectedModel} onValueChange={setSelectedModel}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select a model..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {models
+                    .filter((model) => model.is_active && model.instance_count > 0)
+                    .map((model) => (
+                      <SelectItem key={model.id} value={model.id}>
+                        <span>{model.name}</span>
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              {models.length === 0 && (
+                <p className="text-xs text-ink-400">No models available for this provider.</p>
+              )}
+            </div>
           </div>
 
           {/* Subset Selection */}

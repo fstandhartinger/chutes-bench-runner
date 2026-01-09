@@ -153,7 +153,7 @@ class AALCRAdapter(BenchmarkAdapter):
             f"CANDIDATE ANSWER TO ASSESS: {candidate}\n\n"
             "Reply only with CORRECT or INCORRECT."
         )
-        response, _ = await self.client.get_completion_text(
+        response, _ = await self.judge_client.get_completion_text(
             settings.aa_lcr_judge_model,
             judge_prompt,
             temperature=0.0,

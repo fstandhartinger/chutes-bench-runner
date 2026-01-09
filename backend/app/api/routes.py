@@ -1,6 +1,6 @@
 """API routes."""
 import asyncio
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, status
 from fastapi.responses import StreamingResponse
@@ -38,7 +38,14 @@ from app.services.export_service import generate_csv_export, generate_pdf_export
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.chutes_client import get_chutes_client
-from app.services.model_service import get_model_by_id, get_models, resolve_model_identifier, sync_models
+from app.services.gremium_client import GremiumClient
+from app.services.model_service import (
+    ensure_gremium_models,
+    get_model_by_id,
+    get_models,
+    resolve_model_identifier,
+    sync_models,
+)
 from app.services.run_service import (
     add_run_event,
     cancel_run,
@@ -66,17 +73,30 @@ router = APIRouter(prefix="/api")
 async def list_models(
     db: SessionDep,
     search: Optional[str] = None,
+    provider: Optional[str] = Query(default=None),
     limit: int = Query(default=100, le=500),
     offset: int = Query(default=0, ge=0),
 ):
     """List available Chutes models."""
-    models = await get_models(db, search=search, limit=limit, offset=offset)
+    settings = get_settings()
+    if provider and provider.startswith("gremium"):
+        if settings.enable_gremium_provider:
+            await ensure_gremium_models(db)
+            await db.commit()
+        models = await get_models(db, search=search, provider=provider, limit=limit, offset=offset)
+        return ModelsListResponse(
+            models=[ModelResponse.model_validate(m) for m in models],
+            total=len(models),
+        )
+
+    models = await get_models(db, search=search, provider=provider, limit=limit, offset=offset)
     llm_identifiers = await get_chutes_client().get_llm_identifiers()
     if llm_identifiers:
         models = [
             model
             for model in models
-            if model.slug in llm_identifiers or (model.chute_id and model.chute_id in llm_identifiers)
+            if model.provider == "chutes"
+            and (model.slug in llm_identifiers or (model.chute_id and model.chute_id in llm_identifiers))
         ]
     return ModelsListResponse(
         models=[ModelResponse.model_validate(m) for m in models],
@@ -195,10 +215,21 @@ async def create_benchmark_run(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=settings.maintenance_message,
         )
+    provider = request.provider or "chutes"
+    allowed_providers = {"chutes", "gremium-openai", "gremium-anthropic"}
+    if provider not in allowed_providers:
+        raise HTTPException(status_code=400, detail="Unsupported provider")
+    if provider.startswith("gremium") and not settings.enable_gremium_provider:
+        raise HTTPException(status_code=400, detail="Gremium provider is not enabled.")
+
     # Validate model exists
     model = await get_model_by_id(db, request.model_id)
     if not model:
+        model = await resolve_model_identifier(db, request.model_id, provider=provider)
+    if not model:
         raise HTTPException(status_code=404, detail="Model not found")
+    if model.provider != provider:
+        raise HTTPException(status_code=400, detail="Model does not match selected provider")
 
     auth_mode = "system"
     auth_session_id = None
@@ -216,48 +247,70 @@ async def create_benchmark_run(
             auth_mode = "idp"
             auth_session_id = session_id
 
-    client = (
-        get_chutes_client(user_access_token=access_token)
-        if access_token
-        else get_chutes_client()
-    )
-    try:
-        available = await client.is_model_available(model.slug, model.chute_id)
-        if available is False:
-            ok, status_code, detail = await client.probe_model_access(model.slug)
-            if ok:
-                available = True
-            elif status_code in (401, 403):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Chutes credentials are not authorized for this model.",
-                )
-            elif status_code == 404:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Model not available for inference on Chutes.",
-                )
-            else:
-                logger.warning(
-                    "Model access probe failed; allowing run creation",
-                    model=model.slug,
-                    status_code=status_code,
-                    detail=detail,
-                )
-    finally:
-        if access_token:
-            await client.close()
+    provider_metadata: Optional[dict[str, Any]] = None
+    if provider == "chutes":
+        client = (
+            get_chutes_client(user_access_token=access_token)
+            if access_token
+            else get_chutes_client()
+        )
+        try:
+            available = await client.is_model_available(model.slug, model.chute_id)
+            if available is False:
+                ok, status_code, detail = await client.probe_model_access(model.slug)
+                if ok:
+                    available = True
+                elif status_code in (401, 403):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Chutes credentials are not authorized for this model.",
+                    )
+                elif status_code == 404:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Model not available for inference on Chutes.",
+                    )
+                else:
+                    logger.warning(
+                        "Model access probe failed; allowing run creation",
+                        model=model.slug,
+                        status_code=status_code,
+                        detail=detail,
+                    )
+        finally:
+            if access_token:
+                await client.close()
+    else:
+        gremium_client = GremiumClient(
+            api_key=settings.gremium_api_key or settings.chutes_api_key,
+            provider=provider,
+            base_url=settings.gremium_api_base_url,
+        )
+        try:
+            provider_metadata = await gremium_client.get_metadata()
+            provider_metadata = {
+                "provider": provider,
+                "base_url": settings.gremium_api_base_url,
+                "version": provider_metadata.get("version"),
+                "participants": provider_metadata.get("participants"),
+            }
+        except Exception as exc:
+            logger.warning("Failed to fetch Gremium metadata", error=str(exc))
+        finally:
+            await gremium_client.close()
 
     try:
         run = await create_run(
             db,
             model_id=model.id,
             model_slug=model.slug,
+            provider=provider,
             subset_pct=request.subset_pct,
             subset_count=request.subset_count,
             subset_seed=request.subset_seed,
             selected_benchmarks=request.selected_benchmarks,
             config=request.config,
+            provider_metadata=provider_metadata,
             auth_mode=auth_mode,
             auth_session_id=auth_session_id,
         )
@@ -280,53 +333,84 @@ async def create_benchmark_run_with_api_key(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=settings.maintenance_message,
         )
-    model = await resolve_model_identifier(db, request.model_id)
+    provider = request.provider or "chutes"
+    allowed_providers = {"chutes", "gremium-openai", "gremium-anthropic"}
+    if provider not in allowed_providers:
+        raise HTTPException(status_code=400, detail="Unsupported provider")
+    if provider.startswith("gremium") and not settings.enable_gremium_provider:
+        raise HTTPException(status_code=400, detail="Gremium provider is not enabled.")
+
+    model = await resolve_model_identifier(db, request.model_id, provider=provider)
     if not model:
         await sync_models(db)
-        model = await resolve_model_identifier(db, request.model_id)
+        model = await resolve_model_identifier(db, request.model_id, provider=provider)
     if not model:
         raise HTTPException(
             status_code=404,
             detail="Model not found. Provide a bench runner model UUID, Chutes chute_id, or model slug.",
         )
+    if model.provider != provider:
+        raise HTTPException(status_code=400, detail="Model does not match selected provider")
 
-    client = get_chutes_client(api_key=api_key)
-    try:
-        available = await client.is_model_available(model.slug, model.chute_id)
-        if available is False:
-            ok, status_code, detail = await client.probe_model_access(model.slug)
-            if ok:
-                available = True
-            elif status_code in (401, 403):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Chutes API key is not authorized for this model.",
-                )
-            elif status_code == 404:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Model not available for inference on Chutes.",
-                )
-            else:
-                logger.warning(
-                    "Model access probe failed; allowing run creation",
-                    model=model.slug,
-                    status_code=status_code,
-                    detail=detail,
-                )
-    finally:
-        await client.close()
+    provider_metadata: Optional[dict[str, Any]] = None
+    if provider == "chutes":
+        client = get_chutes_client(api_key=api_key)
+        try:
+            available = await client.is_model_available(model.slug, model.chute_id)
+            if available is False:
+                ok, status_code, detail = await client.probe_model_access(model.slug)
+                if ok:
+                    available = True
+                elif status_code in (401, 403):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Chutes API key is not authorized for this model.",
+                    )
+                elif status_code == 404:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Model not available for inference on Chutes.",
+                    )
+                else:
+                    logger.warning(
+                        "Model access probe failed; allowing run creation",
+                        model=model.slug,
+                        status_code=status_code,
+                        detail=detail,
+                    )
+        finally:
+            await client.close()
+    else:
+        gremium_client = GremiumClient(
+            api_key=settings.gremium_api_key or settings.chutes_api_key,
+            provider=provider,
+            base_url=settings.gremium_api_base_url,
+        )
+        try:
+            provider_metadata = await gremium_client.get_metadata()
+            provider_metadata = {
+                "provider": provider,
+                "base_url": settings.gremium_api_base_url,
+                "version": provider_metadata.get("version"),
+                "participants": provider_metadata.get("participants"),
+            }
+        except Exception as exc:
+            logger.warning("Failed to fetch Gremium metadata", error=str(exc))
+        finally:
+            await gremium_client.close()
 
     try:
         run = await create_run(
             db,
             model_id=model.id,
             model_slug=model.slug,
+            provider=provider,
             subset_pct=request.subset_pct,
             subset_count=request.subset_count,
             subset_seed=request.subset_seed,
             selected_benchmarks=request.selected_benchmarks,
             config=request.config,
+            provider_metadata=provider_metadata,
             auth_mode="api_key",
             auth_api_key=api_key,
         )

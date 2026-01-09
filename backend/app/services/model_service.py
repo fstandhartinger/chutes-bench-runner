@@ -8,9 +8,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.models.model import Model
+from app.core.config import get_settings
 from app.services.chutes_client import get_chutes_client
 
 logger = get_logger(__name__)
+
+GREMIUM_MODELS = (
+    {
+        "slug": "gremium-consensus",
+        "name": "Gremium (consensus)",
+        "provider": "gremium-openai",
+    },
+    {
+        "slug": "gremium-consensus-anthropic",
+        "name": "Gremium (consensus • Anthropic)",
+        "provider": "gremium-anthropic",
+    },
+)
 
 
 def _is_valid_uuid(value: Optional[str]) -> bool:
@@ -69,6 +83,7 @@ async def sync_models(db: AsyncSession) -> int:
             chute_id=chute_id,
             instance_count=model_data.get("instance_count", 0),
             is_active=is_llm,
+            provider="chutes",
         ).on_conflict_do_update(
             index_elements=["slug"],
             set_={
@@ -79,10 +94,15 @@ async def sync_models(db: AsyncSession) -> int:
                 "chute_id": chute_id,
                 "instance_count": model_data.get("instance_count", 0),
                 "is_active": is_llm,
+                "provider": "chutes",
             }
         )
         await db.execute(stmt)
-    
+
+    settings = get_settings()
+    if settings.enable_gremium_provider:
+        await ensure_gremium_models(db)
+
     await db.commit()
     count = len(unique_models)
     logger.info("Models synced", count=count)
@@ -93,6 +113,7 @@ async def get_models(
     db: AsyncSession,
     active_only: bool = True,
     search: Optional[str] = None,
+    provider: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[Model]:
@@ -104,6 +125,9 @@ async def get_models(
 
     if search:
         query = query.where(Model.name.ilike(f"%{search}%") | Model.slug.ilike(f"%{search}%"))
+
+    if provider:
+        query = query.where(Model.provider == provider)
 
     query = query.order_by(Model.instance_count.desc(), Model.name).offset(offset).limit(limit)
 
@@ -131,16 +155,45 @@ async def get_model_by_chute_id(db: AsyncSession, chute_id: str) -> Optional[Mod
     return result.scalar_one_or_none()
 
 
-async def resolve_model_identifier(db: AsyncSession, identifier: str) -> Optional[Model]:
+async def resolve_model_identifier(
+    db: AsyncSession,
+    identifier: str,
+    provider: Optional[str] = None,
+) -> Optional[Model]:
     """Resolve a model by internal UUID, slug/name, or Chutes chute_id."""
     if _is_valid_uuid(identifier):
         model = await get_model_by_id(db, identifier)
-        if model:
+        if model and (provider is None or model.provider == provider):
             return model
         model = await get_model_by_chute_id(db, identifier)
-        if model:
+        if model and (provider is None or model.provider == provider):
             return model
     model = await get_model_by_slug(db, identifier)
-    if model:
+    if model and (provider is None or model.provider == provider):
         return model
-    return await get_model_by_chute_id(db, identifier)
+    model = await get_model_by_chute_id(db, identifier)
+    if model and (provider is None or model.provider == provider):
+        return model
+    return None
+
+
+async def ensure_gremium_models(db: AsyncSession) -> None:
+    """Ensure synthetic Gremium model entries exist in the database."""
+    for entry in GREMIUM_MODELS:
+        stmt = pg_insert(Model).values(
+            slug=entry["slug"],
+            name=entry["name"],
+            tagline="Gremium consensus routing",
+            instance_count=1,
+            is_active=True,
+            provider=entry["provider"],
+        ).on_conflict_do_update(
+            index_elements=["slug"],
+            set_={
+                "name": entry["name"],
+                "instance_count": 1,
+                "is_active": True,
+                "provider": entry["provider"],
+            },
+        )
+        await db.execute(stmt)

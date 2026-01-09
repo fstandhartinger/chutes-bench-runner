@@ -238,7 +238,7 @@ export default function OpsPage() {
                 </Link>
                 <div className="text-xs text-ink-400">
                   {run.subset_count ? `${run.subset_count} items` : `${run.subset_pct}%`} ·{" "}
-                  {formatDate(run.created_at)}
+                  {formatDate(run.created_at)} · {run.provider}
                 </div>
               </div>
             ))}
@@ -259,7 +259,7 @@ export default function OpsPage() {
                 </Link>
                 <div className="text-xs text-ink-400">
                   {run.subset_count ? `${run.subset_count} items` : `${run.subset_pct}%`} ·{" "}
-                  {run.started_at ? formatDate(run.started_at) : "Starting..."}
+                  {run.started_at ? formatDate(run.started_at) : "Starting..."} · {run.provider}
                 </div>
               </div>
             ))}
@@ -280,7 +280,7 @@ export default function OpsPage() {
                 </Link>
                 <div className="text-xs text-ink-400">
                   {run.subset_count ? `${run.subset_count} items` : `${run.subset_pct}%`} ·{" "}
-                  {run.completed_at ? formatDate(run.completed_at) : formatDate(run.created_at)}
+                  {run.completed_at ? formatDate(run.completed_at) : formatDate(run.created_at)} · {run.provider}
                 </div>
               </div>
             ))}

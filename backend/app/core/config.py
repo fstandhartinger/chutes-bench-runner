@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     chutes_inference_timeout_seconds: int = 300
     chutes_rate_limit_sleep_seconds: int = 30
 
+    # Gremium API
+    enable_gremium_provider: bool = False
+    gremium_api_base_url: str = "https://chutes-model-gremium.onrender.com"
+    gremium_provider_default: str = "gremium-openai"
+    gremium_api_key: Optional[str] = None
+    gremium_timeout_seconds: int = 300
+
     # Backend
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000

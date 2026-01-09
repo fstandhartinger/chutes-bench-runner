@@ -569,7 +569,7 @@ class AffineEnvAdapter(BenchmarkAdapter):
 
     def _build_payload(self, task_id: int, include_task: bool = True) -> dict[str, Any]:
         settings = get_settings()
-        api_key = self.client.user_access_token or self.client.api_key
+        api_key = self.client.get_api_key()
         env_vars = {
             "CHUTES_API_KEY": api_key,
             "HF_TOKEN": os.getenv("HF_TOKEN", ""),
@@ -590,7 +590,7 @@ class AffineEnvAdapter(BenchmarkAdapter):
             "volumes": self.spec.volumes,
             "eval_params": self.spec.eval_params,
             "model": self.model_slug,
-            "base_url": settings.chutes_api_base_url,
+            "base_url": self.client.get_api_base_url(),
             "api_key": api_key,
             "proxy_timeout": self.spec.proxy_timeout,
         }

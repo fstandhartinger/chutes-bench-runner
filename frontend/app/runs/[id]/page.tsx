@@ -560,6 +560,7 @@ export default function RunDetailPage() {
       lines.push(``);
       lines.push(`- Run ID: ${run.id}`);
       lines.push(`- Model: ${run.model_slug}`);
+      lines.push(`- Provider: ${run.provider}`);
       lines.push(`- Benchmark: ${selectedBenchmark}`);
       const subsetLabel = run.subset_count
         ? `${run.subset_count} items`
@@ -567,6 +568,10 @@ export default function RunDetailPage() {
       lines.push(`- Subset: ${subsetLabel}`);
       if (run.subset_seed) {
         lines.push(`- Subset Seed: ${run.subset_seed}`);
+      }
+      if (run.provider_metadata && run.provider.startsWith("gremium")) {
+        lines.push(`- Gremium Version: ${run.provider_metadata.version ?? "-"}`);
+        lines.push(`- Gremium Participants: ${run.provider_metadata.participants ?? "-"}`);
       }
       lines.push(`- Sampled Items: ${selectedRb.sampled_items}/${selectedRb.total_items}`);
       lines.push(`- Status: ${selectedRb.status}`);
@@ -688,7 +693,8 @@ export default function RunDetailPage() {
               {run.model_slug}
             </h1>
             <p className="mt-1 text-ink-400">
-              Run ID: {run.id.slice(0, 8)}... · {formatDate(run.created_at)}
+              Run ID: {run.id.slice(0, 8)}... · {formatDate(run.created_at)} · Provider:{" "}
+              <span className="text-ink-200">{run.provider}</span>
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -782,6 +788,34 @@ export default function RunDetailPage() {
           </div>
         </CardContent>
       </Card>
+
+      {run.provider.startsWith("gremium") && run.provider_metadata && (
+        <Card className="mb-8">
+          <CardHeader>
+            <CardTitle className="text-lg">Gremium Metadata</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-6 p-6 sm:grid-cols-2 lg:grid-cols-3">
+            <div>
+              <div className="text-sm text-ink-400">Version</div>
+              <div className="text-xl font-medium">
+                {String(run.provider_metadata.version ?? "-")}
+              </div>
+            </div>
+            <div>
+              <div className="text-sm text-ink-400">Participants</div>
+              <div className="text-xl font-medium">
+                {String(run.provider_metadata.participants ?? "-")}
+              </div>
+            </div>
+            <div>
+              <div className="text-sm text-ink-400">Base URL</div>
+              <div className="text-sm font-medium break-all text-ink-200">
+                {String(run.provider_metadata.base_url ?? "-")}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Export Buttons */}
       {(run.status === "succeeded" || run.status === "failed") && (

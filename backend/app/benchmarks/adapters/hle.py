@@ -118,7 +118,7 @@ class HLEAdapter(BenchmarkAdapter):
             response=response,
         )
         start_time = time.time()
-        judge_text, judge_meta = await self.client.get_completion_text(
+        judge_text, judge_meta = await self.judge_client.get_completion_text(
             settings.hle_judge_model,
             judge_prompt,
             temperature=0.0,

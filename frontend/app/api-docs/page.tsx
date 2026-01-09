@@ -59,6 +59,14 @@ export default function ApiDocsPage() {
                 benchmark names (use <span className="text-ink-100">/api/benchmarks</span> to
                 discover valid values).
               </li>
+              <li>
+                <span className="text-ink-100">provider</span>: optional inference provider.
+                Use <span className="text-ink-100">chutes</span> (default),
+                <span className="text-ink-100"> gremium-openai</span>, or
+                <span className="text-ink-100"> gremium-anthropic</span>. For Gremium runs,
+                use <span className="text-ink-100">gremium-consensus</span> (OpenAI) or
+                <span className="text-ink-100">gremium-consensus-anthropic</span> as the model.
+              </li>
             </ul>
           </div>
           <CodeBlock>{`curl -X POST ${BACKEND_URL}/api/runs/api \\
@@ -69,7 +77,8 @@ export default function ApiDocsPage() {
     "subset_pct": 1,
     "subset_count": 25,
     "subset_seed": "affine-seed-001",
-    "selected_benchmarks": ["mmlu_pro", "ifbench"]
+    "selected_benchmarks": ["mmlu_pro", "ifbench"],
+    "provider": "chutes"
   }'`}</CodeBlock>
         </CardContent>
       </Card>

@@ -167,6 +167,9 @@ export default function RunsPage() {
                     >
                       {run.status}
                     </span>
+                    <span className="rounded-full border border-ink-800 px-2.5 py-0.5 text-xs text-ink-400">
+                      {run.provider}
+                    </span>
                   </div>
                   <p className="text-sm text-ink-400">
                     {run.subset_count
