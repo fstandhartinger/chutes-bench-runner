@@ -190,37 +190,16 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
 
         prompt = (
             "You are a software engineer fixing a bug in a GitHub repository. "
-            "Provide a unified diff patch that fixes the issue.\n\n"
+            "The repository is cloned at /workspace/repo and checked out to the base commit. "
+            "Make the required code changes in the repo. Do not generate a patch yourself; "
+            "the harness will create the patch after you finish.\n\n"
             f"Repository: {item.get('repo', 'unknown')}\n"
-            f"Issue Description:\n{item.get('problem_statement')}\n\n"
-            "Patch:\n```diff\n"
+            f"Base Commit: {item.get('base_commit', '')}\n"
+            f"Issue Description:\n{item.get('problem_statement')}\n"
         )
-        system_prompt = "Output ONLY the final git diff within a markdown code block. No explanations."
 
         try:
             start_time = time.time()
-            response_text, metadata = await self.client.get_completion_text(
-                self.model_slug,
-                prompt,
-                system_prompt=system_prompt,
-                max_tokens=8192,
-                min_output_tokens=0,
-                temperature=0.0,
-            )
-            latency_ms = int((time.time() - start_time) * 1000)
-
-            if not response_text:
-                return ItemResult(
-                    item_id=item_id,
-                    item_hash=self.compute_item_hash(item.get("instance_id")),
-                    prompt=prompt,
-                    response="",
-                    error=self.format_empty_response_error(metadata),
-                    latency_ms=latency_ms,
-                    metadata={"instance_id": item.get("instance_id"), "system_prompt": system_prompt},
-                )
-
-            patch = self.extract_python_code(response_text)
             # SWE-Bench requires Docker socket access for running docker pull/run
             sandbox_id = await self.sandy.create_sandbox(enable_docker_socket=True)
             if not sandbox_id:
@@ -228,6 +207,81 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                 return ItemResult(item_id=item_id, error=sandbox_error)
 
             try:
+                repo = item.get("repo", "")
+                base_commit = item.get("base_commit", "")
+                if not repo or not base_commit:
+                    return ItemResult(item_id=item_id, error="Missing repo or base commit")
+
+                # Ensure git is available
+                git_check = await self.sandy.execute_command(sandbox_id, "git --version")
+                if git_check.get("exit_code") != 0:
+                    await self.sandy.execute_command(
+                        sandbox_id,
+                        "apt-get update && apt-get install -y git",
+                        timeout_ms=600000,
+                    )
+
+                clone_cmd = f"rm -rf /workspace/repo && git clone https://github.com/{repo}.git /workspace/repo"
+                clone_result = await self.sandy.execute_command(
+                    sandbox_id,
+                    clone_cmd,
+                    timeout_ms=900000,
+                )
+                if clone_result.get("exit_code") != 0:
+                    return ItemResult(
+                        item_id=item_id,
+                        error=clone_result.get("stderr") or "Failed to clone repo",
+                        metadata={"instance_id": item.get("instance_id"), "repo": repo},
+                    )
+                checkout_result = await self.sandy.execute_command(
+                    sandbox_id,
+                    f"cd /workspace/repo && git checkout {base_commit}",
+                )
+                if checkout_result.get("exit_code") != 0:
+                    return ItemResult(
+                        item_id=item_id,
+                        error=checkout_result.get("stderr") or "Failed to checkout base commit",
+                        metadata={"instance_id": item.get("instance_id"), "repo": repo},
+                    )
+
+                agent_name = "claude-code" if "claude" in self.model_slug.lower() else "codex"
+                agent_result = await self.sandy.run_agent(
+                    sandbox_id,
+                    agent=agent_name,
+                    model=self.model_slug,
+                    prompt=prompt + "\nWork inside /workspace/repo.",
+                    max_duration=600,
+                )
+                agent_summary = agent_result.get("summary") or {}
+                agent_events = agent_result.get("events") or []
+                agent_output = next(
+                    (event.get("text") for event in reversed(agent_events) if event.get("type") == "output"),
+                    "",
+                )
+
+                patch_result = await self.sandy.execute_command(
+                    sandbox_id,
+                    "cd /workspace/repo && git diff > /workspace/patch.diff",
+                )
+                if patch_result.get("exit_code") != 0:
+                    return ItemResult(
+                        item_id=item_id,
+                        error=patch_result.get("stderr") or "Failed to generate patch",
+                        metadata={"instance_id": item.get("instance_id"), "repo": repo},
+                    )
+
+                patch = await self._read_file(sandbox_id, "/workspace/patch.diff")
+                if not patch.strip():
+                    return ItemResult(
+                        item_id=item_id,
+                        item_hash=self.compute_item_hash(item.get("instance_id")),
+                        prompt=prompt,
+                        response=agent_output,
+                        error="Agent did not produce a patch",
+                        latency_ms=int((time.time() - start_time) * 1000),
+                        metadata={"instance_id": item.get("instance_id"), "agent": agent_name},
+                    )
+
                 entryscript = self._create_entryscript(item)
                 await self.sandy.write_file(sandbox_id, "patch.diff", patch)
                 await self.sandy.write_file(sandbox_id, "run_script.sh", self._download_run_script(item["instance_id"], "run_script.sh"))
@@ -294,24 +348,24 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                     item_id=item_id,
                     item_hash=self.compute_item_hash(item.get("instance_id")),
                     prompt=prompt,
-                    response=response_text.strip(),
+                    response=agent_output,
                     expected="[SWE-bench Pro tests passed]",
                     is_correct=is_correct,
                     score=1.0 if is_correct else 0.0,
-                    latency_ms=latency_ms,
-                    input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
-                    output_tokens=metadata.get("usage", {}).get("completion_tokens"),
+                    latency_ms=int((time.time() - start_time) * 1000),
                     judge_output={
                         "output": output,
                         "stdout": stdout_log,
                         "stderr": stderr_log,
                         "exit_code": run_result.get("exit_code"),
+                        "agent_summary": agent_summary,
                     },
                     error=error,
                     metadata={
                         "instance_id": item.get("instance_id"),
                         "repo": item.get("repo"),
-                        "system_prompt": system_prompt,
+                        "agent": agent_name,
+                        "agent_summary": agent_summary,
                     },
                 )
             finally:
@@ -322,7 +376,7 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             return ItemResult(
                 item_id=item_id,
                 prompt=prompt,
-                response=locals().get("response_text", "") or "",
+                response=locals().get("agent_output", "") or "",
                 error=str(e),
                 metadata={"instance_id": item.get("instance_id")},
             )

@@ -42,6 +42,10 @@ SANDY_API_KEY=<sandy-api-key>
 BENCH_SIGNING_PRIVATE_KEY=<base64 or PEM Ed25519 private key>
 BENCH_SIGNING_PUBLIC_KEY=<optional public key>
 SKIP_MODEL_SYNC=true
+CRITPT_EVAL_URL=https://artificialanalysis.ai/api/v2/critpt/evaluate
+CRITPT_API_KEY=<optional CritPt API key>
+AA_OMNISCIENCE_JUDGE_MODEL=<optional override>
+GDPVAL_JUDGE_MODEL=<optional override>
 ```
 
 **API Key Location**: System-wide `$CHUTES_API_KEY` environment variable. Use `echo $CHUTES_API_KEY` to access.
@@ -313,6 +317,9 @@ Each benchmark adapter in `backend/app/benchmarks/adapters/` uses official datas
 | `swe_bench_pro` | ScaleAI/SWE-bench_Pro + SWE-bench_Pro-os scripts | Docker Hub images + official parsers |
 | `tau_bench_telecom` | sierra-research/tau2-bench | Official tau2 simulation framework |
 | `terminal_bench_hard` | ia03/terminal-bench | Docker-based harness per README |
+| `aa_omniscience` | ArtificialAnalysis/AA-Omniscience-Public | LLM judge with official rubric |
+| `gdpval_aa` | openai/gdpval | LLM judge vs reference docs |
+| `critpt` | CritPt-Benchmark/CritPt | External evaluation server |
 
 **Note**: To enable gated datasets, set `HF_TOKEN` in the worker environment with access to the datasets.
 
@@ -320,7 +327,8 @@ Each benchmark adapter in `backend/app/benchmarks/adapters/` uses official datas
 
 - **Code benchmarks** (livecodebench, scicode, aa_lcr, swe_bench_pro, terminal_bench_hard): Use the **Sandy Sandbox** on the Hetzner Server for execution.
 - **IFBench**: Uses the official IFEval checker.
-- **Terminal-Bench**: Follows the official Docker harness (agent + test phases).
+- **Terminal-Bench**: Uses Sandy agent execution to drive the task container, then runs the official tests.
+- **SWE-Bench Pro**: Runs a Sandy agent against a sandboxed repo checkout, derives a patch, then executes the official harness.
 
 ### Sandy Sandbox Security: Docker Socket Access
 

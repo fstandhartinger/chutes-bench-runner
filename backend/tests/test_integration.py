@@ -66,7 +66,7 @@ class TestBenchmarksAPI:
         assert response.status_code == 200
         data = response.json()
         assert "benchmarks" in data
-        assert len(data["benchmarks"]) == 19
+        assert len(data["benchmarks"]) == 22
 
     def test_benchmarks_have_required_fields(self, client):
         """Test benchmarks have required fields."""

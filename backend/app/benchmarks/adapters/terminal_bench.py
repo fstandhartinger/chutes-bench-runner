@@ -291,40 +291,16 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         instruction = item.get("instruction") or ""
         task_yaml = item.get("task_yaml") or ""
         prompt = (
-            "You are solving a terminal task. Provide a bash script that completes the task.\n"
-            "The script will be executed inside the task container.\n\n"
-            f"Task:\n{instruction}\n\n"
-            "Script:\n```bash\n"
+            "You are an interactive terminal agent working inside a sandbox that can execute docker commands.\n"
+            "A task container will be running. Use docker exec to inspect and solve the task.\n"
+            "Write a solution script to /workspace/task/solution.sh that completes the task.\n"
+            "Do NOT run the task tests yourself; the harness will run them after you finish.\n\n"
+            f"Task instruction:\n{instruction}\n\n"
+            f"Task YAML:\n{task_yaml}\n"
         )
-        system_prompt = "Output ONLY the bash script within a markdown code block. No explanations."
 
         try:
             start_time = time.time()
-            response_text, metadata = await self.client.get_completion_text(
-                self.model_slug,
-                prompt,
-                system_prompt=system_prompt,
-                max_tokens=4096,
-                min_output_tokens=0,
-                temperature=0.0,
-            )
-            latency_ms = int((time.time() - start_time) * 1000)
-
-            if not response_text:
-                return ItemResult(
-                    item_id=item_id,
-                    item_hash=self.compute_item_hash(item.get("task_id")),
-                    prompt=prompt,
-                    response="",
-                    error=self.format_empty_response_error(metadata),
-                    latency_ms=latency_ms,
-                    metadata={"task_id": item.get("task_id"), "system_prompt": system_prompt},
-                )
-
-            script = self.extract_python_code(response_text)
-            if not script.strip().startswith("#!"):
-                script = "#!/usr/bin/env bash\nset -e\n" + script
-
             archive = item.get("archive")
             if not isinstance(archive, (bytes, bytearray)):
                 return ItemResult(item_id=item_id, error="Missing task archive bytes")
@@ -340,12 +316,6 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 if not extracted:
                     return ItemResult(item_id=item_id, error="Failed to extract task archive")
 
-                await self.sandy.write_file(sandbox_id, "task/solution.sh", script)
-                await self.sandy.execute_command(
-                    sandbox_id,
-                    "chmod +x task/solution.sh",
-                )
-
                 setup_result = await self._run_terminal_bench(sandbox_id, item.get("task_id") or "task")
                 container_name = setup_result.get("container_name")
                 cleanup_cmd = setup_result.get("cleanup_cmd")
@@ -355,19 +325,57 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                         item_id=item_id,
                         error=setup_result.get("error") or "Container setup failed",
                         judge_output={"setup": setup_result},
-                        metadata={"task_id": item.get("task_id"), "system_prompt": system_prompt},
+                        metadata={"task_id": item.get("task_id")},
                     )
 
                 try:
                     agent_timeout = int((item.get("max_agent_timeout_sec") or 180) * 1000)
                     test_timeout = int((item.get("max_test_timeout_sec") or 300) * 1000)
 
-                    # Agent phase: execute solution.sh
+                    agent_name = "claude-code" if "claude" in self.model_slug.lower() else "codex"
+                    agent_result = await self.sandy.run_agent(
+                        sandbox_id,
+                        agent=agent_name,
+                        model=self.model_slug,
+                        prompt=prompt + f"\nContainer name: {container_name}\n",
+                        max_duration=max(60, int(agent_timeout / 1000)),
+                    )
+                    agent_summary = agent_result.get("summary") or {}
+                    agent_events = agent_result.get("events") or []
+                    agent_output = next(
+                        (event.get("text") for event in reversed(agent_events) if event.get("type") == "output"),
+                        "",
+                    )
+                    latency_ms = int((time.time() - start_time) * 1000)
+
+                    solution_check = await self.sandy.execute_command(
+                        sandbox_id,
+                        "test -f task/solution.sh",
+                    )
+                    if solution_check.get("exit_code") != 0:
+                        return ItemResult(
+                            item_id=item_id,
+                            item_hash=self.compute_item_hash(item.get("task_id")),
+                            prompt=prompt,
+                            response=agent_output,
+                            error="Agent did not write task/solution.sh",
+                            latency_ms=latency_ms,
+                            metadata={
+                                "task_id": item.get("task_id"),
+                                "agent": agent_name,
+                                "agent_summary": agent_summary,
+                            },
+                        )
+
+                    await self.sandy.execute_command(
+                        sandbox_id,
+                        "chmod +x task/solution.sh",
+                    )
                     await self.sandy.execute_command(
                         sandbox_id,
                         f"docker cp task/solution.sh {container_name}:/solution.sh",
                     )
-                    agent_result = await self.sandy.execute_command(
+                    agent_exec = await self.sandy.execute_command(
                         sandbox_id,
                         f"docker exec {container_name} bash -c 'bash /solution.sh'",
                         timeout_ms=agent_timeout,
@@ -414,25 +422,24 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                         item_id=item_id,
                         item_hash=self.compute_item_hash(item.get("task_id")),
                         prompt=prompt,
-                        response=response_text.strip(),
+                        response=agent_output,
                         expected="[Tests passed]",
                         is_correct=is_correct,
                         score=1.0 if is_correct else 0.0,
                         latency_ms=latency_ms,
-                        input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
-                        output_tokens=metadata.get("usage", {}).get("completion_tokens"),
                         judge_output={
-                            "agent_exit_code": agent_result.get("exit_code"),
-                            "agent_stderr": agent_result.get("stderr"),
-                            "stdout": test_result.get("stdout"),
-                            "stderr": test_result.get("stderr"),
-                            "exit_code": test_result.get("exit_code"),
+                            "setup": setup_result,
+                            "agent_summary": agent_summary,
+                            "agent_exec": agent_exec,
+                            "test_result": test_result,
                         },
                         error=error,
                         metadata={
                             "task_id": item.get("task_id"),
                             "difficulty": item.get("difficulty"),
-                            "system_prompt": system_prompt,
+                            "agent": agent_name,
+                            "agent_summary": agent_summary,
+                            "agent_output_excerpt": agent_output[:2000] if agent_output else "",
                             "task_yaml": task_yaml,
                         },
                     )
@@ -449,7 +456,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             return ItemResult(
                 item_id=item_id,
                 prompt=prompt,
-                response=locals().get("response_text", "") or "",
+                response=locals().get("agent_output", "") or "",
                 error=str(e),
                 metadata={"task_id": item.get("task_id")},
             )

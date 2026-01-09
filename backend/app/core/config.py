@@ -80,6 +80,15 @@ class Settings(BaseSettings):
     aa_lcr_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
     # HLE judge model (LLM-based judge)
     hle_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
+    # AA-Omniscience judge model
+    aa_omniscience_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
+    # GDPval judge model (LLM-based evaluator against reference docs)
+    gdpval_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
+    # CritPt external evaluation API
+    critpt_eval_url: str = "https://artificialanalysis.ai/api/v2/critpt/evaluate"
+    critpt_api_key: Optional[str] = None
+    # GDPval reference context limit (characters)
+    gdpval_reference_char_limit: int = 60000
 
     # τ²-Bench (optional override for user simulator model)
     tau2_user_model: Optional[str] = None

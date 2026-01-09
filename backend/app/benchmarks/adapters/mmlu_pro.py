@@ -22,6 +22,7 @@ class MMLUProAdapter(BenchmarkAdapter):
         super().__init__(*args, **kwargs)
         self._dataset: Optional[Any] = None
         self._items: list[dict[str, Any]] = []
+        self._few_shot_by_category: dict[str, list[dict[str, Any]]] = {}
 
     def get_name(self) -> str:
         return "mmlu_pro"
@@ -65,6 +66,31 @@ class MMLUProAdapter(BenchmarkAdapter):
                 })
             
             logger.info(f"Loaded {len(self._items)} MMLU-Pro items")
+            try:
+                validation = await load_dataset_with_retry(
+                    "TIGER-Lab/MMLU-Pro",
+                    split="validation",
+                    token=hf_token,
+                )
+                few_shot_by_category: dict[str, list[dict[str, Any]]] = {}
+                for item in validation:
+                    category = item.get("category", "")
+                    if category not in few_shot_by_category:
+                        few_shot_by_category[category] = []
+                    if len(few_shot_by_category[category]) >= 5:
+                        continue
+                    few_shot_by_category[category].append(
+                        {
+                            "question": item["question"],
+                            "options": item["options"],
+                            "answer": item["answer"],
+                            "category": category,
+                        }
+                    )
+                self._few_shot_by_category = few_shot_by_category
+                logger.info("Loaded MMLU-Pro few-shot examples", categories=len(few_shot_by_category))
+            except Exception as e:
+                logger.warning("Failed to load MMLU-Pro few-shot examples", error=str(e))
         except Exception as e:
             logger.error("Failed to load MMLU-Pro", error=str(e))
             raise
@@ -94,11 +120,30 @@ class MMLUProAdapter(BenchmarkAdapter):
                 error=f"Item {item_id} not found",
             )
 
-        options_str = "\n".join(f"{chr(65 + i)}. {opt}" for i, opt in enumerate(item["options"]))
+        def _format_options(options: list[str]) -> str:
+            return "\n".join(f"{chr(65 + i)}. {opt}" for i, opt in enumerate(options))
+
+        category = item.get("category", "general knowledge")
+        few_shot = self._few_shot_by_category.get(category, [])
+        few_shot_prompt = ""
+        if few_shot:
+            blocks: list[str] = []
+            for example in few_shot[:5]:
+                blocks.append(
+                    "Question: {question}\nOptions:\n{options}\nAnswer: {answer}".format(
+                        question=example["question"],
+                        options=_format_options(example["options"]),
+                        answer=str(example["answer"]).strip().upper()[:1],
+                    )
+                )
+            few_shot_prompt = "\n\n".join(blocks) + "\n\n"
+
+        options_str = _format_options(item["options"])
         prompt = (
             "The following are multiple choice questions (with answers) about "
-            f"{item.get('category', 'general knowledge')}. Think step by step and then output "
-            "the answer in the format of \"The answer is (X)\" at the end.\n\n"
+            f"{category}. Think step by step and then output the answer in the format "
+            "of \"Answer: X\" at the end.\n\n"
+            f"{few_shot_prompt}"
             f"Question: {item['question']}\n"
             f"Options:\n{options_str}\n\n"
             "Answer:"
@@ -122,8 +167,9 @@ class MMLUProAdapter(BenchmarkAdapter):
             if not response_text or response_text is None:
                 item_metadata = {
                     **metadata,
-                    "category": item.get("category"),
+                    "category": category,
                     "system_prompt": system_prompt,
+                    "few_shot_count": len(few_shot[:5]),
                 }
                 return ItemResult(
                     item_id=item_id,
@@ -150,9 +196,10 @@ class MMLUProAdapter(BenchmarkAdapter):
 
             item_metadata = {
                 **metadata,
-                "category": item.get("category"),
+                "category": category,
                 "system_prompt": system_prompt,
                 "parsed_answer": answer_letter or None,
+                "few_shot_count": len(few_shot[:5]),
             }
             return ItemResult(
                 item_id=item_id,

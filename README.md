@@ -35,16 +35,20 @@ results, and verifiable signed exports for sharing results.
 | AIME 2025 | AI-MO/aimo-validation-aime | Numeric answer extraction |
 | IFBench | google/IFEval | Official IFEval instruction checks |
 | AA-LCR | ArtificialAnalysis/AA-LCR | LLM-judge consistency check |
+| AA-Omniscience | ArtificialAnalysis/AA-Omniscience-Public | LLM judge using official rubric |
+| GDPval-AA | openai/gdpval | LLM judge against reference docs |
 | LiveCodeBench | livecodebench/code_generation | Run public+private IO tests |
 | SciCode | SciCode1/SciCode + HDF5 tests | Official multi-step prompts + numeric tests |
 | Terminal-Bench Hard | ia03/terminal-bench | Official docker harness |
 | SWE-Bench Pro | ScaleAI/SWE-bench_Pro + SWE-bench_Pro-os | Official scripts + docker images |
 | tau2-Bench Telecom | tau2-bench repo | Official tau2 simulation framework |
+| CritPt | CritPt-Benchmark/CritPt | External CritPt evaluation server |
 
 Notes:
 - **Gated datasets** (HLE, GPQA) require HF access for the provided HF token.
 - Some benchmarks require Sandy for sandboxed execution (LiveCodeBench, SciCode,
-  Terminal-Bench, SWE-Bench Pro).
+  Terminal-Bench, SWE-Bench Pro). Terminal-Bench and SWE-Bench Pro run through
+  Sandy's agent API to support agentic execution.
 
 ## API usage
 
@@ -155,6 +159,8 @@ Optional but recommended:
 - `BENCH_DATA_DIR`, `HF_HOME`, `HF_DATASETS_CACHE`, `HF_HUB_CACHE` (shared cache paths)
 - `BENCH_SIGNING_PRIVATE_KEY`, `BENCH_SIGNING_PUBLIC_KEY` (signed exports)
 - `ADMIN_SECRET` (admin endpoints)
+- `CRITPT_EVAL_URL`, `CRITPT_API_KEY` (CritPt evaluation service)
+- `AA_OMNISCIENCE_JUDGE_MODEL`, `GDPVAL_JUDGE_MODEL` (LLM judges for AA-Omniscience/GDPval)
 
 ## Testing
 

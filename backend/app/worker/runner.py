@@ -879,16 +879,20 @@ class BenchmarkWorker:
             )
 
             if not pending_item_ids:
-                score = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
+                accuracy = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
                 additional_metrics = await adapter.postprocess(existing_results) if needs_postprocess else {}
+                score_override_present = "score_override" in additional_metrics
+                score_override = additional_metrics.pop("score_override", None)
+                score = score_override if score_override_present else accuracy
                 metrics = {
-                    "accuracy": score,
+                    "accuracy": accuracy,
                     "total_items": total_items,
                     "sampled_items": len(items_to_evaluate),
                     "sampled_pct": run.subset_pct,
                     "subset_count": run.subset_count,
                     "subset_seed": run.subset_seed,
                     "correct": correct,
+                    "score": score,
                     **additional_metrics,
                 }
                 await self._safe_update_benchmark_status(
@@ -902,7 +906,11 @@ class BenchmarkWorker:
                     run.id,
                     "benchmark_completed",
                     benchmark_name=rb.benchmark_name,
-                    message=f"Completed {adapter.get_display_name()} with score {score:.2%}",
+                    message=(
+                        f"Completed {adapter.get_display_name()} with score {score:.2%}"
+                        if score is not None
+                        else f"Completed {adapter.get_display_name()}"
+                    ),
                     data=metrics,
                 )
                 logger.info(
@@ -1101,17 +1109,21 @@ class BenchmarkWorker:
                         raise Exception(abort_error or "Fatal benchmark error")
 
             all_results = existing_results + new_results if needs_postprocess else []
-            score = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
+            accuracy = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
             additional_metrics = await adapter.postprocess(all_results) if needs_postprocess else {}
+            score_override_present = "score_override" in additional_metrics
+            score_override = additional_metrics.pop("score_override", None)
+            score = score_override if score_override_present else accuracy
 
             metrics = {
-                "accuracy": score,
+                "accuracy": accuracy,
                 "total_items": total_items,
                 "sampled_items": len(items_to_evaluate),
                 "sampled_pct": run.subset_pct,
                 "subset_count": run.subset_count,
                 "subset_seed": run.subset_seed,
                 "correct": correct,
+                "score": score,
                 **additional_metrics,
             }
 
@@ -1127,7 +1139,11 @@ class BenchmarkWorker:
                 run.id,
                 "benchmark_completed",
                 benchmark_name=rb.benchmark_name,
-                message=f"Completed {adapter.get_display_name()} with score {score:.2%}",
+                message=(
+                    f"Completed {adapter.get_display_name()} with score {score:.2%}"
+                    if score is not None
+                    else f"Completed {adapter.get_display_name()}"
+                ),
                 data=metrics,
             )
 

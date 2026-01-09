@@ -1,4 +1,5 @@
 import asyncio
+import json
 import httpx
 from typing import Any, Optional, Dict, List
 from app.core.config import get_settings
@@ -206,6 +207,66 @@ class SandyService:
                 delay_seconds = min(delay_seconds * 2, 5)
         logger.error(f"Failed to terminate sandbox {sandbox_id}", error=last_error)
         return False
+
+    async def iter_agent_events(
+        self,
+        sandbox_id: str,
+        agent: str,
+        model: str,
+        prompt: str,
+        max_duration: int = 600,
+    ):
+        """Stream agent events from Sandy."""
+        if not self.api_key:
+            raise RuntimeError("Sandy API key is not configured")
+        timeout = httpx.Timeout(None)
+        payload = {
+            "agent": agent,
+            "model": model,
+            "prompt": prompt,
+            "maxDuration": max_duration,
+        }
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/api/sandboxes/{sandbox_id}/agent/run",
+                headers=self.headers,
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    if line.startswith("data: "):
+                        line = line[len("data: ") :].strip()
+                    try:
+                        yield json.loads(line)
+                    except Exception:
+                        continue
+
+    async def run_agent(
+        self,
+        sandbox_id: str,
+        agent: str,
+        model: str,
+        prompt: str,
+        max_duration: int = 600,
+    ) -> Dict[str, Any]:
+        """Run an agent in the sandbox and return summary + collected events."""
+        events: List[Dict[str, Any]] = []
+        summary: Dict[str, Any] = {}
+        async for event in self.iter_agent_events(
+            sandbox_id=sandbox_id,
+            agent=agent,
+            model=model,
+            prompt=prompt,
+            max_duration=max_duration,
+        ):
+            if isinstance(event, dict):
+                events.append(event)
+                if event.get("type") == "complete":
+                    summary = event
+        return {"events": events, "summary": summary}
 
     async def run_python_code(self, code: str, timeout_ms: Optional[int] = None) -> Dict[str, Any]:
         """Convenience method to create a sandbox, run Python code, and terminate."""
