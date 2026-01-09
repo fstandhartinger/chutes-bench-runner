@@ -692,22 +692,27 @@ class BenchmarkWorker:
                         total_score += score
                         completed_benchmarks += 1
                 except Exception as e:
-                    logger.error(
+                    error_detail = str(e)
+                    if error_detail:
+                        error_detail = f"{e.__class__.__name__}: {error_detail}"
+                    else:
+                        error_detail = repr(e)
+                    logger.exception(
                         "Benchmark failed",
                         run_id=run.id,
                         benchmark=rb.benchmark_name,
-                        error=str(e),
+                        error=error_detail,
                     )
                     await self._safe_update_benchmark_status(
                         rb.id,
                         BenchmarkRunStatus.FAILED,
-                        error_message=str(e),
+                        error_message=error_detail,
                     )
                     await self._safe_add_run_event(
                         run.id,
                         "benchmark_failed",
                         benchmark_name=rb.benchmark_name,
-                        message=f"Benchmark failed: {str(e)}",
+                        message=f"Benchmark failed: {error_detail}",
                     )
                     failed_benchmarks += 1
         finally:
