@@ -31,7 +31,7 @@ results, and verifiable signed exports for sharing results.
 |----------|------------------|-------------------|
 | MMLU-Pro | TIGER-Lab/MMLU-Pro | Multiple-choice letter parsing |
 | GPQA Diamond | Idavidrein/gpqa (gated) | Multiple-choice letter parsing |
-| Humanity's Last Exam (HLE) | cais/hle (gated) | Normalized exact match |
+| Humanity's Last Exam (HLE) | cais/hle (gated) | LLM judge (official HLE judge prompt, multimodal) |
 | AIME 2025 | AI-MO/aimo-validation-aime | Numeric answer extraction |
 | IFBench | google/IFEval | Official IFEval instruction checks |
 | AA-LCR | ArtificialAnalysis/AA-LCR | LLM-judge consistency check |
@@ -152,6 +152,7 @@ Required:
 Optional but recommended:
 - `HF_TOKEN` (for gated datasets)
 - `SANDY_BASE_URL`, `SANDY_API_KEY` (sandboxed benchmarks)
+- `BENCH_DATA_DIR`, `HF_HOME`, `HF_DATASETS_CACHE`, `HF_HUB_CACHE` (shared cache paths)
 - `BENCH_SIGNING_PRIVATE_KEY`, `BENCH_SIGNING_PUBLIC_KEY` (signed exports)
 - `ADMIN_SECRET` (admin endpoints)
 

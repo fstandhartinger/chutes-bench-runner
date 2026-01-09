@@ -118,23 +118,21 @@ class GPQADiamondAdapter(BenchmarkAdapter):
         correct_idx = options.index(item["correct_answer"])
         correct_letter = chr(65 + correct_idx)
 
-        options_str = "\n".join(f"{chr(65 + i)}. {opt}" for i, opt in enumerate(options))
-        prompt = f"""Answer the following graduate-level question. Respond with only the letter of the correct answer.
-
-Question: {item["question"]}
-
-{options_str}
-
-Answer:"""
+        options_str = "\n".join(f"({chr(65 + i)}) {opt}" for i, opt in enumerate(options))
+        prompt = (
+            f"What is the correct answer to this question: {item['question']}\n\n"
+            f"Choices:\n{options_str}\n\n"
+            "Format your response as follows: \"The correct answer is (insert answer here)\""
+        )
 
         try:
             start_time = time.time()
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are an expert scientist. Answer the question with only the letter of the correct answer.",
+                system_prompt="You are a very intelligent assistant, who follows instructions directly.",
                 max_tokens=4096,
-                min_output_tokens=1024,
+                min_output_tokens=0,
                 temperature=0.0,
             )
             latency_ms = int((time.time() - start_time) * 1000)

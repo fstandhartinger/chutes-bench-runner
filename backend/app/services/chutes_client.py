@@ -426,6 +426,24 @@ class ChutesClient:
             return 0
         return max(1, len(text) // 4)
 
+    def _estimate_messages_tokens(self, messages: list[dict[str, Any]]) -> int:
+        tokens = 0
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, str):
+                tokens += self._estimate_tokens(content)
+                continue
+            if isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    part_type = part.get("type")
+                    if part_type == "text":
+                        tokens += self._estimate_tokens(part.get("text") or "")
+                    elif part_type == "image_url":
+                        tokens += settings.chutes_image_token_estimate
+        return tokens
+
     def _compute_safe_max_tokens(self, max_output_length: int, input_tokens: int) -> int:
         margin = settings.chutes_max_tokens_margin
         if max_output_length <= 0:
@@ -679,6 +697,191 @@ class ChutesClient:
         input_tokens = self._estimate_tokens(prompt)
         if system_prompt:
             input_tokens += self._estimate_tokens(system_prompt)
+        if context_length and input_tokens >= context_length:
+            metadata["response_error"] = (
+                f"Prompt length {input_tokens} exceeds model context length {context_length}"
+            )
+            metadata["context_length"] = context_length
+            metadata["input_tokens_estimate"] = input_tokens
+            return "", metadata
+
+        if max_output_length:
+            safe_max_tokens = self._compute_safe_max_tokens(max_output_length, input_tokens)
+        if context_length:
+            safe_context_tokens = self._compute_safe_context_tokens(context_length, input_tokens)
+            safe_max_tokens = (
+                safe_context_tokens
+                if safe_max_tokens is None
+                else min(safe_max_tokens, safe_context_tokens)
+            )
+            if max_tokens_cap:
+                safe_max_tokens = min(safe_max_tokens, max_tokens_cap)
+            metadata["max_output_length"] = max_output_length
+            if context_length:
+                metadata["context_length"] = context_length
+            if safe_max_tokens > 0 and desired_max_tokens is not None:
+                applied_max_tokens = min(desired_max_tokens, safe_max_tokens)
+            else:
+                applied_max_tokens = safe_max_tokens or desired_max_tokens
+        else:
+            applied_max_tokens = desired_max_tokens
+
+        if max_tokens_cap and applied_max_tokens is not None:
+            applied_max_tokens = min(applied_max_tokens, max_tokens_cap)
+
+        if applied_max_tokens is not None:
+            kwargs["max_tokens"] = applied_max_tokens
+            metadata["max_tokens"] = applied_max_tokens
+            if applied_max_tokens != requested_max_tokens:
+                logger.debug(
+                    "Adjusting max_tokens for model",
+                    model=model_slug,
+                    requested=requested_max_tokens,
+                    applied=applied_max_tokens,
+                    max_output_length=max_output_length,
+                )
+
+        while attempt < max_attempts:
+            attempt += 1
+            try:
+                response = await self.run_inference(model_slug, messages, **kwargs)
+            except InferenceHTTPError as e:
+                if _is_context_length_error(e):
+                    metadata["response_error"] = "Prompt exceeds model context length"
+                    metadata["response_error_code"] = e.status_code
+                    metadata["response_error_detail"] = e.response_text
+                    return "", metadata
+                if (
+                    _is_max_tokens_error(e)
+                    and isinstance(kwargs.get("max_tokens"), int)
+                ):
+                    current_max = kwargs.get("max_tokens")
+                    limit = _extract_max_tokens_limit(e.response_text)
+                    if limit and limit > 0:
+                        reduced = min(current_max, limit)
+                        if safe_max_tokens is None or limit < safe_max_tokens:
+                            safe_max_tokens = limit
+                        if self._llm_output_cache is None:
+                            self._llm_output_cache = {}
+                        existing_limit = self._llm_output_cache.get(model_slug)
+                        if existing_limit is None or limit < existing_limit:
+                            self._llm_output_cache[model_slug] = limit
+                            self._llm_cache_at = time.monotonic()
+                    else:
+                        reduced = max(512, int(current_max * 0.5))
+                    if reduced < current_max:
+                        kwargs["max_tokens"] = reduced
+                        applied_max_tokens = reduced
+                        metadata["max_tokens"] = reduced
+                        logger.warning(
+                            "Reducing max_tokens after model limit error",
+                            model=model_slug,
+                            requested=current_max,
+                            applied=reduced,
+                        )
+                        if attempt >= max_attempts and not extra_max_token_retry_used:
+                            max_attempts += 1
+                            extra_max_token_retry_used = True
+                        await asyncio.sleep(delay_seconds)
+                        delay_seconds = min(delay_seconds * 2, 10)
+                        continue
+                logger.error("Inference failed", model=model_slug, error=str(e))
+                raise
+            except Exception as e:
+                logger.error("Inference failed", model=model_slug, error=str(e))
+                raise
+
+            text = ""
+            response_metadata: dict[str, Any] = {}
+            if response and isinstance(response, dict):
+                text, response_metadata = self._extract_message_text(response)
+                metadata["usage"] = response.get("usage", {})
+                metadata["model"] = response.get("model")
+
+            metadata.update(response_metadata)
+            metadata["response_attempts"] = attempt
+
+            finish_reason = metadata.get("finish_reason")
+            if (
+                finish_reason == "length"
+                and attempt < max_attempts
+                and isinstance(kwargs.get("max_tokens"), int)
+            ):
+                current_max = kwargs["max_tokens"]
+                max_tokens_ceiling = safe_max_tokens
+                if max_tokens_cap:
+                    if max_tokens_ceiling:
+                        max_tokens_ceiling = min(max_tokens_ceiling, max_tokens_cap)
+                    else:
+                        max_tokens_ceiling = max_tokens_cap
+                bumped: Optional[int] = None
+                if max_tokens_ceiling and max_tokens_ceiling > current_max:
+                    bumped = min(current_max * 2, max_tokens_ceiling)
+                elif max_tokens_ceiling is None:
+                    bumped = current_max * 2
+                if bumped and bumped > current_max:
+                    kwargs["max_tokens"] = bumped
+                    applied_max_tokens = bumped
+                    metadata["max_tokens"] = bumped
+                    logger.info(
+                        "Retrying after truncation",
+                        model=model_slug,
+                        previous=current_max,
+                        applied=bumped,
+                    )
+                    await asyncio.sleep(delay_seconds)
+                    delay_seconds = min(delay_seconds * 2, 10)
+                    continue
+
+            if text:
+                return text, metadata
+
+            if attempt < max_attempts:
+                await asyncio.sleep(delay_seconds)
+                delay_seconds = min(delay_seconds * 2, 10)
+
+        return "", metadata
+
+    async def get_completion_messages(
+        self,
+        model_slug: str,
+        messages: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        """
+        Convenience method to get completion text for pre-built messages.
+
+        Returns:
+            Tuple of (response_text, metadata_dict)
+        """
+        attempt = 0
+        max_attempts = kwargs.pop("response_attempts", 3)
+        delay_seconds = 1
+        requested_max_tokens = kwargs.get("max_tokens")
+        applied_max_tokens = requested_max_tokens
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = settings.chutes_inference_timeout_seconds
+        extra_max_token_retry_used = False
+
+        metadata = {
+            "usage": {},
+            "model": model_slug,
+            "finish_reason": None,
+        }
+
+        min_output_tokens = kwargs.pop("min_output_tokens", None)
+        if min_output_tokens is None:
+            min_output_tokens = settings.chutes_min_output_tokens
+        max_tokens_cap = settings.chutes_max_output_tokens_cap
+        max_output_length = await self.get_model_max_output_length(model_slug)
+        context_length = await self.get_model_context_length(model_slug)
+        safe_max_tokens: Optional[int] = None
+        desired_max_tokens = requested_max_tokens
+        if (max_output_length or context_length) and min_output_tokens:
+            if desired_max_tokens is None or desired_max_tokens < min_output_tokens:
+                desired_max_tokens = min_output_tokens
+
+        input_tokens = self._estimate_messages_tokens(messages)
         if context_length and input_tokens >= context_length:
             metadata["response_error"] = (
                 f"Prompt length {input_tokens} exceeds model context length {context_length}"

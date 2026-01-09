@@ -49,6 +49,18 @@ SKIP_MODEL_SYNC=true
 **Sandy host**: Production sandboxes use the dedicated Sandy server at
 `https://sandy.94.130.222.43.nip.io` (old `65.109.49.103` deployment retired).
 
+### Shared Cache (Bench Data + HF)
+
+Workers use the Sandy host cache to avoid repeated dataset downloads:
+
+- `BENCH_DATA_DIR=/var/lib/sandy/cache/chutes-bench-data`
+- `HF_HOME=/var/lib/sandy/cache/hf`
+- `HF_DATASETS_CACHE=/var/lib/sandy/cache/hf/datasets`
+- `HF_HUB_CACHE=/var/lib/sandy/cache/hf/hub`
+
+The Sandy server enforces a 200GB cache budget (`SANDY_CACHE_MAX_BYTES`) for
+explicit cache fetches. HF/Datasets caches share the same disk; monitor usage.
+
 ### Frontend
 
 ```

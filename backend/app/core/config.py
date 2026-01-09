@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     chutes_max_tokens_margin: int = 2048
     chutes_min_output_tokens: int = 16384
     chutes_max_output_tokens_cap: Optional[int] = 65535
+    chutes_image_token_estimate: int = 1024
     chutes_inference_timeout_seconds: int = 300
     chutes_rate_limit_sleep_seconds: int = 30
 
@@ -77,6 +78,8 @@ class Settings(BaseSettings):
 
     # AA-LCR judge model (LLM-based equality checker)
     aa_lcr_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
+    # HLE judge model (LLM-based judge)
+    hle_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
 
     # τ²-Bench (optional override for user simulator model)
     tau2_user_model: Optional[str] = None

@@ -94,24 +94,24 @@ class MMLUProAdapter(BenchmarkAdapter):
                 error=f"Item {item_id} not found",
             )
 
-        # Format prompt - explicitly request no reasoning/thinking
         options_str = "\n".join(f"{chr(65 + i)}. {opt}" for i, opt in enumerate(item["options"]))
         prompt = (
-            "Answer the following multiple-choice question by replying with only the letter.\n\n"
-            f"Question: {item['question']}\n\n"
-            f"{options_str}\n\n"
+            "The following are multiple choice questions (with answers) about "
+            f"{item.get('category', 'general knowledge')}. Think step by step and then output "
+            "the answer in the format of \"The answer is (X)\" at the end.\n\n"
+            f"Question: {item['question']}\n"
+            f"Options:\n{options_str}\n\n"
             "Answer:"
         )
 
-        system_prompt = "You are a test-taking assistant. Output ONLY the answer letter (A-J). No explanation, no reasoning, no thinking. Just the letter."
+        system_prompt = None
         try:
             start_time = time.time()
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt=system_prompt,
                 max_tokens=4096,
-                min_output_tokens=1024,
+                min_output_tokens=0,
                 temperature=0.0,
                 timeout=60,
                 response_attempts=2,
