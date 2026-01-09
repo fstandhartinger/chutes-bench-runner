@@ -1,7 +1,7 @@
 """Add provider fields for Gremium support.
 
 Revision ID: 008_add_provider_fields
-Revises: 007_add_new_benchmarks
+Revises: 007
 Create Date: 2026-01-09
 """
 from alembic import op
@@ -10,7 +10,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = "008_add_provider_fields"
-down_revision = "007_add_new_benchmarks"
+down_revision = "007"
 branch_labels = None
 depends_on = None
 
