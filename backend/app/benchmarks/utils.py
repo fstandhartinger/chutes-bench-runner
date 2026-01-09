@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -19,6 +20,19 @@ def get_bench_data_dir() -> Path:
     """Return (and create) the benchmark data cache directory."""
     settings = get_settings()
     root = Path(settings.bench_data_dir)
+    if str(root) == "/tmp/chutes-bench-data":
+        sandy_cache = os.getenv("SANDY_CACHE_DIR") or os.getenv("SANDY_CACHE_MOUNT")
+        if sandy_cache:
+            candidate = Path(sandy_cache) / "chutes-bench-data"
+            if candidate.exists() and os.access(candidate, os.W_OK):
+                root = candidate
+            else:
+                try:
+                    candidate.mkdir(parents=True, exist_ok=True)
+                    if os.access(candidate, os.W_OK):
+                        root = candidate
+                except OSError:
+                    pass
     root.mkdir(parents=True, exist_ok=True)
     return root
 
