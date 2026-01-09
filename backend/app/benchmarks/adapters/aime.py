@@ -127,7 +127,7 @@ class AIME2025Adapter(BenchmarkAdapter):
                     self.model_slug,
                     prompt,
                     system_prompt=system_prompt,
-                    max_tokens=65536,
+                    max_tokens=16384,
                     temperature=temp,
                 )
                 latency_ms = int((time.time() - start_time) * 1000)
