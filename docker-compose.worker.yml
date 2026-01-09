@@ -7,6 +7,6 @@ services:
     env_file:
       - .env.worker
     volumes:
-      - /var/lib/chutes-bench-data:/var/lib/chutes-bench-data
+      - /var/lib/sandy/cache:/var/lib/sandy/cache
     command: python -m app.worker.runner
     restart: unless-stopped
