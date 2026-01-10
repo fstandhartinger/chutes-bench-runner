@@ -1,34 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getOpsOverview, type OpsOverview } from "@/lib/api";
-import { formatDate, formatDurationSeconds, parseDateValue, cn } from "@/lib/utils";
+import { formatDate, formatDurationSeconds, parseDateValue } from "@/lib/utils";
 import { Loader2, Activity, Server, ListChecks } from "lucide-react";
-
-function Sparkline({
-  points,
-  color,
-}: {
-  points: { value: number; label: string }[];
-  color: string;
-}) {
-  const max = Math.max(1, ...points.map((p) => p.value));
-  return (
-    <div className="flex h-20 items-end gap-1">
-      {points.map((point, idx) => (
-        <div key={`${point.label}-${idx}`} className="flex-1">
-          <div
-            className={cn("w-full rounded-sm", color)}
-            style={{ height: `${(point.value / max) * 100}%` }}
-            title={`${point.label}: ${point.value}`}
-          />
-        </div>
-      ))}
-    </div>
-  );
-}
 
 export default function OpsPage() {
   const [overview, setOverview] = useState<OpsOverview | null>(null);
@@ -52,28 +29,6 @@ export default function OpsPage() {
     const interval = window.setInterval(loadOverview, 15000);
     return () => window.clearInterval(interval);
   }, [loadOverview]);
-
-  const workerSeries = useMemo(() => {
-    if (!overview) return [];
-    return overview.timeseries.map((point) => ({
-      value: point.worker_count,
-      label: new Date(point.timestamp).toLocaleTimeString("en-US", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-    }));
-  }, [overview]);
-
-  const runSeries = useMemo(() => {
-    if (!overview) return [];
-    return overview.timeseries.map((point) => ({
-      value: point.running_runs,
-      label: new Date(point.timestamp).toLocaleTimeString("en-US", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-    }));
-  }, [overview]);
 
   if (loading) {
     return (
@@ -159,33 +114,6 @@ export default function OpsPage() {
               {queueCounts.succeeded ?? 0}
             </div>
             <div className="text-xs text-ink-400">Succeeded total</div>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Worker Instances (Last 6h)</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {workerSeries.length > 0 ? (
-              <Sparkline points={workerSeries} color="bg-moss/60" />
-            ) : (
-              <div className="text-sm text-ink-400">No worker data yet.</div>
-            )}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Running Runs (Last 6h)</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {runSeries.length > 0 ? (
-              <Sparkline points={runSeries} color="bg-ink-500" />
-            ) : (
-              <div className="text-sm text-ink-400">No run data yet.</div>
-            )}
           </CardContent>
         </Card>
       </div>

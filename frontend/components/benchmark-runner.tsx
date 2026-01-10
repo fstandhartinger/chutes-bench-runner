@@ -21,6 +21,7 @@ import {
   getRun,
   getRuns,
   createEventSource,
+  getOpsOverview,
   getServiceStatus,
   type Model,
   type Benchmark,
@@ -69,6 +70,7 @@ export function BenchmarkRunner() {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [queueStats, setQueueStats] = useState<{ running: number; queued: number } | null>(null);
+  const [workerCapacity, setWorkerCapacity] = useState<number>(() => getWorkerSlots());
   const [queueSchedule, setQueueSchedule] = useState<Record<string, QueueEstimate>>({});
   const [maintenance, setMaintenance] = useState<MaintenanceStatus | null>(null);
   const progressRef = useRef<HTMLDivElement | null>(null);
@@ -135,10 +137,17 @@ export function BenchmarkRunner() {
 
   const loadQueueStatus = useCallback(async () => {
     try {
-      const [runningRes, queuedRes] = await Promise.all([
+      const [runningRes, queuedRes, opsOverview] = await Promise.all([
         getRuns("running", 200),
         getRuns("queued", 200),
+        getOpsOverview(),
       ]);
+      const activeCapacity = opsOverview.workers.reduce(
+        (total, worker) => total + (worker.max_concurrent_runs || 0),
+        0
+      );
+      const capacity = activeCapacity > 0 ? activeCapacity : workerSlots;
+      setWorkerCapacity(capacity);
       setQueueStats({
         running: runningRes.runs.length,
         queued: queuedRes.runs.length,
@@ -146,7 +155,7 @@ export function BenchmarkRunner() {
       setQueueSchedule(
         computeQueueSchedule(
           [...runningRes.runs, ...queuedRes.runs],
-          workerSlots
+          capacity
         )
       );
     } catch (e) {
@@ -638,9 +647,9 @@ export function BenchmarkRunner() {
           </div>
 
           {/* Start Button */}
-          {queueStats && queueStats.running >= workerSlots && !currentRun && (
+          {queueStats && queueStats.running >= workerCapacity && !currentRun && (
             <div className="rounded-lg bg-ink-800/70 p-3 text-sm text-ink-300">
-              All worker slots are busy (running {queueStats.running}, capacity {workerSlots}).
+              All worker slots are busy (running {queueStats.running}, capacity {workerCapacity}).
               New runs will queue until a slot is free.
             </div>
           )}
