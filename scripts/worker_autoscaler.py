@@ -92,6 +92,35 @@ def run_compose(cmd: list[str], logger: logging.Logger, dry_run: bool, timeout: 
     return result.returncode == 0
 
 
+def get_worker_counts(
+    base_project: str,
+    extra_project: str,
+    logger: logging.Logger,
+    timeout: int,
+) -> tuple[int, int]:
+    """Return current running worker counts for base and extra projects."""
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Docker ps timed out after %ss", timeout)
+        return 0, 0
+    if result.returncode != 0:
+        logger.warning("Docker ps failed: %s", (result.stderr or "").strip())
+        return 0, 0
+
+    names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    base_prefix = f"{base_project}_worker_"
+    extra_prefix = f"{extra_project}_worker_"
+    base_count = sum(1 for name in names if name.startswith(base_prefix))
+    extra_count = sum(1 for name in names if name.startswith(extra_prefix))
+    return base_count, extra_count
+
+
 def scale_base(
     project: str,
     compose_file: str,
@@ -226,9 +255,15 @@ def main() -> int:
                 queued,
                 target,
             )
-            if target != last_target:
-                base_workers = min(base_max, target)
-                extra_workers = max(0, target - base_max)
+            base_workers = min(base_max, target)
+            extra_workers = max(0, target - base_max)
+            current_base, current_extra = get_worker_counts(
+                base_project,
+                extra_project,
+                logger,
+                timeout=compose_timeout,
+            )
+            if target != last_target or current_base != base_workers or current_extra != extra_workers:
                 ok_base = scale_base(
                     base_project,
                     compose_file,
@@ -249,7 +284,13 @@ def main() -> int:
                 )
                 if ok_base and ok_extra:
                     last_target = target
-                    logger.info("Scaling applied base=%s extra=%s", base_workers, extra_workers)
+                    logger.info(
+                        "Scaling applied base=%s extra=%s (current base=%s extra=%s)",
+                        base_workers,
+                        extra_workers,
+                        current_base,
+                        current_extra,
+                    )
                 else:
                     logger.warning("Scaling failed base_ok=%s extra_ok=%s", ok_base, ok_extra)
 
