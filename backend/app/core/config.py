@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     bench_data_dir: str = "/tmp/chutes-bench-data"
 
     # Sandy Sandbox
-    sandy_base_url: str = "https://sandy.94.130.222.43.nip.io"
+    sandy_base_url: str = "https://sandy.65.109.64.180.nip.io"
     sandy_api_key: Optional[str] = None
     sandy_volume_root: str = "/var/lib/sandy/volumes"
 

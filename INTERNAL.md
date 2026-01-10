@@ -37,7 +37,7 @@ CHUTES_CLIENT_SECRET=<IDP client secret>
 CHUTES_IDP_URL=https://auth.chutes.ai
 FRONTEND_URL=https://chutes-bench-runner-ui.onrender.com
 ADMIN_SECRET=<secret for admin endpoints>
-SANDY_BASE_URL=https://sandy.94.130.222.43.nip.io
+SANDY_BASE_URL=https://sandy.65.109.64.180.nip.io
 SANDY_API_KEY=<sandy-api-key>
 BENCH_SIGNING_PRIVATE_KEY=<base64 or PEM Ed25519 private key>
 BENCH_SIGNING_PUBLIC_KEY=<optional public key>
@@ -51,7 +51,7 @@ GDPVAL_JUDGE_MODEL=<optional override>
 **API Key Location**: System-wide `$CHUTES_API_KEY` environment variable. Use `echo $CHUTES_API_KEY` to access.
 
 **Sandy host**: Production sandboxes use the dedicated Sandy server at
-`https://sandy.94.130.222.43.nip.io` (old `65.109.49.103` deployment retired).
+`https://sandy.65.109.64.180.nip.io` (old `94.130.222.43` deployment deprecated; keep online until sandboxes drain).
 
 ### Shared Cache (Bench Data + HF)
 
@@ -133,7 +133,7 @@ NEXT_PUBLIC_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 **Fix**: Use Standard plan (2GB) for worker service
 
 ### 12. Hetzner Worker Pool (Production)
-Benchmark workers run on the Hetzner Sandy server (`94.130.222.43`) to avoid Render OOMs and reduce cost. Render worker should stay disabled.
+Benchmark workers run on the Hetzner Sandy server (`65.109.64.180`) to avoid Render OOMs and reduce cost. Render worker should stay disabled.
 
 **Why**: Hetzner has plenty of CPU/RAM and is cheaper than multiple Render instances.
 

@@ -1035,7 +1035,7 @@ Authorization: Bearer <SANDY_API_KEY>
         "ready": true,
         "command": "claude-code"
     },
-    "url": "https://sb_abc123.sandy.94.130.222.43.nip.io",
+    "url": "https://sb_abc123.sandy.65.109.64.180.nip.io",
     "timeout_at": "2026-01-09T15:30:00Z"
 }
 ```

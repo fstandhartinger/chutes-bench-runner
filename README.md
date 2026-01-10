@@ -94,7 +94,7 @@ frontend (Next.js)
             -> Sandy sandbox (code/CLI benchmarks)
 ```
 
-Production note: benchmark workers run on the dedicated Sandy server (`94.130.222.43`) for stability and cost; the Render worker service stays disabled.
+Production note: benchmark workers run on the dedicated Sandy server (`65.109.64.180`) for stability and cost; the Render worker service stays disabled.
 
 ## Local development
 
@@ -145,7 +145,7 @@ Run Sandy separately and set:
 SANDY_BASE_URL=https://<sandy-host>
 SANDY_API_KEY=<sandy-key>
 ```
-Production uses the dedicated Sandy host `https://sandy.94.130.222.43.nip.io`.
+Production uses the dedicated Sandy host `https://sandy.65.109.64.180.nip.io`.
 
 ## Configuration reference
 
