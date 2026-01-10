@@ -12,9 +12,9 @@ RestartSec=5
 Environment=BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 Environment=COMPOSE_FILE=/opt/chutes-bench-runner/docker-compose.worker.yml
 Environment=ENV_FILE=/opt/chutes-bench-runner/.env.worker
-Environment=BASE_MAX_WORKERS=4
-Environment=EXTRA_MAX_WORKERS=6
-Environment=MAX_WORKERS=10
+Environment=BASE_MAX_WORKERS=10
+Environment=EXTRA_MAX_WORKERS=10
+Environment=MAX_WORKERS=20
 Environment=MIN_WORKERS=1
 Environment=WORKER_MAX_CONCURRENT=3
 Environment=SCALE_INTERVAL_SECONDS=30

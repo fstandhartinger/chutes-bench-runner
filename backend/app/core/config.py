@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     gremium_api_base_url: str = "https://chutes-model-gremium.onrender.com"
     gremium_provider_default: str = "gremium-openai"
     gremium_api_key: Optional[str] = None
-    gremium_timeout_seconds: int = 300
+    gremium_timeout_seconds: int = 600
+    gremium_item_timeout_seconds: int = 1800
+    gremium_item_attempts: int = 3
 
     # Backend
     backend_host: str = "0.0.0.0"
@@ -53,7 +55,7 @@ class Settings(BaseSettings):
     worker_poll_interval: int = 5
     worker_max_concurrent: int = 3
     worker_item_concurrency: int = 4
-    worker_item_timeout_seconds: int = 900
+    worker_item_timeout_seconds: int = 1200
     worker_item_attempts: int = 5
     worker_stale_run_minutes: int = 5
     worker_stale_check_interval: int = 60

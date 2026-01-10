@@ -187,11 +187,11 @@ Benchmark workers run on the Hetzner Sandy server (`65.109.64.180`) to avoid Ren
 
 **Notes**:
 - Use `app.worker.runner` (no health server) to avoid port conflicts.
-- Current stable range is 4–6 workers; monitor memory with `docker stats` before scaling higher.
+- On the Ryzen 5950X Sandy host (128 GB RAM), the current safe range is 10–20 workers; monitor memory + load with `docker stats` before scaling beyond that.
 - Keep existing services intact (Sandy, TAO trader, dashboards, nginx).
 
-**Scaling beyond 4 workers (extra project)**:
-If `docker-compose` refuses to create `worker-5`, launch an extra compose project to add 1–2 workers:
+**Scaling beyond 10 workers (extra project)**:
+If `docker-compose` refuses to create `worker-11`, launch an extra compose project to add additional workers:
 ```bash
 cd /opt/chutes-bench-runner
 docker-compose -p chutes-bench-runner-extra -f docker-compose.worker.yml --env-file .env.worker up -d --scale worker=2 --no-build
@@ -201,8 +201,8 @@ This creates `chutes-bench-runner-extra-worker-*` containers without name confli
 ### Autoscaler (Hetzner Sandy)
 
 The autoscaler runs on the Sandy server and adjusts worker counts based on the
-current queue size. It scales base workers (0–4) and, when needed, extra workers
-in a separate compose project (up to 6) for a total of 10.
+current queue size. It scales base workers (0–10) and, when needed, extra workers
+in a separate compose project (up to 10) for a total of 20.
 
 **Install:**
 ```bash

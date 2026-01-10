@@ -953,8 +953,14 @@ class BenchmarkWorker:
             item_timeout = adapter.get_item_timeout_seconds()
             if item_timeout is None:
                 item_timeout = settings.worker_item_timeout_seconds
+            is_gremium_run = (run.provider or "").startswith("gremium")
+            if is_gremium_run:
+                item_timeout = settings.gremium_item_timeout_seconds
             if item_timeout is not None and item_timeout <= 0:
                 item_timeout = None
+            item_attempts = settings.worker_item_attempts
+            if is_gremium_run:
+                item_attempts = settings.gremium_item_attempts
 
             result_lock = asyncio.Lock()
             abort_event = asyncio.Event()
@@ -964,7 +970,7 @@ class BenchmarkWorker:
                 attempt = 0
                 delay_seconds = 1
                 last_result: Optional[ItemResult] = None
-                max_attempts = max(getattr(settings, "worker_item_attempts", 1), 1)
+                max_attempts = max(item_attempts, 1)
                 deadline = None
                 if item_timeout:
                     deadline = time.monotonic() + item_timeout
