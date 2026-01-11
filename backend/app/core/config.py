@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     worker_heartbeat_seconds: int = 60
     worker_exclusive_benchmarks: list[str] = []
     worker_disabled: bool = False
+    worker_only_auth_mode: Optional[str] = None
+    worker_only_api_key: Optional[str] = None
 
     # Startup
     skip_model_sync: bool = False

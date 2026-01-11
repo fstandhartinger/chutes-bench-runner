@@ -223,6 +223,34 @@ tail -n 200 /var/log/chutes-bench-runner-autoscaler.log
 - `SCALE_INTERVAL_SECONDS`
 - `LOG_PATH`
 
+### Priority workers (internal API-key runs)
+
+To fast-lane internal runs that were started with `CHUTES_API_KEY`, launch a
+separate worker pool with filtering enabled:
+
+1. Create `/opt/chutes-bench-runner/.env.worker.priority` (do not commit):
+   ```bash
+   # Same base env as .env.worker
+   CHUTES_API_KEY=...
+   DATABASE_URL=...
+   SANDY_API_KEY=...
+   SANDY_BASE_URL=...
+
+   # Filter only internal runs
+   WORKER_ONLY_AUTH_MODE=api_key
+   WORKER_ONLY_API_KEY=<same CHUTES_API_KEY>
+   ```
+2. Start up to 4 priority workers:
+   ```bash
+   docker-compose -p chutes-bench-runner-priority -f docker-compose.worker.priority.yml \
+     --env-file .env.worker.priority up -d --build --scale worker=4
+   ```
+3. Stop when no internal backlog remains:
+   ```bash
+   docker-compose -p chutes-bench-runner-priority -f docker-compose.worker.priority.yml \
+     --env-file .env.worker.priority down --remove-orphans
+   ```
+
 ### 5. Frontend lib/ Directory Ignored
 **Problem**: Root `.gitignore` had `lib/` which ignored `frontend/lib/`
 **Fix**: Added `!frontend/lib/` to `.gitignore` to explicitly include it

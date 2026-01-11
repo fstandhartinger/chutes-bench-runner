@@ -316,6 +316,16 @@ class BenchmarkWorker:
                 select(BenchmarkRun)
                 .options(noload(BenchmarkRun.model))
                 .where(BenchmarkRun.status == RunStatus.QUEUED.value)
+                .where(
+                    BenchmarkRun.auth_mode == settings.worker_only_auth_mode
+                    if settings.worker_only_auth_mode
+                    else True
+                )
+                .where(
+                    BenchmarkRun.auth_api_key == settings.worker_only_api_key
+                    if settings.worker_only_api_key
+                    else True
+                )
                 .order_by(BenchmarkRun.created_at)
                 .limit(10)
                 .with_for_update(skip_locked=True)
