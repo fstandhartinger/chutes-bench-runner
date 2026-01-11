@@ -191,10 +191,10 @@ Benchmark workers run on the Hetzner Sandy server (`65.109.64.180`) to avoid Ren
 - Keep existing services intact (Sandy, TAO trader, dashboards, nginx).
 
 **Scaling beyond 10 workers (extra project)**:
-If `docker-compose` refuses to create `worker-11`, launch an extra compose project to add additional workers:
+If you need more than 10 workers, launch an extra compose project to add additional workers. Use `docker compose` (v2); on Ubuntu install `docker-compose-v2` if the subcommand is missing.
 ```bash
 cd /opt/chutes-bench-runner
-docker-compose -p chutes-bench-runner-extra -f docker-compose.worker.yml --env-file .env.worker up -d --scale worker=2 --no-build
+docker compose -p chutes-bench-runner-extra -f docker-compose.worker.yml --env-file .env.worker up -d --scale worker=2 --no-build
 ```
 This creates `chutes-bench-runner-extra-worker-*` containers without name conflicts.
 
@@ -203,6 +203,10 @@ This creates `chutes-bench-runner-extra-worker-*` containers without name confli
 The autoscaler runs on the Sandy server and adjusts worker counts based on the
 current queue size. It scales base workers (0–10) and, when needed, extra workers
 in a separate compose project (up to 10) for a total of 20.
+
+**Note:** The autoscaler prefers `docker compose` (v2) when available, falling back
+to `docker-compose` if needed. Install `docker-compose-v2` on Ubuntu to avoid
+legacy `docker-compose` issues.
 
 **Install:**
 ```bash
