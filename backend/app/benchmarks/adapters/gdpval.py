@@ -13,7 +13,9 @@ from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
 from app.benchmarks.utils import download_hf_file_async, load_dataset_with_retry
 from app.core.config import get_settings
+from app.core.logging import get_logger
 settings = get_settings()
+logger = get_logger(__name__)
 
 
 GDPVAL_JUDGE_PROMPT = """You are judging whether a predicted answer is supported by the reference materials provided.
