@@ -20,13 +20,22 @@ class SandyService:
             "Content-Type": "application/json"
         }
 
-    async def create_sandbox(self, enable_docker_socket: bool = False) -> Optional[str]:
+    async def create_sandbox(
+        self,
+        enable_docker_socket: bool = False,
+        priority: int = 3,  # LOW priority for batch benchmark jobs
+        preemptable: bool = True,  # Can be terminated under memory pressure
+    ) -> Optional[str]:
         """Create a new sandbox and return its ID.
 
         Args:
             enable_docker_socket: If True, the sandbox will have access to the Docker socket.
                                   This is required for benchmarks that need to run Docker commands
                                   (e.g., Terminal-Bench, SWE-Bench). Disabled by default for security.
+            priority: Sandbox priority level (0=CRITICAL, 1=HIGH, 2=NORMAL, 3=LOW).
+                      Defaults to 3 (LOW) for batch benchmark jobs.
+            preemptable: If True, sandbox can be terminated under memory pressure.
+                         Defaults to True for benchmark sandboxes.
         """
         if not self.api_key:
             logger.error("Sandy API key is not configured")
@@ -34,8 +43,11 @@ class SandyService:
         delay_seconds = 1
         last_error: Optional[str] = None
         self.last_error = None
-        # Prepare payload with Docker socket option
-        payload = {}
+        # Prepare payload with Docker socket option and priority settings
+        payload: Dict[str, Any] = {
+            "priority": priority,
+            "preemptable": preemptable,
+        }
         if enable_docker_socket:
             payload["enableDockerSocket"] = True
         timeout = httpx.Timeout(90.0, connect=10.0)
@@ -45,7 +57,7 @@ class SandyService:
                     response = await client.post(
                         f"{self.base_url}/api/sandboxes",
                         headers=self.headers,
-                        json=payload if payload else None,
+                        json=payload,
                     )
                     response.raise_for_status()
                     data = response.json()
