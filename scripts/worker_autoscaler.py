@@ -14,6 +14,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import math
 import os
+import shutil
 import subprocess
 import time
 from typing import Any, Optional
@@ -52,6 +53,34 @@ def configure_logging(log_path: str, level: str) -> logging.Logger:
         logger.addHandler(file_handler)
 
     return logger
+
+
+def resolve_compose_command(logger: logging.Logger) -> list[str]:
+    """Resolve the compose CLI to use (docker compose preferred)."""
+    configured = os.getenv("COMPOSE_COMMAND")
+    if configured:
+        return configured.split()
+
+    docker_path = shutil.which("docker")
+    if docker_path:
+        try:
+            result = subprocess.run(
+                [docker_path, "compose", "version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                return [docker_path, "compose"]
+        except subprocess.SubprocessError:
+            pass
+
+    compose_path = shutil.which("docker-compose")
+    if compose_path:
+        return [compose_path]
+
+    logger.warning("Falling back to docker-compose default command.")
+    return ["docker-compose"]
 
 
 def fetch_runs_total(base_url: str, status: str, timeout: int, logger: logging.Logger) -> Optional[int]:
@@ -126,12 +155,13 @@ def scale_base(
     compose_file: str,
     env_file: str,
     workers: int,
+    compose_command: list[str],
     logger: logging.Logger,
     dry_run: bool,
     timeout: int,
 ) -> bool:
     cmd = [
-        "docker-compose",
+        *compose_command,
         "-p",
         project,
         "-f",
@@ -152,13 +182,14 @@ def scale_extra(
     compose_file: str,
     env_file: str,
     workers: int,
+    compose_command: list[str],
     logger: logging.Logger,
     dry_run: bool,
     timeout: int,
 ) -> bool:
     if workers <= 0:
         cmd = [
-            "docker-compose",
+            *compose_command,
             "-p",
             project,
             "-f",
@@ -171,7 +202,7 @@ def scale_extra(
         return run_compose(cmd, logger, dry_run, timeout)
 
     cmd = [
-        "docker-compose",
+        *compose_command,
         "-p",
         project,
         "-f",
@@ -225,6 +256,8 @@ def main() -> int:
     log_level = _str_env("LOG_LEVEL", "INFO")
 
     logger = configure_logging(log_path, log_level)
+    compose_command = resolve_compose_command(logger)
+    logger.info("Using compose command: %s", " ".join(compose_command))
     logger.info(
         "Autoscaler started backend=%s min=%s max=%s base_max=%s extra_max=%s",
         backend_url,
@@ -269,6 +302,7 @@ def main() -> int:
                     compose_file,
                     env_file,
                     base_workers,
+                    compose_command,
                     logger,
                     dry_run,
                     compose_timeout,
@@ -278,6 +312,7 @@ def main() -> int:
                     compose_file,
                     env_file,
                     extra_workers,
+                    compose_command,
                     logger,
                     dry_run,
                     compose_timeout,
