@@ -225,6 +225,9 @@ tail -n 200 /var/log/chutes-bench-runner-autoscaler.log
 - `MIN_WORKERS` / `MAX_WORKERS` / `BASE_MAX_WORKERS` / `EXTRA_MAX_WORKERS`
 - `WORKER_MAX_CONCURRENT` (must match `.env.worker`)
 - `SCALE_INTERVAL_SECONDS`
+- `MEMORY_HIGH_WATERMARK` (default `85`) – freeze scale-up above this %.
+- `MEMORY_EMERGENCY_WATERMARK` (default `92`) – scale down when above this %.
+- `MEMORY_SCALE_DOWN_STEP` (default `2`) – workers to drop per emergency tick.
 - `LOG_PATH`
 
 ### Priority workers (internal API-key runs)

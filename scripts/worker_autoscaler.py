@@ -37,6 +37,16 @@ def _str_env(key: str, default: str) -> str:
     return value if value else default
 
 
+def _float_env(key: str, default: float) -> float:
+    raw = os.getenv(key)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def configure_logging(log_path: str, level: str) -> logging.Logger:
     logger = logging.getLogger("worker_autoscaler")
     logger.setLevel(level.upper())
@@ -81,6 +91,30 @@ def resolve_compose_command(logger: logging.Logger) -> list[str]:
 
     logger.warning("Falling back to docker-compose default command.")
     return ["docker-compose"]
+
+
+def get_memory_stats() -> tuple[Optional[float], Optional[float]]:
+    """Return (memory_percent, available_gb) from /proc/meminfo."""
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+            data = handle.read().splitlines()
+        meminfo = {}
+        for line in data:
+            if ":" not in line:
+                continue
+            key, rest = line.split(":", 1)
+            value = rest.strip().split()[0]
+            meminfo[key] = int(value)
+        total_kb = meminfo.get("MemTotal")
+        avail_kb = meminfo.get("MemAvailable") or meminfo.get("MemFree")
+        if not total_kb or not avail_kb:
+            return None, None
+        used_kb = total_kb - avail_kb
+        percent = (used_kb / total_kb) * 100
+        available_gb = avail_kb / (1024 * 1024)
+        return percent, available_gb
+    except Exception:
+        return None, None
 
 
 def fetch_runs_total(base_url: str, status: str, timeout: int, logger: logging.Logger) -> Optional[int]:
@@ -248,6 +282,9 @@ def main() -> int:
     worker_max_concurrent = _int_env("WORKER_MAX_CONCURRENT", 2)
     poll_seconds = _int_env("SCALE_INTERVAL_SECONDS", 30)
     compose_timeout = _int_env("COMPOSE_TIMEOUT_SECONDS", 120)
+    memory_high = _float_env("MEMORY_HIGH_WATERMARK", 85.0)
+    memory_emergency = _float_env("MEMORY_EMERGENCY_WATERMARK", 92.0)
+    memory_scale_down = _int_env("MEMORY_SCALE_DOWN_STEP", 2)
     extra_project = _str_env("EXTRA_PROJECT", "chutes-bench-runner-extra")
     base_project = _str_env("BASE_PROJECT", "chutes-bench-runner")
     dry_run = _int_env("DRY_RUN", 0) == 1
@@ -282,12 +319,6 @@ def main() -> int:
                 min_workers=min_workers,
                 worker_max_concurrent=worker_max_concurrent,
             )
-            logger.info(
-                "Queue status running=%s queued=%s target_workers=%s",
-                running,
-                queued,
-                target,
-            )
             base_workers = min(base_max, target)
             extra_workers = max(0, target - base_max)
             current_base, current_extra = get_worker_counts(
@@ -295,6 +326,39 @@ def main() -> int:
                 extra_project,
                 logger,
                 timeout=compose_timeout,
+            )
+            current_total = current_base + current_extra
+            mem_pct, mem_avail = get_memory_stats()
+            if mem_pct is not None:
+                logger.info(
+                    "Resource guard memory=%.1f%% available_gb=%.1f current_workers=%s",
+                    mem_pct,
+                    mem_avail if mem_avail is not None else -1,
+                    current_total,
+                )
+                if mem_pct >= memory_emergency:
+                    target = max(min_workers, current_total - max(memory_scale_down, 1))
+                    logger.warning(
+                        "Memory emergency %.1f%% >= %.1f%%, reducing target to %s",
+                        mem_pct,
+                        memory_emergency,
+                        target,
+                    )
+                elif mem_pct >= memory_high and target > current_total:
+                    logger.warning(
+                        "Memory high %.1f%% >= %.1f%%, freezing scale-up at %s",
+                        mem_pct,
+                        memory_high,
+                        current_total,
+                    )
+                    target = current_total
+                base_workers = min(base_max, target)
+                extra_workers = max(0, target - base_max)
+            logger.info(
+                "Queue status running=%s queued=%s target_workers=%s",
+                running,
+                queued,
+                target,
             )
             if target != last_target or current_base != base_workers or current_extra != extra_workers:
                 ok_base = scale_base(
