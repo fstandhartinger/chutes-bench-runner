@@ -326,6 +326,8 @@ class SandySandboxStatsResponse(APIModel):
     sandbox_id: str
     container_id: Optional[str] = None
     cpu_ratio: Optional[float] = None
+    cpu_cores_used: Optional[float] = None
+    cpu_cores_total: Optional[int] = None
     memory_usage_bytes: Optional[int] = None
     memory_limit_bytes: Optional[int] = None
     memory_ratio: Optional[float] = None

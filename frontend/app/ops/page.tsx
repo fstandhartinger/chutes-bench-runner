@@ -20,6 +20,7 @@ type LineSeries = {
   label: string;
   color: string;
   values: { timestamp: string; value: number | null }[];
+  formatValue?: (value: number) => string;
 };
 
 function LineChart({
@@ -48,19 +49,55 @@ function LineChart({
     return `M ${points.join(" L ")}`;
   };
 
+  const buildMarkers = (entry: LineSeries) => {
+    const values = entry.values.map((point) => point.value ?? 0);
+    if (values.length === 0) return [];
+    const lastIdx = values.length - 1;
+    let maxIdx = 0;
+    let minIdx = 0;
+    values.forEach((value, idx) => {
+      if (value > values[maxIdx]) maxIdx = idx;
+      if (value < values[minIdx]) minIdx = idx;
+    });
+    const indices = Array.from(new Set([0, lastIdx, maxIdx, minIdx]));
+    const formatValue = entry.formatValue ?? ((value: number) => value.toFixed(0));
+    return indices.map((idx) => {
+      const value = values[idx] ?? 0;
+      const x = padding + idx * xStep;
+      const y = height - padding - (value / maxValue) * (height - padding * 2);
+      const dy = idx === minIdx ? 12 : -8;
+      return { x, y, label: formatValue(value), dy };
+    });
+  };
+
   return (
     <div className="space-y-3">
       <svg viewBox={`0 0 ${width} ${height}`} className="h-48 w-full">
         <rect x={0} y={0} width={width} height={height} fill="transparent" />
         {series.map((entry) => (
-          <path
-            key={entry.label}
-            d={buildPath(entry.values)}
-            fill="none"
-            stroke={entry.color}
-            strokeWidth={2}
-            strokeLinecap="round"
-          />
+          <g key={entry.label}>
+            <path
+              d={buildPath(entry.values)}
+              fill="none"
+              stroke={entry.color}
+              strokeWidth={2}
+              strokeLinecap="round"
+            />
+            {buildMarkers(entry).map((marker, index) => (
+              <g key={`${entry.label}-${index}`}>
+                <circle cx={marker.x} cy={marker.y} r={3} fill={entry.color} />
+                <text
+                  x={marker.x}
+                  y={marker.y + marker.dy}
+                  textAnchor="middle"
+                  fontSize={10}
+                  fill={entry.color}
+                >
+                  {marker.label}
+                </text>
+              </g>
+            ))}
+          </g>
         ))}
       </svg>
       <div className="flex flex-wrap gap-3 text-xs text-ink-400">
@@ -88,6 +125,8 @@ function DualAxisLineChart({
   const padding = 28;
   const maxLeft = Math.max(1, ...left.values.map((point) => point.value ?? 0));
   const maxRight = Math.max(1, ...right.values.map((point) => point.value ?? 0));
+  const minLeft = Math.min(...left.values.map((point) => point.value ?? 0), 0);
+  const minRight = Math.min(...right.values.map((point) => point.value ?? 0), 0);
   const totalPoints = Math.max(left.values.length, right.values.length, 1);
   const xStep = totalPoints > 1 ? (width - padding * 2) / (totalPoints - 1) : 0;
 
@@ -104,10 +143,50 @@ function DualAxisLineChart({
     return `M ${points.join(" L ")}`;
   };
 
+  const buildMarkers = (entry: LineSeries, maxValue: number) => {
+    const values = entry.values.map((point) => point.value ?? 0);
+    if (values.length === 0) return [];
+    const lastIdx = values.length - 1;
+    let maxIdx = 0;
+    let minIdx = 0;
+    values.forEach((value, idx) => {
+      if (value > values[maxIdx]) maxIdx = idx;
+      if (value < values[minIdx]) minIdx = idx;
+    });
+    const indices = Array.from(new Set([0, lastIdx, maxIdx, minIdx]));
+    const formatValue = entry.formatValue ?? ((value: number) => value.toFixed(0));
+    return indices.map((idx) => {
+      const value = values[idx] ?? 0;
+      const x = padding + idx * xStep;
+      const y = height - padding - (value / maxValue) * (height - padding * 2);
+      const dy = idx === minIdx ? 12 : -8;
+      return { x, y, label: formatValue(value), dy };
+    });
+  };
+
+  const leftLabel = left.formatValue ?? ((value: number) => value.toFixed(0));
+  const rightLabel = right.formatValue ?? ((value: number) => value.toFixed(0));
+
   return (
     <div className="space-y-3">
       <svg viewBox={`0 0 ${width} ${height}`} className="h-48 w-full">
         <rect x={0} y={0} width={width} height={height} fill="transparent" />
+        <line
+          x1={padding}
+          y1={padding}
+          x2={padding}
+          y2={height - padding}
+          stroke="#2B2F3A"
+          strokeWidth={1}
+        />
+        <line
+          x1={width - padding}
+          y1={padding}
+          x2={width - padding}
+          y2={height - padding}
+          stroke="#2B2F3A"
+          strokeWidth={1}
+        />
         <path
           d={buildPath(left.values, maxLeft)}
           fill="none"
@@ -122,6 +201,70 @@ function DualAxisLineChart({
           strokeWidth={2}
           strokeLinecap="round"
         />
+        <text
+          x={padding - 4}
+          y={padding - 6}
+          textAnchor="end"
+          fontSize={10}
+          fill={left.color}
+        >
+          {leftLabel(maxLeft)}
+        </text>
+        <text
+          x={padding - 4}
+          y={height - padding + 12}
+          textAnchor="end"
+          fontSize={10}
+          fill={left.color}
+        >
+          {leftLabel(minLeft)}
+        </text>
+        <text
+          x={width - padding + 4}
+          y={padding - 6}
+          textAnchor="start"
+          fontSize={10}
+          fill={right.color}
+        >
+          {rightLabel(maxRight)}
+        </text>
+        <text
+          x={width - padding + 4}
+          y={height - padding + 12}
+          textAnchor="start"
+          fontSize={10}
+          fill={right.color}
+        >
+          {rightLabel(minRight)}
+        </text>
+        {buildMarkers(left, maxLeft).map((marker, index) => (
+          <g key={`left-${index}`}>
+            <circle cx={marker.x} cy={marker.y} r={3} fill={left.color} />
+            <text
+              x={marker.x}
+              y={marker.y + marker.dy}
+              textAnchor="middle"
+              fontSize={10}
+              fill={left.color}
+            >
+              {marker.label}
+            </text>
+          </g>
+        ))}
+        {buildMarkers(right, maxRight).map((marker, index) => (
+          <g key={`right-${index}`}>
+            <circle cx={marker.x} cy={marker.y} r={3} fill={right.color} />
+            <text
+              x={marker.x}
+              y={marker.y + marker.dy}
+              textAnchor="middle"
+              fontSize={10}
+              fill={right.color}
+            >
+              {marker.label}
+            </text>
+          </g>
+        ))}
       </svg>
       <div className="flex flex-wrap gap-3 text-xs text-ink-400">
         <div className="flex items-center gap-2">
@@ -147,14 +290,12 @@ function UsageBar({
   detail?: string;
 }) {
   const percent = ratio !== null ? Math.max(0, Math.min(1, ratio)) : null;
+  const display = detail ?? (percent === null ? "-" : formatPercent(percent));
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-[11px] text-ink-400">
-        <span>
-          {label}
-          {detail ? <span className="ml-2 text-ink-500">{detail}</span> : null}
-        </span>
-        <span>{percent === null ? "-" : formatPercent(percent)}</span>
+        <span>{label}</span>
+        <span>{display}</span>
       </div>
       <div className="h-2 w-full rounded-full bg-ink-900">
         <div
@@ -187,8 +328,9 @@ export default function OpsPage() {
   const [sandboxStats, setSandboxStats] = useState<SandySandboxStats[]>([]);
 
   const loadOverview = useCallback(async () => {
+    let data: OpsOverview | null = null;
     try {
-      const data = await getOpsOverview(720);
+      data = await getOpsOverview(720);
       setOverview(data);
       setError(null);
     } catch (e) {
@@ -212,9 +354,13 @@ export default function OpsPage() {
     }
 
     try {
-      const ids = data.workers.map((worker) => worker.worker_id);
-      const stats = await getSandySandboxStats(ids);
-      setSandboxStats(stats);
+      if (data) {
+        const ids = data.workers.map((worker) => worker.worker_id);
+        const stats = await getSandySandboxStats(ids);
+        setSandboxStats(stats);
+      } else {
+        setSandboxStats([]);
+      }
     } catch {
       setSandboxStats([]);
     }
@@ -243,6 +389,7 @@ export default function OpsPage() {
       {
         label: "CPU",
         color: "#6BC46D",
+        formatValue: (value: number) => formatPercent(value),
         values: sandyMetrics.map((point) => ({
           timestamp: point.timestamp,
           value: point.cpu_ratio ?? null,
@@ -251,6 +398,7 @@ export default function OpsPage() {
       {
         label: "Memory",
         color: "#F28D57",
+        formatValue: (value: number) => formatPercent(value),
         values: sandyMetrics.map((point) => ({
           timestamp: point.timestamp,
           value: point.memory_ratio ?? null,
@@ -259,6 +407,7 @@ export default function OpsPage() {
       {
         label: "Disk",
         color: "#7B8CFB",
+        formatValue: (value: number) => formatPercent(value),
         values: sandyMetrics.map((point) => ({
           timestamp: point.timestamp,
           value: point.disk_ratio ?? null,
@@ -281,11 +430,13 @@ export default function OpsPage() {
       left: {
         label: "Workers",
         color: "#6BC46D",
+        formatValue: (value: number) => Math.round(value).toString(),
         values: workerValues,
       },
       right: {
         label: "Queued runs",
         color: "#F28D57",
+        formatValue: (value: number) => Math.round(value).toString(),
         values: queuedValues,
       },
     };
@@ -550,6 +701,12 @@ export default function OpsPage() {
               sandbox?.disk_bytes !== undefined && sandbox?.disk_bytes !== null
                 ? sandbox.disk_bytes / maxSandboxDiskBytes
                 : usageSnapshot.diskRatio;
+            const cpuDetail =
+              sandbox?.cpu_cores_used !== undefined &&
+              sandbox?.cpu_cores_used !== null &&
+              sandbox?.cpu_cores_total
+                ? `${sandbox.cpu_cores_used.toFixed(sandbox.cpu_cores_used >= 10 ? 0 : 1)} / ${sandbox.cpu_cores_total} cores`
+                : undefined;
             return (
               <div key={worker.worker_id} className="rounded-lg border border-ink-600 bg-ink-800/50 p-4">
                 <div className="text-sm font-medium text-ink-100">{worker.worker_id}</div>
@@ -566,7 +723,7 @@ export default function OpsPage() {
                   Last seen {ageSeconds !== null ? formatDurationSeconds(ageSeconds) : "-"} ago
                 </div>
                 <div className="mt-3 space-y-2">
-                  <UsageBar label="CPU" ratio={cpuRatio ?? null} />
+                  <UsageBar label="CPU" ratio={cpuRatio ?? null} detail={cpuDetail} />
                   <UsageBar
                     label="Memory"
                     ratio={memoryRatio ?? null}

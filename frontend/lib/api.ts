@@ -255,6 +255,8 @@ export interface SandySandboxStats {
   sandbox_id: string;
   container_id?: string | null;
   cpu_ratio?: number | null;
+  cpu_cores_used?: number | null;
+  cpu_cores_total?: number | null;
   memory_usage_bytes?: number | null;
   memory_limit_bytes?: number | null;
   memory_ratio?: number | null;
