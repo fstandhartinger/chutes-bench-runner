@@ -332,6 +332,9 @@ export default function OpsPage() {
       if (stat.sandbox_id) {
         map.set(stat.sandbox_id, stat);
       }
+      if (stat.container_id) {
+        map.set(stat.container_id, stat);
+      }
     });
     return map;
   }, [sandboxStats]);
