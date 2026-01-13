@@ -273,6 +273,7 @@ class WorkerTimeseriesPoint(APIModel):
     timestamp: datetime
     worker_count: int
     running_runs: int
+    queued_runs: int = 0
 
 
 class RunSummaryResponse(APIModel):

@@ -56,7 +56,11 @@ from app.services.run_service import (
     list_runs,
     requeue_run,
 )
-from app.services.worker_service import get_worker_timeseries, list_active_workers
+from app.services.worker_service import (
+    get_queue_timeseries,
+    get_worker_timeseries,
+    list_active_workers,
+)
 from app.services.signed_export_service import (
     SigningKeyError,
     generate_signed_zip_export,
@@ -721,12 +725,24 @@ async def verify_signed_export(file: UploadFile = File(...)):
 
 # Ops endpoints
 @router.get("/ops/overview", response_model=OpsOverviewResponse)
-async def ops_overview(db: SessionDep):
+async def ops_overview(
+    db: SessionDep,
+    minutes: int = Query(default=360, ge=30, le=1440),
+):
     """Get worker heartbeats, queue counts, and recent runs for ops dashboard."""
     settings = get_settings()
     stale_seconds = max(settings.worker_heartbeat_seconds * 3, 180)
     workers = await list_active_workers(db, stale_seconds=stale_seconds)
-    timeseries = await get_worker_timeseries(db, minutes=360)
+    timeseries = await get_worker_timeseries(db, minutes=minutes)
+    if timeseries:
+        buckets = [point["timestamp"] for point in timeseries]
+        queue_series = await get_queue_timeseries(db, buckets)
+        queue_map = {point["timestamp"]: point for point in queue_series}
+        merged_timeseries = []
+        for point in timeseries:
+            queued = queue_map.get(point["timestamp"], {}).get("queued_runs", 0)
+            merged_timeseries.append({**point, "queued_runs": int(queued or 0)})
+        timeseries = merged_timeseries
 
     counts_result = await db.execute(
         select(BenchmarkRun.status, func.count()).group_by(BenchmarkRun.status)

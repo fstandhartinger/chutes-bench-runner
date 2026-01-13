@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.worker import WorkerHeartbeat, WorkerHeartbeatLog
+from app.models.run import BenchmarkRun
 
 
 async def record_worker_heartbeat(
@@ -91,3 +92,50 @@ async def get_worker_timeseries(
         }
         for row in rows
     ]
+
+
+async def get_queue_timeseries(
+    db: AsyncSession,
+    buckets: list[datetime],
+) -> list[dict[str, int | datetime]]:
+    """Return queued/running counts aligned to the provided buckets."""
+    if not buckets:
+        return []
+    cutoff = buckets[0]
+    result = await db.execute(
+        select(
+            BenchmarkRun.created_at,
+            BenchmarkRun.started_at,
+            BenchmarkRun.completed_at,
+        ).where(
+            or_(
+                BenchmarkRun.created_at >= cutoff,
+                BenchmarkRun.started_at >= cutoff,
+                BenchmarkRun.completed_at >= cutoff,
+                BenchmarkRun.completed_at.is_(None),
+            )
+        )
+    )
+    runs = result.all()
+
+    series: list[dict[str, int | datetime]] = []
+    for bucket in buckets:
+        queued = 0
+        running = 0
+        for created_at, started_at, completed_at in runs:
+            if not created_at or created_at > bucket:
+                continue
+            if completed_at and completed_at <= bucket:
+                continue
+            if started_at and started_at <= bucket:
+                running += 1
+            else:
+                queued += 1
+        series.append(
+            {
+                "timestamp": bucket,
+                "queued_runs": queued,
+                "running_runs": running,
+            }
+        )
+    return series
