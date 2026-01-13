@@ -1,13 +1,13 @@
 """Default-select AA-Omniscience, CritPt, and GDPval-AA.
 
-Revision ID: 009_default_select_new_benchmarks
+Revision ID: 009_default_select_benchmarks
 Revises: 008_add_provider_fields
 Create Date: 2026-01-14
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "009_default_select_new_benchmarks"
+revision = "009_default_select_benchmarks"
 down_revision = "008_add_provider_fields"
 branch_labels = None
 depends_on = None
