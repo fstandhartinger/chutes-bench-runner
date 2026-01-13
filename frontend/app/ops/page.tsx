@@ -11,31 +11,8 @@ import {
   type SandyMetricsPoint,
   type SandyResourcesResponse,
 } from "@/lib/api";
-import { formatDate, formatDurationSeconds, formatPercent, parseDateValue, cn } from "@/lib/utils";
+import { formatDate, formatDurationSeconds, formatPercent, parseDateValue } from "@/lib/utils";
 import { Loader2, Activity, Server, ListChecks } from "lucide-react";
-
-function Sparkline({
-  points,
-  color,
-}: {
-  points: { value: number; label: string }[];
-  color: string;
-}) {
-  const max = Math.max(1, ...points.map((p) => p.value));
-  return (
-    <div className="flex h-20 items-end gap-1">
-      {points.map((point, idx) => (
-        <div key={`${point.label}-${idx}`} className="flex-1">
-          <div
-            className={cn("w-full rounded-sm", color)}
-            style={{ height: `${(point.value / max) * 100}%` }}
-            title={`${point.label}: ${point.value}`}
-          />
-        </div>
-      ))}
-    </div>
-  );
-}
 
 type LineSeries = {
   label: string;
@@ -221,39 +198,16 @@ export default function OpsPage() {
     return () => window.clearInterval(interval);
   }, [loadOverview]);
 
-  const workerSeries = useMemo(() => {
-    if (!overview) return [];
-    const cutoff = Date.now() - 6 * 60 * 60 * 1000;
-    return overview.timeseries
-      .filter((point) => {
-        const parsed = parseDateValue(point.timestamp);
-        return parsed ? parsed.getTime() >= cutoff : false;
-      })
-      .map((point) => ({
-      value: point.worker_count,
-      label: new Date(point.timestamp).toLocaleTimeString("en-US", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-    }));
-  }, [overview]);
-
-  const runSeries = useMemo(() => {
-    if (!overview) return [];
-    const cutoff = Date.now() - 6 * 60 * 60 * 1000;
-    return overview.timeseries
-      .filter((point) => {
-        const parsed = parseDateValue(point.timestamp);
-        return parsed ? parsed.getTime() >= cutoff : false;
-      })
-      .map((point) => ({
-      value: point.running_runs,
-      label: new Date(point.timestamp).toLocaleTimeString("en-US", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-    }));
-  }, [overview]);
+  const summarizeSeries = useCallback((values: Array<number | null>) => {
+    const clean = values.filter((value): value is number => value !== null);
+    if (clean.length === 0) {
+      return { latest: null, average: null, peak: null };
+    }
+    const latest = clean[clean.length - 1];
+    const average = clean.reduce((sum, value) => sum + value, 0) / clean.length;
+    const peak = Math.max(...clean);
+    return { latest, average, peak };
+  }, []);
 
   const sandyUtilizationSeries = useMemo(() => {
     if (sandyMetrics.length === 0) return [];
@@ -308,6 +262,27 @@ export default function OpsPage() {
       },
     };
   }, [overview]);
+
+  const sandyUtilizationSummary = useMemo(() => {
+    const cpuValues = sandyMetrics.map((point) => point.cpu_ratio ?? null);
+    const memoryValues = sandyMetrics.map((point) => point.memory_ratio ?? null);
+    const diskValues = sandyMetrics.map((point) => point.disk_ratio ?? null);
+    return {
+      cpu: summarizeSeries(cpuValues),
+      memory: summarizeSeries(memoryValues),
+      disk: summarizeSeries(diskValues),
+    };
+  }, [sandyMetrics, summarizeSeries]);
+
+  const workerQueueSummary = useMemo(() => {
+    if (!overview) return { workers: summarizeSeries([]), queued: summarizeSeries([]) };
+    const workerValues = overview.timeseries.map((point) => point.worker_count);
+    const queuedValues = overview.timeseries.map((point) => point.queued_runs);
+    return {
+      workers: summarizeSeries(workerValues),
+      queued: summarizeSeries(queuedValues),
+    };
+  }, [overview, summarizeSeries]);
 
   const usageSnapshot = useMemo(() => {
     const latestMetric = sandyMetrics.length > 0 ? sandyMetrics[sandyMetrics.length - 1] : null;
@@ -453,7 +428,29 @@ export default function OpsPage() {
           </CardHeader>
           <CardContent>
             {sandyUtilizationSeries.length > 0 ? (
-              <LineChart series={sandyUtilizationSeries} />
+              <div className="space-y-4">
+                <div className="grid gap-3 text-xs text-ink-400 md:grid-cols-3">
+                  <div>
+                    CPU: {sandyUtilizationSummary.cpu.latest !== null ? formatPercent(sandyUtilizationSummary.cpu.latest) : "-"}
+                    <span className="ml-2 text-ink-500">
+                      avg {sandyUtilizationSummary.cpu.average !== null ? formatPercent(sandyUtilizationSummary.cpu.average) : "-"}
+                    </span>
+                  </div>
+                  <div>
+                    Memory: {sandyUtilizationSummary.memory.latest !== null ? formatPercent(sandyUtilizationSummary.memory.latest) : "-"}
+                    <span className="ml-2 text-ink-500">
+                      avg {sandyUtilizationSummary.memory.average !== null ? formatPercent(sandyUtilizationSummary.memory.average) : "-"}
+                    </span>
+                  </div>
+                  <div>
+                    Disk: {sandyUtilizationSummary.disk.latest !== null ? formatPercent(sandyUtilizationSummary.disk.latest) : "-"}
+                    <span className="ml-2 text-ink-500">
+                      avg {sandyUtilizationSummary.disk.average !== null ? formatPercent(sandyUtilizationSummary.disk.average) : "-"}
+                    </span>
+                  </div>
+                </div>
+                <LineChart series={sandyUtilizationSeries} />
+              </div>
             ) : (
               <div className="text-sm text-ink-400">No Sandy telemetry yet.</div>
             )}
@@ -465,36 +462,25 @@ export default function OpsPage() {
           </CardHeader>
           <CardContent>
             {workerQueueSeries ? (
-              <DualAxisLineChart left={workerQueueSeries.left} right={workerQueueSeries.right} />
+              <div className="space-y-4">
+                <div className="grid gap-3 text-xs text-ink-400 md:grid-cols-2">
+                  <div>
+                    Workers: {workerQueueSummary.workers.latest ?? "-"}
+                    <span className="ml-2 text-ink-500">
+                      avg {workerQueueSummary.workers.average !== null ? workerQueueSummary.workers.average.toFixed(1) : "-"}
+                    </span>
+                  </div>
+                  <div>
+                    Queued: {workerQueueSummary.queued.latest ?? "-"}
+                    <span className="ml-2 text-ink-500">
+                      peak {workerQueueSummary.queued.peak ?? "-"}
+                    </span>
+                  </div>
+                </div>
+                <DualAxisLineChart left={workerQueueSeries.left} right={workerQueueSeries.right} />
+              </div>
             ) : (
               <div className="text-sm text-ink-400">No queue data yet.</div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Worker Instances (Last 6h)</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {workerSeries.length > 0 ? (
-              <Sparkline points={workerSeries} color="bg-moss/60" />
-            ) : (
-              <div className="text-sm text-ink-400">No worker data yet.</div>
-            )}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Running Runs (Last 6h)</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {runSeries.length > 0 ? (
-              <Sparkline points={runSeries} color="bg-ink-500" />
-            ) : (
-              <div className="text-sm text-ink-400">No run data yet.</div>
             )}
           </CardContent>
         </Card>
