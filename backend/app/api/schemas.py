@@ -276,6 +276,51 @@ class WorkerTimeseriesPoint(APIModel):
     queued_runs: int = 0
 
 
+class TokenUsageWindow(APIModel):
+    """Token usage summary for a time window."""
+    window_hours: int
+    input_tokens: int
+    output_tokens: int
+
+
+class TokenUsageStats(APIModel):
+    """Token usage summary windows."""
+    last_24h: TokenUsageWindow
+    last_7d: TokenUsageWindow
+
+
+class SandyMetricsPoint(APIModel):
+    """Sandy system metrics time series point."""
+    timestamp: datetime
+    cpu_ratio: Optional[float] = None
+    memory_ratio: Optional[float] = None
+    disk_ratio: Optional[float] = None
+
+
+class SandyResourcesResponse(BaseModel):
+    """Current Sandy resource usage snapshot."""
+    canCreateSandbox: bool
+    rejectReason: Optional[str] = None
+    limits: dict[str, float | int | None]
+    priorityBreakdown: dict[str, int]
+    cpu_percent: Optional[float] = None
+    memory_percent: Optional[float] = None
+    memory_total_gb: Optional[float] = None
+    memory_available_gb: Optional[float] = None
+    disk_used_ratio: Optional[float] = None
+    cpuCount: Optional[int] = None
+    load1: Optional[float] = None
+    load5: Optional[float] = None
+    load15: Optional[float] = None
+    memoryTotalBytes: Optional[int] = None
+    memoryUsedBytes: Optional[int] = None
+    memoryAvailableBytes: Optional[int] = None
+    diskTotalBytes: Optional[int] = None
+    diskUsedBytes: Optional[int] = None
+    diskFreeBytes: Optional[int] = None
+    diskUsedRatio: Optional[float] = None
+
+
 class RunSummaryResponse(APIModel):
     """Lightweight run summary."""
     id: str
@@ -288,6 +333,7 @@ class RunSummaryResponse(APIModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    benchmarks: Optional[list[str]] = None
 
 
 class OpsOverviewResponse(BaseModel):
@@ -299,3 +345,4 @@ class OpsOverviewResponse(BaseModel):
     running_runs: list[RunSummaryResponse]
     completed_runs: list[RunSummaryResponse]
     worker_config: dict[str, int]
+    token_stats: Optional[TokenUsageStats] = None

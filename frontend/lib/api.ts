@@ -216,6 +216,7 @@ export interface WorkerTimeseriesPoint {
   timestamp: string;
   worker_count: number;
   running_runs: number;
+  queued_runs: number;
 }
 
 export interface RunSummary {
@@ -229,6 +230,48 @@ export interface RunSummary {
   created_at: string;
   started_at?: string | null;
   completed_at?: string | null;
+  benchmarks?: string[] | null;
+}
+
+export interface TokenUsageWindow {
+  window_hours: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface TokenUsageStats {
+  last_24h: TokenUsageWindow;
+  last_7d: TokenUsageWindow;
+}
+
+export interface SandyMetricsPoint {
+  timestamp: string;
+  cpu_ratio?: number | null;
+  memory_ratio?: number | null;
+  disk_ratio?: number | null;
+}
+
+export interface SandyResourcesResponse {
+  canCreateSandbox: boolean;
+  rejectReason?: string | null;
+  limits: Record<string, number | null>;
+  priorityBreakdown: Record<string, number>;
+  cpu_percent?: number | null;
+  memory_percent?: number | null;
+  memory_total_gb?: number | null;
+  memory_available_gb?: number | null;
+  disk_used_ratio?: number | null;
+  cpuCount?: number | null;
+  load1?: number | null;
+  load5?: number | null;
+  load15?: number | null;
+  memoryTotalBytes?: number | null;
+  memoryUsedBytes?: number | null;
+  memoryAvailableBytes?: number | null;
+  diskTotalBytes?: number | null;
+  diskUsedBytes?: number | null;
+  diskFreeBytes?: number | null;
+  diskUsedRatio?: number | null;
 }
 
 export interface OpsOverview {
@@ -242,10 +285,22 @@ export interface OpsOverview {
     worker_max_concurrent: number;
     worker_item_concurrency: number;
   };
+  token_stats?: TokenUsageStats | null;
 }
 
-export async function getOpsOverview(): Promise<OpsOverview> {
-  return fetchAPI("/api/ops/overview");
+export async function getOpsOverview(minutes?: number): Promise<OpsOverview> {
+  const params = new URLSearchParams();
+  if (minutes) params.set("minutes", String(minutes));
+  const query = params.toString();
+  return fetchAPI(`/api/ops/overview${query ? `?${query}` : ""}`);
+}
+
+export async function getSandyMetrics(hours = 12): Promise<SandyMetricsPoint[]> {
+  return fetchAPI(`/api/ops/sandy/metrics?hours=${hours}`);
+}
+
+export async function getSandyResources(): Promise<SandyResourcesResponse> {
+  return fetchAPI("/api/ops/sandy/resources");
 }
 
 export async function cancelRun(runId: string): Promise<{ success: boolean; message: string }> {

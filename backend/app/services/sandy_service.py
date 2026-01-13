@@ -220,6 +220,41 @@ class SandyService:
         logger.error(f"Failed to terminate sandbox {sandbox_id}", error=last_error)
         return False
 
+    async def get_resources(self) -> Optional[Dict[str, Any]]:
+        """Fetch current Sandy resource usage snapshot."""
+        if not self.api_key:
+            self.last_error = "Sandy API key is not configured"
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{self.base_url}/api/resources",
+                    headers=self.headers,
+                )
+                response.raise_for_status()
+                return response.json()
+        except Exception as exc:
+            self.last_error = str(exc) or exc.__class__.__name__
+            return None
+
+    async def get_metrics_timeseries(self, hours: int = 12) -> Optional[List[Dict[str, Any]]]:
+        """Fetch Sandy telemetry metrics timeseries."""
+        if not self.api_key:
+            self.last_error = "Sandy API key is not configured"
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    f"{self.base_url}/api/metrics/timeseries",
+                    headers=self.headers,
+                    params={"hours": hours},
+                )
+                response.raise_for_status()
+                return response.json()
+        except Exception as exc:
+            self.last_error = str(exc) or exc.__class__.__name__
+            return None
+
     async def iter_agent_events(
         self,
         sandbox_id: str,

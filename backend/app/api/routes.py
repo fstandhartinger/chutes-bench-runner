@@ -1,5 +1,6 @@
 """API routes."""
 import asyncio
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, status
@@ -21,6 +22,10 @@ from app.api.schemas import (
     PublicKeyResponse,
     MaintenanceStatusResponse,
     OpsOverviewResponse,
+    SandyMetricsPoint,
+    SandyResourcesResponse,
+    TokenUsageStats,
+    TokenUsageWindow,
     RunBenchmarkDetailsResponse,
     RunEventResponse,
     RunResponse,
@@ -61,6 +66,7 @@ from app.services.worker_service import (
     get_worker_timeseries,
     list_active_workers,
 )
+from app.services.sandy_service import SandyService
 from app.services.signed_export_service import (
     SigningKeyError,
     generate_signed_zip_export,
@@ -770,18 +776,120 @@ async def ops_overview(
         .limit(25)
     )
 
+    async def build_token_window(hours: int) -> TokenUsageWindow:
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        token_result = await db.execute(
+            select(
+                func.coalesce(func.sum(BenchmarkItemResult.input_tokens), 0),
+                func.coalesce(func.sum(BenchmarkItemResult.output_tokens), 0),
+            ).where(BenchmarkItemResult.created_at >= cutoff)
+        )
+        input_tokens, output_tokens = token_result.one()
+        return TokenUsageWindow(
+            window_hours=hours,
+            input_tokens=int(input_tokens or 0),
+            output_tokens=int(output_tokens or 0),
+        )
+
+    token_stats = TokenUsageStats(
+        last_24h=await build_token_window(24),
+        last_7d=await build_token_window(24 * 7),
+    )
+
+    def summarize_run(run: BenchmarkRun) -> RunSummaryResponse:
+        benchmarks: Optional[list[str]]
+        if run.selected_benchmarks:
+            benchmarks = [str(name) for name in run.selected_benchmarks]
+        elif run.benchmarks:
+            benchmarks = [rb.benchmark_name for rb in run.benchmarks]
+        else:
+            benchmarks = None
+        return RunSummaryResponse(
+            id=run.id,
+            model_slug=run.model_slug,
+            provider=run.provider,
+            subset_pct=run.subset_pct,
+            subset_count=run.subset_count,
+            subset_seed=run.subset_seed,
+            status=run.status,
+            created_at=run.created_at,
+            started_at=run.started_at,
+            completed_at=run.completed_at,
+            benchmarks=benchmarks,
+        )
+
     return OpsOverviewResponse(
         workers=[WorkerHeartbeatInfo.model_validate(worker) for worker in workers],
         timeseries=[WorkerTimeseriesPoint.model_validate(point) for point in timeseries],
         queue_counts=queue_counts,
-        queued_runs=[RunSummaryResponse.model_validate(run) for run in queued_runs_result.scalars().all()],
-        running_runs=[RunSummaryResponse.model_validate(run) for run in running_runs_result.scalars().all()],
-        completed_runs=[RunSummaryResponse.model_validate(run) for run in completed_runs_result.scalars().all()],
+        queued_runs=[summarize_run(run) for run in queued_runs_result.scalars().all()],
+        running_runs=[summarize_run(run) for run in running_runs_result.scalars().all()],
+        completed_runs=[summarize_run(run) for run in completed_runs_result.scalars().all()],
         worker_config={
             "worker_max_concurrent": settings.worker_max_concurrent,
             "worker_item_concurrency": settings.worker_item_concurrency,
         },
+        token_stats=token_stats,
     )
+
+
+@router.get("/ops/sandy/resources", response_model=SandyResourcesResponse)
+async def sandy_resources():
+    """Return current Sandy host resource usage."""
+    sandy = SandyService()
+    data = await sandy.get_resources()
+    if not data:
+        detail = sandy.last_error or "Unable to fetch Sandy resources"
+        raise HTTPException(status_code=503, detail=detail)
+    memory_total_bytes = data.get("memoryTotalBytes")
+    memory_used_bytes = data.get("memoryUsedBytes")
+    memory_total_gb = data.get("memory_total_gb")
+    if memory_total_gb is None and memory_total_bytes:
+        memory_total_gb = memory_total_bytes / (1024**3)
+    memory_available_gb = data.get("memory_available_gb")
+    if memory_available_gb is None and data.get("memoryAvailableBytes"):
+        memory_available_gb = data["memoryAvailableBytes"] / (1024**3)
+    memory_percent = data.get("memory_percent")
+    if memory_percent is None and memory_total_bytes and memory_used_bytes is not None:
+        memory_percent = (memory_used_bytes / memory_total_bytes) * 100 if memory_total_bytes else None
+    disk_used_ratio = data.get("disk_used_ratio") or data.get("diskUsedRatio")
+
+    normalized = {
+        "canCreateSandbox": data.get("canCreateSandbox"),
+        "rejectReason": data.get("rejectReason"),
+        "limits": data.get("limits", {}),
+        "priorityBreakdown": data.get("priorityBreakdown", {}),
+        "cpu_percent": data.get("cpu_percent"),
+        "memory_percent": memory_percent,
+        "memory_total_gb": memory_total_gb,
+        "memory_available_gb": memory_available_gb,
+        "disk_used_ratio": disk_used_ratio,
+        "cpuCount": data.get("cpuCount"),
+        "load1": data.get("load1") or data.get("load_avg_1m"),
+        "load5": data.get("load5") or data.get("load_avg_5m"),
+        "load15": data.get("load15") or data.get("load_avg_15m"),
+        "memoryTotalBytes": memory_total_bytes,
+        "memoryUsedBytes": memory_used_bytes,
+        "memoryAvailableBytes": data.get("memoryAvailableBytes"),
+        "diskTotalBytes": data.get("diskTotalBytes"),
+        "diskUsedBytes": data.get("diskUsedBytes"),
+        "diskFreeBytes": data.get("diskFreeBytes"),
+        "diskUsedRatio": data.get("diskUsedRatio"),
+    }
+    return SandyResourcesResponse.model_validate(normalized)
+
+
+@router.get("/ops/sandy/metrics", response_model=list[SandyMetricsPoint])
+async def sandy_metrics(
+    hours: int = Query(default=12, ge=1, le=48),
+):
+    """Return Sandy system metrics time series."""
+    sandy = SandyService()
+    data = await sandy.get_metrics_timeseries(hours=hours)
+    if data is None:
+        detail = sandy.last_error or "Unable to fetch Sandy metrics"
+        raise HTTPException(status_code=503, detail=detail)
+    return [SandyMetricsPoint.model_validate(point) for point in data]
 
 
 # Health endpoint
