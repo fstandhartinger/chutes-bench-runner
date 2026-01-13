@@ -100,7 +100,11 @@ class BenchmarkWorker:
         self.client = get_chutes_client()
         self._last_stale_check = 0.0
         self._last_heartbeat = 0.0
-        self.worker_id = os.getenv("WORKER_INSTANCE_ID") or socket.gethostname()
+        self.worker_id = (
+            os.getenv("SANDY_SANDBOX_ID")
+            or os.getenv("WORKER_INSTANCE_ID")
+            or socket.gethostname()
+        )
         self.hostname = socket.gethostname()
 
     async def _is_run_canceled(self, run_id: str) -> bool:

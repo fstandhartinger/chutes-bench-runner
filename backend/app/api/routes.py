@@ -24,6 +24,7 @@ from app.api.schemas import (
     OpsOverviewResponse,
     SandyMetricsPoint,
     SandyResourcesResponse,
+    SandySandboxStatsResponse,
     TokenUsageStats,
     TokenUsageWindow,
     RunBenchmarkDetailsResponse,
@@ -890,6 +891,17 @@ async def sandy_metrics(
         detail = sandy.last_error or "Unable to fetch Sandy metrics"
         raise HTTPException(status_code=503, detail=detail)
     return [SandyMetricsPoint.model_validate(point) for point in data]
+
+
+@router.get("/ops/sandy/sandboxes", response_model=list[SandySandboxStatsResponse])
+async def sandy_sandbox_stats():
+    """Return per-sandbox resource stats from Sandy."""
+    sandy = SandyService()
+    data = await sandy.get_sandbox_stats()
+    if data is None:
+        detail = sandy.last_error or "Unable to fetch Sandy sandbox stats"
+        raise HTTPException(status_code=503, detail=detail)
+    return [SandySandboxStatsResponse.model_validate(point) for point in data]
 
 
 # Health endpoint

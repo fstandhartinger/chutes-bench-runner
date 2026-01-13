@@ -251,6 +251,17 @@ export interface SandyMetricsPoint {
   disk_ratio?: number | null;
 }
 
+export interface SandySandboxStats {
+  sandbox_id: string;
+  container_id?: string | null;
+  cpu_ratio?: number | null;
+  memory_usage_bytes?: number | null;
+  memory_limit_bytes?: number | null;
+  memory_ratio?: number | null;
+  disk_bytes?: number | null;
+  updated_at?: string | null;
+}
+
 export interface SandyResourcesResponse {
   canCreateSandbox: boolean;
   rejectReason?: string | null;
@@ -301,6 +312,10 @@ export async function getSandyMetrics(hours = 12): Promise<SandyMetricsPoint[]> 
 
 export async function getSandyResources(): Promise<SandyResourcesResponse> {
   return fetchAPI("/api/ops/sandy/resources");
+}
+
+export async function getSandySandboxStats(): Promise<SandySandboxStats[]> {
+  return fetchAPI("/api/ops/sandy/sandboxes");
 }
 
 export async function cancelRun(runId: string): Promise<{ success: boolean; message: string }> {

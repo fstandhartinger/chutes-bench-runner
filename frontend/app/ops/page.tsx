@@ -7,9 +7,11 @@ import {
   getOpsOverview,
   getSandyMetrics,
   getSandyResources,
+  getSandySandboxStats,
   type OpsOverview,
   type SandyMetricsPoint,
   type SandyResourcesResponse,
+  type SandySandboxStats,
 } from "@/lib/api";
 import { formatDate, formatDurationSeconds, formatPercent, parseDateValue } from "@/lib/utils";
 import { Loader2, Activity, Server, ListChecks } from "lucide-react";
@@ -138,15 +140,20 @@ function DualAxisLineChart({
 function UsageBar({
   label,
   ratio,
+  detail,
 }: {
   label: string;
   ratio: number | null;
+  detail?: string;
 }) {
   const percent = ratio !== null ? Math.max(0, Math.min(1, ratio)) : null;
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-[11px] text-ink-400">
-        <span>{label}</span>
+        <span>
+          {label}
+          {detail ? <span className="ml-2 text-ink-500">{detail}</span> : null}
+        </span>
         <span>{percent === null ? "-" : formatPercent(percent)}</span>
       </div>
       <div className="h-2 w-full rounded-full bg-ink-900">
@@ -159,12 +166,25 @@ function UsageBar({
   );
 }
 
+function formatBytes(bytes?: number | null): string {
+  if (!bytes || bytes <= 0) return "-";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)}${units[unitIndex]}`;
+}
+
 export default function OpsPage() {
   const [overview, setOverview] = useState<OpsOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sandyMetrics, setSandyMetrics] = useState<SandyMetricsPoint[]>([]);
   const [sandyResources, setSandyResources] = useState<SandyResourcesResponse | null>(null);
+  const [sandboxStats, setSandboxStats] = useState<SandySandboxStats[]>([]);
 
   const loadOverview = useCallback(async () => {
     try {
@@ -189,6 +209,13 @@ export default function OpsPage() {
       setSandyResources(resources);
     } catch {
       setSandyResources(null);
+    }
+
+    try {
+      const stats = await getSandySandboxStats();
+      setSandboxStats(stats);
+    } catch {
+      setSandboxStats([]);
     }
   }, []);
 
@@ -298,6 +325,21 @@ export default function OpsPage() {
       sandyResources?.disk_used_ratio ?? latestMetric?.disk_ratio ?? null;
     return { cpuRatio, memoryRatio, diskRatio };
   }, [sandyMetrics, sandyResources]);
+
+  const sandboxStatsById = useMemo(() => {
+    const map = new Map<string, SandySandboxStats>();
+    sandboxStats.forEach((stat) => {
+      if (stat.sandbox_id) {
+        map.set(stat.sandbox_id, stat);
+      }
+    });
+    return map;
+  }, [sandboxStats]);
+
+  const maxSandboxDiskBytes = useMemo(() => {
+    const values = sandboxStats.map((stat) => stat.disk_bytes ?? 0);
+    return Math.max(1, ...values, 1);
+  }, [sandboxStats]);
 
   if (loading) {
     return (
@@ -497,6 +539,13 @@ export default function OpsPage() {
           {overview.workers.map((worker) => {
             const lastSeen = parseDateValue(worker.last_seen);
             const ageSeconds = lastSeen ? (Date.now() - lastSeen.getTime()) / 1000 : null;
+            const sandbox = sandboxStatsById.get(worker.worker_id);
+            const cpuRatio = sandbox?.cpu_ratio ?? usageSnapshot.cpuRatio;
+            const memoryRatio = sandbox?.memory_ratio ?? usageSnapshot.memoryRatio;
+            const diskRatio =
+              sandbox?.disk_bytes !== undefined && sandbox?.disk_bytes !== null
+                ? sandbox.disk_bytes / maxSandboxDiskBytes
+                : usageSnapshot.diskRatio;
             return (
               <div key={worker.worker_id} className="rounded-lg border border-ink-600 bg-ink-800/50 p-4">
                 <div className="text-sm font-medium text-ink-100">{worker.worker_id}</div>
@@ -513,9 +562,21 @@ export default function OpsPage() {
                   Last seen {ageSeconds !== null ? formatDurationSeconds(ageSeconds) : "-"} ago
                 </div>
                 <div className="mt-3 space-y-2">
-                  <UsageBar label="CPU" ratio={usageSnapshot.cpuRatio} />
-                  <UsageBar label="Memory" ratio={usageSnapshot.memoryRatio} />
-                  <UsageBar label="Disk" ratio={usageSnapshot.diskRatio} />
+                  <UsageBar label="CPU" ratio={cpuRatio ?? null} />
+                  <UsageBar
+                    label="Memory"
+                    ratio={memoryRatio ?? null}
+                    detail={
+                      sandbox?.memory_usage_bytes
+                        ? `${formatBytes(sandbox.memory_usage_bytes)}${sandbox.memory_limit_bytes ? ` / ${formatBytes(sandbox.memory_limit_bytes)}` : ""}`
+                        : undefined
+                    }
+                  />
+                  <UsageBar
+                    label="Disk"
+                    ratio={diskRatio ?? null}
+                    detail={sandbox?.disk_bytes ? formatBytes(sandbox.disk_bytes) : undefined}
+                  />
                 </div>
               </div>
             );
@@ -619,7 +680,7 @@ export default function OpsPage() {
           </p>
           <p>
             <span className="font-medium text-ink-100">Runs per worker</span> is the max number of benchmark runs a
-            single worker can process concurrently, while{" "}
+            single worker can process concurrently inside one sandbox, while{" "}
             <span className="font-medium text-ink-100">item concurrency</span> is how many items within a run can be
             evaluated in parallel.
           </p>

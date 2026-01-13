@@ -321,6 +321,18 @@ class SandyResourcesResponse(BaseModel):
     diskUsedRatio: Optional[float] = None
 
 
+class SandySandboxStatsResponse(APIModel):
+    """Per-sandbox resource stats."""
+    sandbox_id: str
+    container_id: Optional[str] = None
+    cpu_ratio: Optional[float] = None
+    memory_usage_bytes: Optional[int] = None
+    memory_limit_bytes: Optional[int] = None
+    memory_ratio: Optional[float] = None
+    disk_bytes: Optional[int] = None
+    updated_at: Optional[datetime] = None
+
+
 class RunSummaryResponse(APIModel):
     """Lightweight run summary."""
     id: str
