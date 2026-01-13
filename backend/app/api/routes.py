@@ -894,10 +894,15 @@ async def sandy_metrics(
 
 
 @router.get("/ops/sandy/sandboxes", response_model=list[SandySandboxStatsResponse])
-async def sandy_sandbox_stats():
+async def sandy_sandbox_stats(
+    ids: Optional[str] = Query(default=None),
+):
     """Return per-sandbox resource stats from Sandy."""
     sandy = SandyService()
-    data = await sandy.get_sandbox_stats()
+    sandbox_ids = None
+    if ids:
+        sandbox_ids = [value for value in ids.split(",") if value]
+    data = await sandy.get_sandbox_stats(sandbox_ids)
     if data is None:
         detail = sandy.last_error or "Unable to fetch Sandy sandbox stats"
         raise HTTPException(status_code=503, detail=detail)

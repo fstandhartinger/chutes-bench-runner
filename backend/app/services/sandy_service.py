@@ -255,16 +255,20 @@ class SandyService:
             self.last_error = str(exc) or exc.__class__.__name__
             return None
 
-    async def get_sandbox_stats(self) -> Optional[List[Dict[str, Any]]]:
+    async def get_sandbox_stats(self, sandbox_ids: Optional[list[str]] = None) -> Optional[List[Dict[str, Any]]]:
         """Fetch per-sandbox stats from Sandy."""
         if not self.api_key:
             self.last_error = "Sandy API key is not configured"
             return None
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
+                params: Dict[str, Any] = {}
+                if sandbox_ids:
+                    params["ids"] = ",".join(sandbox_ids)
                 response = await client.get(
                     f"{self.base_url}/api/sandboxes/stats",
                     headers=self.headers,
+                    params=params,
                 )
                 response.raise_for_status()
                 return response.json()

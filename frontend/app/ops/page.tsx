@@ -212,7 +212,8 @@ export default function OpsPage() {
     }
 
     try {
-      const stats = await getSandySandboxStats();
+      const ids = data.workers.map((worker) => worker.worker_id);
+      const stats = await getSandySandboxStats(ids);
       setSandboxStats(stats);
     } catch {
       setSandboxStats([]);

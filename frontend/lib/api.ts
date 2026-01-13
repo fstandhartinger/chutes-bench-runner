@@ -314,8 +314,13 @@ export async function getSandyResources(): Promise<SandyResourcesResponse> {
   return fetchAPI("/api/ops/sandy/resources");
 }
 
-export async function getSandySandboxStats(): Promise<SandySandboxStats[]> {
-  return fetchAPI("/api/ops/sandy/sandboxes");
+export async function getSandySandboxStats(ids?: string[]): Promise<SandySandboxStats[]> {
+  const params = new URLSearchParams();
+  if (ids && ids.length > 0) {
+    params.set("ids", ids.join(","));
+  }
+  const query = params.toString();
+  return fetchAPI(`/api/ops/sandy/sandboxes${query ? `?${query}` : ""}`);
 }
 
 export async function cancelRun(runId: string): Promise<{ success: boolean; message: string }> {
