@@ -44,6 +44,14 @@ def _is_retryable_item_error(error: Optional[str]) -> bool:
     if not error:
         return False
     message = error.lower()
+    if "sandbox not found" in message or "sandbox missing" in message:
+        return True
+    if "sandbox expired" in message or "sandbox terminated" in message:
+        return True
+    if "sandbox" in message and "preempt" in message:
+        return True
+    if "http 404" in message and ("sandbox" in message or "sandy" in message):
+        return True
     if "network error contacting chutes" in message:
         return True
     if "timeout" in message or "timed out" in message:
@@ -78,6 +86,8 @@ def _is_fatal_item_error(error: Optional[str]) -> bool:
         return False
     message = error.lower()
     if "model not found" in message or "no such model" in message or "http 404" in message:
+        if "sandbox" in message or "sandy" in message:
+            return False
         return True
     if "http 401" in message or "http 403" in message:
         return True

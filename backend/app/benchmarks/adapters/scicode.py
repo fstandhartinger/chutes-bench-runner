@@ -127,7 +127,11 @@ class SciCodeAdapter(BenchmarkAdapter):
 
     async def _ensure_sandbox(self) -> Optional[str]:
         if self._sandbox_id:
-            return self._sandbox_id
+            exists = await self.sandy.sandbox_exists(self._sandbox_id)
+            if exists is False:
+                self._sandbox_id = None
+            else:
+                return self._sandbox_id
 
         sandbox_id = await self.sandy.create_sandbox()
         if not sandbox_id:

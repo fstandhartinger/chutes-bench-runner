@@ -358,6 +358,14 @@ class AffineEnvAdapter(BenchmarkAdapter):
 
     async def preload(self) -> None:
         async with self._setup_lock:
+            if self._prepared and self._sandbox_id:
+                exists = await self.sandy.sandbox_exists(self._sandbox_id)
+                if exists is False:
+                    self._sandbox_id = None
+                    self._prepared = False
+                    self._sandbox_error = None
+                else:
+                    return
             if self._prepared:
                 return
             settings = get_settings()
@@ -485,7 +493,13 @@ class AffineEnvAdapter(BenchmarkAdapter):
 
     async def _ensure_sandbox(self) -> Optional[str]:
         if self._sandbox_id:
-            return self._sandbox_id
+            exists = await self.sandy.sandbox_exists(self._sandbox_id)
+            if exists is False:
+                self._sandbox_id = None
+                self._prepared = False
+                self._sandbox_error = None
+            else:
+                return self._sandbox_id
         sandbox_id = await self.sandy.create_sandbox(enable_docker_socket=True)
         if not sandbox_id:
             self._sandbox_error = self.sandy.last_error or "Could not create sandbox"

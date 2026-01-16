@@ -102,6 +102,7 @@ class SandyService:
             timeout_seconds = max(timeout_seconds, timeout_ms / 1000 + 30)
         delay_seconds = 1
         last_error: Optional[str] = None
+        self.last_error = None
         for attempt in range(1, 3):
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=10.0)) as client:
                 try:
@@ -119,6 +120,7 @@ class SandyService:
                     )
                     response.raise_for_status()
                     data = response.json()
+                    self.last_error = None
                     return {
                         "success": True,
                         "stdout": data.get("stdout", ""),
@@ -149,6 +151,8 @@ class SandyService:
                 )
                 await asyncio.sleep(delay_seconds)
                 delay_seconds = min(delay_seconds * 2, 10)
+        if last_error:
+            self.last_error = last_error if len(last_error) <= 500 else f"{last_error[:500].rstrip()}…"
         return {"success": False, "error": last_error or "sandbox exec failed", "exit_code": -1}
 
     async def write_file(self, sandbox_id: str, path: str, content: str) -> bool:
@@ -272,6 +276,27 @@ class SandyService:
                 )
                 response.raise_for_status()
                 return response.json()
+        except Exception as exc:
+            self.last_error = str(exc) or exc.__class__.__name__
+            return None
+
+    async def sandbox_exists(self, sandbox_id: str) -> Optional[bool]:
+        """Check whether a sandbox exists (None when status is unknown)."""
+        if not self.api_key:
+            self.last_error = "Sandy API key is not configured"
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{self.base_url}/api/sandboxes/{sandbox_id}",
+                    headers=self.headers,
+                )
+                if response.status_code == 404:
+                    self.last_error = "Sandbox not found"
+                    return False
+                response.raise_for_status()
+                self.last_error = None
+                return True
         except Exception as exc:
             self.last_error = str(exc) or exc.__class__.__name__
             return None
