@@ -144,7 +144,7 @@ Run Sandy separately and set:
 ```
 SANDY_BASE_URL=https://<sandy-host>
 SANDY_API_KEY=<sandy-key>
-SANDY_DOCKER_UPSTREAM=<controller upstream for Docker-socket workloads>
+SANDY_DOCKER_UPSTREAM=docker-primary
 ```
 Production uses the dedicated Sandy host `https://sandy.65.109.64.180.nip.io`.
 
