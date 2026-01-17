@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     sandy_base_url: str = "https://sandy.65.109.64.180.nip.io"
     sandy_api_key: Optional[str] = None
     sandy_volume_root: str = "/var/lib/sandy/volumes"
+    sandy_docker_upstream: Optional[str] = None
 
     # AA-LCR judge model (LLM-based equality checker)
     aa_lcr_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"

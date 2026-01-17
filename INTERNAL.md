@@ -39,6 +39,7 @@ FRONTEND_URL=https://chutes-bench-runner-ui.onrender.com
 ADMIN_SECRET=<secret for admin endpoints>
 SANDY_BASE_URL=https://sandy.65.109.64.180.nip.io
 SANDY_API_KEY=<sandy-api-key>
+SANDY_DOCKER_UPSTREAM=primary
 BENCH_SIGNING_PRIVATE_KEY=<base64 or PEM Ed25519 private key>
 BENCH_SIGNING_PUBLIC_KEY=<optional public key>
 SKIP_MODEL_SYNC=true
@@ -52,6 +53,12 @@ GDPVAL_JUDGE_MODEL=<optional override>
 
 **Sandy host**: Production sandboxes use the dedicated Sandy server at
 `https://sandy.65.109.64.180.nip.io` (old `94.130.222.43` deployment deprecated; keep online until sandboxes drain).
+
+If `/api/ops/sandy/resources` returns 502, the Sandy controller/worker stack likely crashed on the Sandy host:
+```
+cd /opt/sandy/deploy
+docker compose --env-file .env up -d sandy-controller sandy-worker
+```
 
 ### Shared Cache (Bench Data + HF)
 
@@ -144,6 +151,7 @@ Benchmark workers run on the Hetzner Sandy server (`65.109.64.180`) to avoid Ren
 - `CHUTES_CLIENT_SECRET` (needed to refresh IDP tokens)
 - `HF_TOKEN` (for gated datasets like HLE/GPQA)
 - `SANDY_BASE_URL` + `SANDY_API_KEY` (for code benchmarks)
+- `SANDY_DOCKER_UPSTREAM` (route Docker-socket benchmarks to a Docker-backed Sandy upstream)
 - `SANDY_VOLUME_ROOT` (host path for Sandy volumes, default `/var/lib/sandy/volumes`)
 - Optional: `WORKER_MAX_CONCURRENT`, `WORKER_ITEM_CONCURRENCY`, `WORKER_STALE_RUN_MINUTES`
 

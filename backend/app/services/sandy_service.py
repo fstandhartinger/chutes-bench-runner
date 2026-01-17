@@ -10,10 +10,18 @@ logger = get_logger(__name__)
 class SandyService:
     """Service for interacting with the Sandy sandbox API."""
 
+    @staticmethod
+    def _is_agent_warmup_error(message: str) -> bool:
+        if not message:
+            return False
+        lowered = message.lower()
+        return "vsock handshake failed" in lowered or "agent not ready" in lowered
+
     def __init__(self):
         settings = get_settings()
         self.base_url = settings.sandy_base_url.rstrip("/")
         self.api_key = settings.sandy_api_key
+        self.docker_upstream = settings.sandy_docker_upstream
         self.last_error: Optional[str] = None
         self.headers = {
             "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
@@ -25,6 +33,7 @@ class SandyService:
         enable_docker_socket: bool = False,
         priority: int = 3,  # LOW priority for batch benchmark jobs
         preemptable: bool = True,  # Can be terminated under memory pressure
+        requires_agent: bool = False,
     ) -> Optional[str]:
         """Create a new sandbox and return its ID.
 
@@ -50,6 +59,8 @@ class SandyService:
         }
         if enable_docker_socket:
             payload["enableDockerSocket"] = True
+        if (enable_docker_socket or requires_agent) and self.docker_upstream:
+            payload["upstream"] = self.docker_upstream
         timeout = httpx.Timeout(90.0, connect=10.0)
         for attempt in range(1, 4):
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -100,10 +111,11 @@ class SandyService:
         timeout_seconds = 60.0
         if timeout_ms is not None:
             timeout_seconds = max(timeout_seconds, timeout_ms / 1000 + 30)
-        delay_seconds = 1
+        delay_seconds = 2
         last_error: Optional[str] = None
         self.last_error = None
-        for attempt in range(1, 3):
+        max_attempts = 4
+        for attempt in range(1, max_attempts + 1):
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=10.0)) as client:
                 try:
                     payload: dict[str, Any] = {"command": command}
@@ -120,12 +132,26 @@ class SandyService:
                     )
                     response.raise_for_status()
                     data = response.json()
+                    stdout = data.get("stdout", "")
+                    stderr = data.get("stderr", "")
+                    exit_code = data.get("exitCode", 0)
+                    if exit_code != 0 and self._is_agent_warmup_error(stderr):
+                        last_error = stderr or "Sandbox agent not ready"
+                        if attempt < max_attempts:
+                            logger.warning(
+                                "Sandbox agent not ready; retrying exec",
+                                attempt=attempt,
+                                error=last_error,
+                            )
+                            await asyncio.sleep(delay_seconds)
+                            delay_seconds = min(delay_seconds * 2, 15)
+                            continue
                     self.last_error = None
                     return {
                         "success": True,
-                        "stdout": data.get("stdout", ""),
-                        "stderr": data.get("stderr", ""),
-                        "exit_code": data.get("exitCode", 0),
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "exit_code": exit_code,
                     }
                 except httpx.HTTPStatusError as e:
                     error_detail = e.response.text or str(e)
@@ -143,24 +169,25 @@ class SandyService:
                         f"Failed to execute command in sandbox {sandbox_id}",
                         error=last_error,
                     )
-            if attempt < 2:
+            if attempt < max_attempts:
                 logger.warning(
                     "Retrying sandbox exec",
                     attempt=attempt,
                     error=last_error,
                 )
                 await asyncio.sleep(delay_seconds)
-                delay_seconds = min(delay_seconds * 2, 10)
+                delay_seconds = min(delay_seconds * 2, 15)
         if last_error:
             self.last_error = last_error if len(last_error) <= 500 else f"{last_error[:500].rstrip()}…"
         return {"success": False, "error": last_error or "sandbox exec failed", "exit_code": -1}
 
     async def write_file(self, sandbox_id: str, path: str, content: str) -> bool:
         """Write a file to the sandbox."""
-        delay_seconds = 1
+        delay_seconds = 2
         last_error: Optional[str] = None
         self.last_error = None
-        for attempt in range(1, 4):
+        max_attempts = 5
+        for attempt in range(1, max_attempts + 1):
             async with httpx.AsyncClient(timeout=30.0) as client:
                 try:
                     response = await client.post(
@@ -178,14 +205,14 @@ class SandyService:
                         break
                 except Exception as e:
                     last_error = str(e) or e.__class__.__name__
-            if attempt < 3:
+            if attempt < max_attempts:
                 logger.warning(
                     "Retrying sandbox file write",
                     attempt=attempt,
                     error=last_error,
                 )
                 await asyncio.sleep(delay_seconds)
-                delay_seconds = min(delay_seconds * 2, 10)
+                delay_seconds = min(delay_seconds * 2, 15)
         if last_error:
             self.last_error = last_error
         logger.error(f"Failed to write file to sandbox {sandbox_id}", error=last_error)

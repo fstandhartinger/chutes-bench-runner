@@ -144,6 +144,7 @@ Run Sandy separately and set:
 ```
 SANDY_BASE_URL=https://<sandy-host>
 SANDY_API_KEY=<sandy-key>
+SANDY_DOCKER_UPSTREAM=<controller upstream for Docker-socket workloads>
 ```
 Production uses the dedicated Sandy host `https://sandy.65.109.64.180.nip.io`.
 
@@ -156,6 +157,7 @@ Required:
 Optional but recommended:
 - `HF_TOKEN` (for gated datasets)
 - `SANDY_BASE_URL`, `SANDY_API_KEY` (sandboxed benchmarks)
+- `SANDY_DOCKER_UPSTREAM` (route Docker-socket benchmarks to a Docker-backed Sandy upstream)
 - `BENCH_DATA_DIR`, `HF_HOME`, `HF_DATASETS_CACHE`, `HF_HUB_CACHE` (shared cache paths)
 - `BENCH_SIGNING_PRIVATE_KEY`, `BENCH_SIGNING_PUBLIC_KEY` (signed exports)
 - `ADMIN_SECRET` (admin endpoints)
@@ -170,6 +172,7 @@ pytest -v
 
 cd frontend
 npm test
+npm run test:e2e
 ```
 
 ## Deployment
