@@ -94,7 +94,7 @@ frontend (Next.js)
             -> Sandy sandbox (code/CLI benchmarks)
 ```
 
-Production note: benchmark workers run on the dedicated Sandy server (`65.109.64.180`) for stability and cost; the old Sandy host is deprecated. The Render worker service stays disabled.
+Production note: benchmark workers run on the old Sandy host (`94.130.222.43`) for stability and cost; the new Sandy host (`65.109.64.180`) is reserved for the Sandy controller + sandboxes. The Render worker service stays disabled.
 
 ## Local development
 

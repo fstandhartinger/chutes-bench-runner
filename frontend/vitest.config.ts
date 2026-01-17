@@ -8,6 +8,8 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: [],
+    include: ["tests/**/*.test.{ts,tsx,js,jsx}"],
+    exclude: ["**/node_modules/**", "tests/e2e/**"],
   },
   resolve: {
     alias: {
@@ -15,8 +17,6 @@ export default defineConfig({
     },
   },
 });
-
-
 
 
 

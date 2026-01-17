@@ -140,7 +140,7 @@ NEXT_PUBLIC_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 **Fix**: Use Standard plan (2GB) for worker service
 
 ### 12. Hetzner Worker Pool (Production)
-Benchmark workers run on the Hetzner Sandy server (`65.109.64.180`) to avoid Render OOMs and reduce cost. Render worker should stay disabled.
+Benchmark workers run on the **old Sandy host** (`94.130.222.43`) to avoid Render OOMs and reduce cost. The new Sandy host (`65.109.64.180`) should only run the Sandy controller + sandbox workers. Render worker should stay disabled.
 
 **Why**: Hetzner has plenty of CPU/RAM and is cheaper than multiple Render instances.
 
@@ -184,38 +184,36 @@ Benchmark workers run on the Hetzner Sandy server (`65.109.64.180`) to avoid Ren
 5. Build and start N workers:
    ```bash
    cd /opt/chutes-bench-runner
-   docker compose -f docker-compose.worker.yml up -d --build --scale worker=4
+   docker-compose -f docker-compose.worker.yml up -d --build --scale worker=4
    ```
 6. Updating workers after code changes:
    ```bash
    cd /opt/chutes-bench-runner
    git pull
-   docker compose -f docker-compose.worker.yml up -d --build --scale worker=4
+   docker-compose -f docker-compose.worker.yml up -d --build --scale worker=4
    ```
 
 **Notes**:
 - Use `app.worker.runner` (no health server) to avoid port conflicts.
-- On the current Sandy host (128 GB RAM), the safe range is ~20–30 workers; monitor memory + load with `docker stats` before scaling beyond that.
-- Keep existing services intact (Sandy, TAO trader, dashboards, nginx).
+- On the current worker host (64 GB RAM), the safe range is ~8–12 workers; monitor memory + load with `docker stats` before scaling beyond that.
+- Keep existing services intact (Sandy + microvm + task containers).
 
 **Scaling beyond the base pool (extra project)**:
-If you need more workers than the base pool, launch an extra compose project. Use `docker compose` (v2); on Ubuntu install `docker-compose-v2` if the subcommand is missing.
+If you need more workers than the base pool, launch an extra compose project. Use `docker-compose` on the old Sandy host.
 ```bash
 cd /opt/chutes-bench-runner
-docker compose -p chutes-bench-runner-extra -f docker-compose.worker.yml --env-file .env.worker up -d --scale worker=2 --no-build
+docker-compose -p chutes-bench-runner-extra -f docker-compose.worker.yml --env-file .env.worker up -d --scale worker=2 --no-build
 ```
 This creates `chutes-bench-runner-extra-worker-*` containers without name conflicts.
 
 ### Autoscaler (Hetzner Sandy)
 
-The autoscaler runs on the Sandy server and adjusts worker counts based on the
-current queue size. The current deployment scales the base pool up to 24 workers
-with no extra pool (EXTRA_MAX_WORKERS=0), and can be raised further if headroom
-allows.
+The autoscaler runs on the **old Sandy host** and adjusts worker counts based on the
+current queue size. The current deployment scales the base pool up to 4 workers
+and the extra pool up to 6 workers (10 total). Increase only after checking RAM.
 
-**Note:** The autoscaler prefers `docker compose` (v2) when available, falling back
-to `docker-compose` if needed. Install `docker-compose-v2` on Ubuntu to avoid
-legacy `docker-compose` issues.
+**Note:** The autoscaler will use `docker-compose` on the old host (no `docker compose`
+subcommand). On the new host it should remain disabled.
 
 **Install:**
 ```bash
