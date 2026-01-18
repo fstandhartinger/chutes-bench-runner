@@ -1,5 +1,6 @@
 """Database models."""
 from app.models.benchmark import Benchmark, BenchmarkItem
+from app.models.comparison import ComparisonStatus, ModelComparison
 from app.models.export import Export
 from app.models.model import Model
 from app.models.run import (
@@ -23,6 +24,8 @@ __all__ = [
     "RunStatus",
     "WorkerHeartbeat",
     "WorkerHeartbeatLog",
+    "ModelComparison",
+    "ComparisonStatus",
 ]
 
 

@@ -360,3 +360,62 @@ class OpsOverviewResponse(BaseModel):
     completed_runs: list[RunSummaryResponse]
     worker_config: dict[str, int]
     token_stats: Optional[TokenUsageStats] = None
+
+
+# Comparison schemas for RLM vs Base model benchmark comparisons
+class CreateComparisonRequest(BaseModel):
+    """Request to create a model comparison."""
+    base_run_id: str = Field(
+        ...,
+        description="UUID of the baseline model benchmark run.",
+    )
+    rlm_run_id: str = Field(
+        ...,
+        description="UUID of the RLM model benchmark run.",
+    )
+    name: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description="Optional name for the comparison.",
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description="Optional description of the comparison.",
+    )
+
+
+class ComparisonResponse(APIModel):
+    """Model comparison response."""
+    id: str
+    base_run_id: str
+    base_model_slug: str
+    rlm_run_id: str
+    rlm_model_slug: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    subset_seed: Optional[str] = None
+    benchmarks: Optional[list[str]] = None
+    status: str
+    error_message: Optional[str] = None
+    results: Optional[dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class ComparisonSummaryResponse(APIModel):
+    """Lightweight comparison summary."""
+    id: str
+    base_model_slug: str
+    rlm_model_slug: str
+    name: Optional[str] = None
+    status: str
+    benchmarks: Optional[list[str]] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class ComparisonsListResponse(BaseModel):
+    """List of comparisons response."""
+    comparisons: list[ComparisonSummaryResponse]
+    total: int

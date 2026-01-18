@@ -14,6 +14,10 @@ from app.api.schemas import (
     BenchmarksListResponse,
     BenchmarkSummaryResponse,
     CancelRunResponse,
+    ComparisonResponse,
+    ComparisonsListResponse,
+    ComparisonSummaryResponse,
+    CreateComparisonRequest,
     CreateRunRequest,
     ItemResultResponse,
     ItemResultsResponse,
@@ -74,6 +78,7 @@ from app.services.signed_export_service import (
     get_public_key_info,
     verify_signed_zip_export,
 )
+from app.services import comparison_service
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api")
@@ -924,3 +929,103 @@ async def service_status():
         maintenance_mode=settings.maintenance_mode,
         message=settings.maintenance_message,
     )
+
+
+# Comparison endpoints for RLM vs Base model benchmark comparisons
+@router.post("/comparisons", response_model=ComparisonResponse, status_code=status.HTTP_201_CREATED)
+async def create_comparison(
+    db: SessionDep,
+    request: CreateComparisonRequest,
+):
+    """
+    Create a comparison between a base model and an RLM variant.
+
+    Both benchmark runs must already exist. The comparison will be created
+    immediately, and if both runs are complete, results will be generated.
+    """
+    try:
+        comparison = await comparison_service.create_comparison(
+            db,
+            base_run_id=request.base_run_id,
+            rlm_run_id=request.rlm_run_id,
+            name=request.name,
+            description=request.description,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ComparisonResponse.model_validate(comparison)
+
+
+@router.get("/comparisons", response_model=ComparisonsListResponse)
+async def list_comparisons(
+    db: SessionDep,
+    status_filter: Optional[str] = Query(None, alias="status"),
+    limit: int = Query(default=50, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """List model comparisons."""
+    comparisons, total = await comparison_service.list_comparisons(
+        db, status=status_filter, limit=limit, offset=offset
+    )
+    return ComparisonsListResponse(
+        comparisons=[ComparisonSummaryResponse.model_validate(c) for c in comparisons],
+        total=total,
+    )
+
+
+@router.get("/comparisons/{comparison_id}", response_model=ComparisonResponse)
+async def get_comparison(
+    db: SessionDep,
+    comparison_id: str,
+):
+    """Get a specific model comparison with full results."""
+    comparison = await comparison_service.get_comparison(db, comparison_id)
+    if not comparison:
+        raise HTTPException(status_code=404, detail="Comparison not found")
+    return ComparisonResponse.model_validate(comparison)
+
+
+@router.get("/comparisons/{comparison_id}/json")
+async def get_comparison_json(
+    db: SessionDep,
+    comparison_id: str,
+):
+    """Get comparison results as raw JSON."""
+    results = await comparison_service.get_comparison_json(db, comparison_id)
+    if results is None:
+        raise HTTPException(status_code=404, detail="Comparison not found")
+    return results
+
+
+@router.get("/comparisons/{comparison_id}/markdown")
+async def get_comparison_markdown(
+    db: SessionDep,
+    comparison_id: str,
+):
+    """Get comparison report as markdown."""
+    markdown = await comparison_service.get_comparison_markdown(db, comparison_id)
+    if markdown is None:
+        raise HTTPException(status_code=404, detail="Comparison not found")
+    return StreamingResponse(
+        iter([markdown.encode("utf-8")]),
+        media_type="text/markdown",
+        headers={"Content-Disposition": f"attachment; filename=comparison_{comparison_id}.md"},
+    )
+
+
+@router.post("/comparisons/{comparison_id}/refresh", response_model=ComparisonResponse)
+async def refresh_comparison(
+    db: SessionDep,
+    comparison_id: str,
+):
+    """
+    Refresh comparison status and regenerate results if runs are complete.
+
+    Use this endpoint to update a comparison after its underlying benchmark
+    runs have completed.
+    """
+    comparison = await comparison_service.update_comparison_status(db, comparison_id)
+    if not comparison:
+        raise HTTPException(status_code=404, detail="Comparison not found")
+    return ComparisonResponse.model_validate(comparison)
