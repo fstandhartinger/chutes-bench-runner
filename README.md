@@ -43,6 +43,23 @@ results, and verifiable signed exports for sharing results.
 | SWE-Bench Pro | ScaleAI/SWE-bench_Pro + SWE-bench_Pro-os | Official scripts + docker images |
 | tau2-Bench Telecom | tau2-bench repo | Official tau2 simulation framework |
 | CritPt | CritPt-Benchmark/CritPt | External CritPt evaluation server |
+| S-NIAH | RULER-style synthetic | Single needle-in-haystack retrieval (exact match) |
+| OOLONG | oolongbench/oolong-synth | Semantic aggregation (numeric: 0.75^diff, else exact match) |
+| OOLONG-Pairs | oolongbench/oolong-real (dnd) | Pairwise aggregation (F1 scoring) |
+
+### Long-context benchmarks (RLM paper)
+
+The S-NIAH, OOLONG, and OOLONG-Pairs benchmarks are based on the [RLM paper](https://arxiv.org/html/2512.24601v1)
+and evaluate long-context reasoning capabilities:
+
+- **S-NIAH** (Needle-in-a-Haystack): Tests retrieval of specific information from long distractor text.
+  Processing costs scale roughly constant with input length. Uses configurable context sizes from 8K to 256K tokens.
+
+- **OOLONG**: Tests semantic classification and aggregation across dataset entries.
+  Processing costs scale linearly with input length. Uses the [oolongbench/oolong-synth](https://huggingface.co/datasets/oolongbench/oolong-synth) dataset.
+
+- **OOLONG-Pairs**: Extension requiring pairwise aggregation across entries.
+  Processing costs scale quadratically with input length. Uses D&D transcripts from [oolongbench/oolong-real](https://huggingface.co/datasets/oolongbench/oolong-real).
 
 Notes:
 - **Gated datasets** (HLE, GPQA) require HF access for the provided HF token.

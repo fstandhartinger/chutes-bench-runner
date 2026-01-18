@@ -14,6 +14,9 @@ from app.benchmarks.adapters.affine_envs import AffineEnvAdapter
 from app.benchmarks.adapters.aa_omniscience import AAOmniscienceAdapter
 from app.benchmarks.adapters.critpt import CritPtAdapter
 from app.benchmarks.adapters.gdpval import GDPvalAAAdapter
+from app.benchmarks.adapters.s_niah import SNIAHAdapter
+from app.benchmarks.adapters.oolong import OolongAdapter
+from app.benchmarks.adapters.oolong_pairs import OolongPairsAdapter
 
 __all__ = [
     "MMLUProAdapter",
@@ -31,6 +34,9 @@ __all__ = [
     "AAOmniscienceAdapter",
     "CritPtAdapter",
     "GDPvalAAAdapter",
+    "SNIAHAdapter",
+    "OolongAdapter",
+    "OolongPairsAdapter",
 ]
 
 
