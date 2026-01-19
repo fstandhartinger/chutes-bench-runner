@@ -802,6 +802,22 @@ class BenchmarkWorker:
         # Get adapter
         adapter = get_adapter(rb.benchmark_name, client, run.model_slug, judge_client=judge_client)
         if not adapter:
+            try:
+                from app.benchmarks import adapters as _adapters  # noqa: F401
+            except Exception as exc:
+                logger.warning(
+                    "Failed to import benchmark adapters",
+                    benchmark=rb.benchmark_name,
+                    error=str(exc) or exc.__class__.__name__,
+                )
+            else:
+                adapter = get_adapter(
+                    rb.benchmark_name,
+                    client,
+                    run.model_slug,
+                    judge_client=judge_client,
+                )
+        if not adapter:
             await self._safe_update_benchmark_status(
                 rb.id,
                 BenchmarkRunStatus.SKIPPED,
