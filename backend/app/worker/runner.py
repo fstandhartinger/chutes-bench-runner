@@ -99,6 +99,36 @@ def _is_fatal_item_error(error: Optional[str]) -> bool:
     return False
 
 
+def _apply_error_score_defaults(result: ItemResult) -> ItemResult:
+    if result.error:
+        if result.is_correct is None:
+            result.is_correct = False
+        if result.score is None:
+            result.score = 0.0
+    return result
+
+
+def _load_direct_adapter(
+    name: str,
+    client: InferenceClient,
+    model_slug: str,
+    judge_client: Optional[InferenceClient] = None,
+) -> Optional[BenchmarkAdapter]:
+    if name == "s_niah":
+        from app.benchmarks.adapters.s_niah import SNIAHAdapter
+
+        return SNIAHAdapter(client, model_slug, judge_client=judge_client)
+    if name == "oolong":
+        from app.benchmarks.adapters.oolong import OolongAdapter
+
+        return OolongAdapter(client, model_slug, judge_client=judge_client)
+    if name == "oolong_pairs":
+        from app.benchmarks.adapters.oolong_pairs import OolongPairsAdapter
+
+        return OolongPairsAdapter(client, model_slug, judge_client=judge_client)
+    return None
+
+
 class BenchmarkWorker:
     """Worker that processes benchmark runs."""
 
@@ -818,6 +848,20 @@ class BenchmarkWorker:
                     judge_client=judge_client,
                 )
         if not adapter:
+            try:
+                adapter = _load_direct_adapter(
+                    rb.benchmark_name,
+                    client,
+                    run.model_slug,
+                    judge_client=judge_client,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Direct adapter load failed",
+                    benchmark=rb.benchmark_name,
+                    error=str(exc) or exc.__class__.__name__,
+                )
+        if not adapter:
             await self._safe_update_benchmark_status(
                 rb.id,
                 BenchmarkRunStatus.SKIPPED,
@@ -1054,6 +1098,7 @@ class BenchmarkWorker:
                         result.metadata = {}
                     result.metadata["worker_attempt"] = attempt
                     result.metadata["worker_attempts"] = max_attempts
+                    result = _apply_error_score_defaults(result)
                     last_result = result
 
                     if not _is_retryable_item_error(result.error):
