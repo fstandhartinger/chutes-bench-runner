@@ -3,8 +3,8 @@
 These benchmarks are based on the RLM paper (arxiv:2512.24601v1) and evaluate
 long-context reasoning and aggregation capabilities.
 
-Revision ID: 010
-Revises: 009
+Revision ID: 010_add_long_context_benchmarks
+Revises: 009_default_select_benchmarks
 Create Date: 2026-01-18
 """
 from typing import Sequence, Union
@@ -13,8 +13,8 @@ from uuid import uuid4
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "010"
-down_revision: Union[str, None] = "009"
+revision: str = "010_add_long_context_benchmarks"
+down_revision: Union[str, None] = "009_default_select_benchmarks"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

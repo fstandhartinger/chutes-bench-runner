@@ -3,8 +3,8 @@
 This supports spec 003: systematically comparing base models vs RLM variants
 on long-context benchmarks (S-NIAH, OOLONG, OOLONG-Pairs).
 
-Revision ID: 011
-Revises: 010
+Revision ID: 011_add_model_comparisons
+Revises: 010_add_long_context_benchmarks
 Create Date: 2026-01-18
 """
 from typing import Sequence, Union
@@ -13,8 +13,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision: str = "011"
-down_revision: Union[str, None] = "010"
+revision: str = "011_add_model_comparisons"
+down_revision: Union[str, None] = "010_add_long_context_benchmarks"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
