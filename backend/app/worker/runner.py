@@ -27,6 +27,7 @@ from app.models.run import (
 from app.services import auth_service
 from app.services.chutes_client import get_chutes_client
 from app.services.gremium_client import GremiumClient
+from app.services.rlm_client import RLMClient
 from app.services.inference_client import InferenceClient
 from app.services.run_service import (
     add_run_event,
@@ -220,6 +221,11 @@ class BenchmarkWorker:
                 api_key=settings.gremium_api_key or settings.chutes_api_key,
                 provider=run.provider,
                 base_url=settings.gremium_api_base_url,
+            )
+        if run.provider == "rlm":
+            return RLMClient(
+                api_key=settings.rlm_api_key or settings.chutes_api_key,
+                base_url=settings.rlm_api_base_url,
             )
         if run.auth_mode == "idp":
             if not run.auth_session_id:

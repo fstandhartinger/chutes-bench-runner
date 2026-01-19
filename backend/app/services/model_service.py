@@ -26,6 +26,19 @@ GREMIUM_MODELS = (
     },
 )
 
+RLM_MODELS = (
+    {
+        "slug": "rlm-gpt-4o",
+        "name": "RLM (GPT-4o)",
+        "provider": "rlm",
+    },
+    {
+        "slug": "rlm-claude-3-5-sonnet",
+        "name": "RLM (Claude 3.5 Sonnet)",
+        "provider": "rlm",
+    },
+)
+
 
 def _is_valid_uuid(value: Optional[str]) -> bool:
     if not value:
@@ -102,6 +115,8 @@ async def sync_models(db: AsyncSession) -> int:
     settings = get_settings()
     if settings.enable_gremium_provider:
         await ensure_gremium_models(db)
+    if settings.enable_rlm_provider:
+        await ensure_rlm_models(db)
 
     await db.commit()
     count = len(unique_models)
@@ -184,6 +199,28 @@ async def ensure_gremium_models(db: AsyncSession) -> None:
             slug=entry["slug"],
             name=entry["name"],
             tagline="Gremium consensus routing",
+            instance_count=1,
+            is_active=True,
+            provider=entry["provider"],
+        ).on_conflict_do_update(
+            index_elements=["slug"],
+            set_={
+                "name": entry["name"],
+                "instance_count": 1,
+                "is_active": True,
+                "provider": entry["provider"],
+            },
+        )
+        await db.execute(stmt)
+
+
+async def ensure_rlm_models(db: AsyncSession) -> None:
+    """Ensure synthetic RLM model entries exist in the database."""
+    for entry in RLM_MODELS:
+        stmt = pg_insert(Model).values(
+            slug=entry["slug"],
+            name=entry["name"],
+            tagline="RLM long-context handling via recursive slicing",
             instance_count=1,
             is_active=True,
             provider=entry["provider"],

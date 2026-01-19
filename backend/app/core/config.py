@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     gremium_item_timeout_seconds: int = 1800
     gremium_item_attempts: int = 3
 
+    # RLM API (Recursive Language Model gateway)
+    enable_rlm_provider: bool = False
+    rlm_api_base_url: str = "https://chutes-rlm.onrender.com"
+    rlm_api_key: Optional[str] = None
+    rlm_timeout_seconds: int = 600
+
     # Backend
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000

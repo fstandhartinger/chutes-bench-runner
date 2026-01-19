@@ -49,6 +49,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.chutes_client import get_chutes_client
 from app.services.gremium_client import GremiumClient
+from app.services.rlm_client import RLMClient
 from app.services.model_service import (
     ensure_gremium_models,
     get_model_by_id,
@@ -232,11 +233,13 @@ async def create_benchmark_run(
             detail=settings.maintenance_message,
         )
     provider = request.provider or "chutes"
-    allowed_providers = {"chutes", "gremium-openai", "gremium-anthropic"}
+    allowed_providers = {"chutes", "gremium-openai", "gremium-anthropic", "rlm"}
     if provider not in allowed_providers:
         raise HTTPException(status_code=400, detail="Unsupported provider")
     if provider.startswith("gremium") and not settings.enable_gremium_provider:
         raise HTTPException(status_code=400, detail="Gremium provider is not enabled.")
+    if provider == "rlm" and not settings.enable_rlm_provider:
+        raise HTTPException(status_code=400, detail="RLM provider is not enabled.")
 
     # Validate model exists
     model = await get_model_by_id(db, request.model_id)
@@ -296,6 +299,23 @@ async def create_benchmark_run(
         finally:
             if access_token:
                 await client.close()
+    elif provider == "rlm":
+        rlm_client = RLMClient(
+            api_key=settings.rlm_api_key or settings.chutes_api_key,
+            base_url=settings.rlm_api_base_url,
+        )
+        try:
+            provider_metadata = await rlm_client.get_metadata()
+            provider_metadata = {
+                "provider": provider,
+                "base_url": settings.rlm_api_base_url,
+                "version": provider_metadata.get("version"),
+                "service": provider_metadata.get("service"),
+            }
+        except Exception as exc:
+            logger.warning("Failed to fetch RLM metadata", error=str(exc))
+        finally:
+            await rlm_client.close()
     else:
         gremium_client = GremiumClient(
             api_key=settings.gremium_api_key or settings.chutes_api_key,
@@ -350,11 +370,13 @@ async def create_benchmark_run_with_api_key(
             detail=settings.maintenance_message,
         )
     provider = request.provider or "chutes"
-    allowed_providers = {"chutes", "gremium-openai", "gremium-anthropic"}
+    allowed_providers = {"chutes", "gremium-openai", "gremium-anthropic", "rlm"}
     if provider not in allowed_providers:
         raise HTTPException(status_code=400, detail="Unsupported provider")
     if provider.startswith("gremium") and not settings.enable_gremium_provider:
         raise HTTPException(status_code=400, detail="Gremium provider is not enabled.")
+    if provider == "rlm" and not settings.enable_rlm_provider:
+        raise HTTPException(status_code=400, detail="RLM provider is not enabled.")
 
     model = await resolve_model_identifier(db, request.model_id, provider=provider)
     if not model:
@@ -396,6 +418,23 @@ async def create_benchmark_run_with_api_key(
                     )
         finally:
             await client.close()
+    elif provider == "rlm":
+        rlm_client = RLMClient(
+            api_key=settings.rlm_api_key or settings.chutes_api_key,
+            base_url=settings.rlm_api_base_url,
+        )
+        try:
+            provider_metadata = await rlm_client.get_metadata()
+            provider_metadata = {
+                "provider": provider,
+                "base_url": settings.rlm_api_base_url,
+                "version": provider_metadata.get("version"),
+                "service": provider_metadata.get("service"),
+            }
+        except Exception as exc:
+            logger.warning("Failed to fetch RLM metadata", error=str(exc))
+        finally:
+            await rlm_client.close()
     else:
         gremium_client = GremiumClient(
             api_key=settings.gremium_api_key or settings.chutes_api_key,
