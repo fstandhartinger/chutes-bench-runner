@@ -170,12 +170,23 @@ export default function RunsPage() {
                     <span className="rounded-full border border-ink-800 px-2.5 py-0.5 text-xs text-ink-400">
                       {run.provider}
                     </span>
+                    {/* Subset indicator - prominently show if this was a subset run */}
+                    {run.subset_pct !== undefined && run.subset_pct < 100 && (
+                      <span className="rounded-full bg-amber-500/20 border border-amber-500/50 px-2.5 py-0.5 text-xs font-medium text-amber-400">
+                        {run.subset_pct}% subset
+                      </span>
+                    )}
+                    {run.subset_pct === 100 && (
+                      <span className="rounded-full bg-emerald-500/20 border border-emerald-500/50 px-2.5 py-0.5 text-xs font-medium text-emerald-400">
+                        Full run
+                      </span>
+                    )}
                   </div>
                   <p className="text-sm text-ink-400">
                     {run.subset_count
-                      ? `${run.subset_count} items`
-                      : `${run.subset_pct}% subset`}{" "}
-                    · {run.benchmarks.length} benchmarks · {formatDate(run.created_at)}
+                      ? `${run.subset_count} items sampled`
+                      : `${run.subset_pct}% of benchmark items`}{" "}
+                    · {run.benchmarks.length} benchmark{run.benchmarks.length !== 1 ? "s" : ""} · {formatDate(run.created_at)}
                   </p>
                   {run.status === "running" && (
                     <p className="text-xs text-ink-400">
