@@ -52,6 +52,7 @@ from app.services.gremium_client import GremiumClient
 from app.services.rlm_client import RLMClient
 from app.services.model_service import (
     ensure_gremium_models,
+    ensure_rlm_models,
     get_model_by_id,
     get_models,
     resolve_model_identifier,
@@ -105,16 +106,26 @@ async def list_models(
             models=[ModelResponse.model_validate(m) for m in models],
             total=len(models),
         )
+    if provider == "rlm":
+        if settings.enable_rlm_provider:
+            await ensure_rlm_models(db)
+            await db.commit()
+        models = await get_models(db, search=search, provider=provider, limit=limit, offset=offset)
+        return ModelsListResponse(
+            models=[ModelResponse.model_validate(m) for m in models],
+            total=len(models),
+        )
 
     models = await get_models(db, search=search, provider=provider, limit=limit, offset=offset)
-    llm_identifiers = await get_chutes_client().get_llm_identifiers()
-    if llm_identifiers:
-        models = [
-            model
-            for model in models
-            if model.provider == "chutes"
-            and (model.slug in llm_identifiers or (model.chute_id and model.chute_id in llm_identifiers))
-        ]
+    if provider in (None, "chutes"):
+        llm_identifiers = await get_chutes_client().get_llm_identifiers()
+        if llm_identifiers:
+            models = [
+                model
+                for model in models
+                if model.provider == "chutes"
+                and (model.slug in llm_identifiers or (model.chute_id and model.chute_id in llm_identifiers))
+            ]
     return ModelsListResponse(
         models=[ModelResponse.model_validate(m) for m in models],
         total=len(models),

@@ -455,12 +455,13 @@ export function BenchmarkRunner() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="chutes">Chutes (direct)</SelectItem>
+                  <SelectItem value="rlm">Chutes RLM Gateway</SelectItem>
                   <SelectItem value="gremium-openai">Gremium (OpenAI)</SelectItem>
                   <SelectItem value="gremium-anthropic">Gremium (Anthropic)</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-xs text-ink-400">
-                Gremium runs use the consensus router and include version + participant metadata.
+                RLM runs use the recursive gateway; Gremium runs use the consensus router.
               </p>
             </div>
 

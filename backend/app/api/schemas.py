@@ -102,7 +102,7 @@ class CreateRunRequest(BaseModel):
     )
     provider: Optional[str] = Field(
         default=None,
-        description="Inference provider (chutes, gremium-openai, gremium-anthropic).",
+        description="Inference provider (chutes, rlm, gremium-openai, gremium-anthropic).",
     )
 
 

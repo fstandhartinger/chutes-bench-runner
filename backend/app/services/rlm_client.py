@@ -24,6 +24,10 @@ from app.services.chutes_client import (
 
 logger = get_logger(__name__)
 settings = get_settings()
+RLM_MODEL_ALIASES = {
+    "rlm-gpt-4o": "gpt-4o",
+    "rlm-claude-3-5-sonnet": "claude-3-5-sonnet-20240620",
+}
 
 
 def _truncate_text(value: str, limit: int = 1000) -> str:
@@ -54,6 +58,14 @@ class RLMClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+
+    def _resolve_model_slug(self, model_slug: str) -> str:
+        """Map synthetic RLM slugs to upstream model identifiers."""
+        if model_slug in RLM_MODEL_ALIASES:
+            return RLM_MODEL_ALIASES[model_slug]
+        if model_slug.startswith("rlm-"):
+            return model_slug[len("rlm-") :]
+        return model_slug
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client and not self._client.is_closed:
@@ -119,7 +131,7 @@ class RLMClient:
             await asyncio.sleep(self._rate_limit_until - now)
 
         payload = {
-            "model": model_slug,
+            "model": self._resolve_model_slug(model_slug),
             "messages": messages,
         }
         payload.update(kwargs)
