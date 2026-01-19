@@ -336,9 +336,12 @@ class OolongPairsAdapter(BenchmarkAdapter):
 
         # Overall F1
         if all_f1_scores:
-            metrics["avg_f1"] = sum(all_f1_scores) / len(all_f1_scores)
+            avg_f1 = sum(all_f1_scores) / len(all_f1_scores)
+            metrics["avg_f1"] = avg_f1
             metrics["max_f1"] = max(all_f1_scores)
             metrics["min_f1"] = min(all_f1_scores)
+            # Use average F1 as the benchmark score (per spec)
+            metrics["score_override"] = avg_f1
 
         # Pairwise vs non-pairwise
         if pairwise_f1_scores:

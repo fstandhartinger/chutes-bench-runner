@@ -272,6 +272,7 @@ class OolongAdapter(BenchmarkAdapter):
     async def postprocess(self, results: list[ItemResult]) -> dict[str, Any]:
         """Compute metrics broken down by task type and context length."""
         metrics: dict[str, Any] = {}
+        scores: list[float] = []
 
         # Group by task group
         by_task_group: dict[str, list[ItemResult]] = {}
@@ -281,6 +282,8 @@ class OolongAdapter(BenchmarkAdapter):
         by_context_len: dict[str, list[ItemResult]] = {}
 
         for result in results:
+            if result.score is not None:
+                scores.append(result.score)
             if result.metadata:
                 task_group = result.metadata.get("task_group", "unknown")
                 answer_type = result.metadata.get("answer_type", "unknown")
@@ -328,5 +331,11 @@ class OolongAdapter(BenchmarkAdapter):
             correct = sum(1 for r in bucket_results if r.is_correct)
             total = len(bucket_results)
             metrics[f"accuracy_ctx_{bucket}"] = correct / total if total > 0 else 0.0
+
+        # Overall average score (numeric answers use 0.75^diff)
+        if scores:
+            avg_score = sum(scores) / len(scores)
+            metrics["avg_score_overall"] = avg_score
+            metrics["score_override"] = avg_score
 
         return metrics

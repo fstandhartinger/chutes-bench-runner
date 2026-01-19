@@ -246,12 +246,10 @@ class SNIAHAdapter(BenchmarkAdapter):
                     metadata=item_metadata,
                 )
 
-            # Check for exact match (case-insensitive, stripped)
+            # Exact match (case-insensitive, stripped) per benchmark spec
             response_clean = response_text.strip().lower()
             expected_clean = item["needle_value"].strip().lower()
-
-            # Allow some flexibility - check if the expected value is contained in response
-            is_correct = expected_clean in response_clean or response_clean == expected_clean
+            is_correct = response_clean == expected_clean
 
             item_metadata = {
                 **metadata,
