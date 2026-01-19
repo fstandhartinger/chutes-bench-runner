@@ -114,19 +114,36 @@ def _load_direct_adapter(
     model_slug: str,
     judge_client: Optional[InferenceClient] = None,
 ) -> Optional[BenchmarkAdapter]:
-    if name == "s_niah":
-        from app.benchmarks.adapters.s_niah import SNIAHAdapter
-
-        return SNIAHAdapter(client, model_slug, judge_client=judge_client)
-    if name == "oolong":
-        from app.benchmarks.adapters.oolong import OolongAdapter
-
-        return OolongAdapter(client, model_slug, judge_client=judge_client)
-    if name == "oolong_pairs":
-        from app.benchmarks.adapters.oolong_pairs import OolongPairsAdapter
-
-        return OolongPairsAdapter(client, model_slug, judge_client=judge_client)
-    return None
+    """
+    Load long-context benchmark adapters directly.
+    
+    This provides a fallback for the new long-context benchmarks in case
+    the registry didn't load them properly.
+    """
+    adapter_imports = {
+        "s_niah": ("app.benchmarks.adapters.s_niah", "SNIAHAdapter"),
+        "oolong": ("app.benchmarks.adapters.oolong", "OolongAdapter"),
+        "oolong_pairs": ("app.benchmarks.adapters.oolong_pairs", "OolongPairsAdapter"),
+    }
+    
+    if name not in adapter_imports:
+        return None
+    
+    module_name, class_name = adapter_imports[name]
+    
+    try:
+        import importlib
+        module = importlib.import_module(module_name)
+        adapter_class = getattr(module, class_name)
+        return adapter_class(client, model_slug, judge_client=judge_client)
+    except Exception as exc:
+        logger.warning(
+            "Direct adapter import failed",
+            adapter=name,
+            module=module_name,
+            error=str(exc) or exc.__class__.__name__,
+        )
+        return None
 
 
 class BenchmarkWorker:

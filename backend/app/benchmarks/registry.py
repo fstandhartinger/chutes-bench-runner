@@ -6,6 +6,7 @@ from app.services.inference_client import InferenceClient
 
 # Registry of benchmark adapters
 _adapters: dict[str, Type[BenchmarkAdapter]] = {}
+_adapters_loaded: bool = False
 
 
 def register_adapter(name: str) -> callable:
@@ -18,6 +19,18 @@ def register_adapter(name: str) -> callable:
     return decorator
 
 
+def _ensure_adapters_loaded() -> None:
+    """Lazily load all adapters on first use."""
+    global _adapters_loaded
+    if _adapters_loaded:
+        return
+    _adapters_loaded = True
+    try:
+        from app.benchmarks.adapters import *  # noqa: F401, F403
+    except Exception:
+        pass  # Ignore errors during loading
+
+
 def get_adapter(
     name: str,
     client: InferenceClient,
@@ -25,6 +38,7 @@ def get_adapter(
     judge_client: Optional[InferenceClient] = None,
 ) -> Optional[BenchmarkAdapter]:
     """Get an adapter instance by name."""
+    _ensure_adapters_loaded()
     if name not in _adapters:
         return None
     return _adapters[name](client, model_slug, judge_client=judge_client)
@@ -32,11 +46,8 @@ def get_adapter(
 
 def get_all_adapters() -> dict[str, Type[BenchmarkAdapter]]:
     """Get all registered adapters."""
+    _ensure_adapters_loaded()
     return _adapters.copy()
-
-
-# Import adapters to trigger registration
-from app.benchmarks.adapters import *  # noqa: F401, F403, E402
 
 
 
