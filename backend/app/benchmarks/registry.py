@@ -1,4 +1,5 @@
 """Benchmark adapter registry."""
+import importlib
 from typing import Optional, Type
 
 from app.benchmarks.base import BenchmarkAdapter
@@ -26,7 +27,7 @@ def _ensure_adapters_loaded() -> None:
         return
     _adapters_loaded = True
     try:
-        from app.benchmarks.adapters import *  # noqa: F401, F403
+        importlib.import_module("app.benchmarks.adapters")
     except Exception:
         pass  # Ignore errors during loading
 

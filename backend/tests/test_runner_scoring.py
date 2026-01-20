@@ -3,11 +3,11 @@ from app.benchmarks.base import ItemResult
 from app.worker.runner import _apply_error_score_defaults
 
 
-def test_error_default_sets_score_and_is_correct():
+def test_error_default_sets_score_only():
     result = ItemResult(item_id="1", error="timeout")
     updated = _apply_error_score_defaults(result)
     assert updated.score == 0.0
-    assert updated.is_correct is False
+    assert updated.is_correct is None
 
 
 def test_error_default_preserves_existing_values():

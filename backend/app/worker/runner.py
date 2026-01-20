@@ -100,11 +100,8 @@ def _is_fatal_item_error(error: Optional[str]) -> bool:
 
 
 def _apply_error_score_defaults(result: ItemResult) -> ItemResult:
-    if result.error:
-        if result.is_correct is None:
-            result.is_correct = False
-        if result.score is None:
-            result.score = 0.0
+    if result.error and result.score is None:
+        result.score = 0.0
     return result
 
 
