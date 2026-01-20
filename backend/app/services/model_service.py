@@ -2,7 +2,7 @@
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -164,6 +164,13 @@ async def get_model_by_slug(db: AsyncSession, slug: str) -> Optional[Model]:
     return result.scalar_one_or_none()
 
 
+async def get_model_by_name(db: AsyncSession, name: str) -> Optional[Model]:
+    """Get a model by display name (case-insensitive)."""
+    lowered = name.strip().lower()
+    result = await db.execute(select(Model).where(func.lower(Model.name) == lowered))
+    return result.scalar_one_or_none()
+
+
 async def get_model_by_chute_id(db: AsyncSession, chute_id: str) -> Optional[Model]:
     """Get a model by its Chutes chute_id."""
     result = await db.execute(select(Model).where(Model.chute_id == chute_id))
@@ -184,6 +191,9 @@ async def resolve_model_identifier(
         if model and (provider is None or model.provider == provider):
             return model
     model = await get_model_by_slug(db, identifier)
+    if model and (provider is None or model.provider == provider):
+        return model
+    model = await get_model_by_name(db, identifier)
     if model and (provider is None or model.provider == provider):
         return model
     model = await get_model_by_chute_id(db, identifier)

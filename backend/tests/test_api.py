@@ -153,7 +153,7 @@ def test_artificial_analysis_lookup_success(client: TestClient, test_session, mo
         fake_get_benchmarks_for_model,
     )
 
-    response = client.get("/api/benchmarks/artificial-analysis", params={"model_id": model.slug})
+    response = client.get("/api/benchmarks/artificial-analysis", params={"model_id": model.name})
     assert response.status_code == 200
     data = response.json()
     assert data["match"]["slug"] == "glm-4-7"

@@ -145,9 +145,9 @@ curl -O ${BACKEND_URL}/api/runs/<run-id>/export?format=zip`}</CodeBlock>
         <CardContent className="space-y-3 text-ink-300">
           <p>
             Resolve a Chutes model to its Artificial Analysis entry and fetch benchmark scores.
-            The endpoint accepts a bench runner model UUID, chute_id, or model slug.
+            The endpoint accepts a bench runner model UUID, chute_id, model slug, or model name.
           </p>
-          <CodeBlock>{`curl "${BACKEND_URL}/api/benchmarks/artificial-analysis?model_id=<model-uuid|chute_id|model-slug>"`}</CodeBlock>
+          <CodeBlock>{`curl "${BACKEND_URL}/api/benchmarks/artificial-analysis?model_id=<model-uuid|chute_id|model-slug|model-name>"`}</CodeBlock>
           <CodeBlock>{`# Optional flags
 # include_raw=true -> include full AA payload
 # llm_fallback=false -> disable LLM-based fallback mapping

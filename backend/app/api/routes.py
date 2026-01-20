@@ -150,7 +150,9 @@ async def sync_models_endpoint(
 @router.get("/benchmarks/artificial-analysis", response_model=ArtificialAnalysisResponse)
 async def get_artificial_analysis_scores(
     db: SessionDep,
-    model_id: str = Query(..., description="Bench runner model UUID, chute_id, or model slug"),
+    model_id: str = Query(
+        ..., description="Bench runner model UUID, chute_id, model slug, or model name"
+    ),
     provider: Optional[str] = Query(default="chutes"),
     include_raw: bool = Query(default=False),
     llm_fallback: bool = Query(default=True),
