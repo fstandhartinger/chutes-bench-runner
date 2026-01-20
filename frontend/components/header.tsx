@@ -105,7 +105,7 @@ export function Header() {
             </svg>
           </button>
 
-          <div className="hidden items-center gap-6 md:flex">
+          <div className="desktop-nav hidden items-center gap-6 md:flex">
             <nav className="flex items-center gap-6">
               {navItems.map((item) => (
                 <Link
