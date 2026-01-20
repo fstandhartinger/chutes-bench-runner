@@ -5,17 +5,23 @@ of OOLONG that requires aggregating pairs of chunks to construct the final answe
 
 Processing costs scale quadratically with input length due to pairwise relationships.
 Uses the oolongbench/oolong-real dataset from HuggingFace with D&D transcripts.
+
+IMPORTANT: This adapter uses streaming mode to avoid memory issues.
 """
+import asyncio
+import os
 import re
 import time
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import load_dataset_with_retry
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Total items in the oolong-real dnd test split (from dataset info)
+OOLONG_PAIRS_TOTAL_ITEMS = 6072
 
 
 def _compute_f1_score(expected: str, predicted: str) -> tuple[float, float, float]:
@@ -84,6 +90,47 @@ def _extract_answer(response: str) -> str:
     return cleaned
 
 
+async def _load_streaming_dataset() -> Any:
+    """Load oolong-real dnd dataset in streaming mode."""
+    from datasets import load_dataset
+    hf_token = os.environ.get("HF_TOKEN")
+    return await asyncio.to_thread(
+        load_dataset,
+        "oolongbench/oolong-real",
+        "dnd",
+        split="test",
+        streaming=True,
+        token=hf_token,
+    )
+
+
+def _get_item_by_index_sync(dataset: Any, target_idx: int) -> Optional[dict[str, Any]]:
+    """Get a specific item from streaming dataset by index (synchronous)."""
+    from itertools import islice
+    try:
+        item = next(islice(dataset, target_idx, target_idx + 1), None)
+        if item:
+            question = item["question"].lower()
+            is_pairwise = any(kw in question for kw in [
+                "between", "relationship", "interact", "compare",
+                "versus", "vs", "together", "both", "each other",
+                "difference", "similar", "conflict", "alliance"
+            ])
+            return {
+                "id": str(target_idx),
+                "context_window_text": item["context_window_text"],
+                "question": item["question"],
+                "answer": str(item["answer"]),
+                "question_type": item.get("question_type", ""),
+                "campaign": item.get("campaign", ""),
+                "episodes": item.get("episodes", []),
+                "is_pairwise": is_pairwise,
+            }
+    except Exception:
+        pass
+    return None
+
+
 @register_adapter("oolong_pairs")
 class OolongPairsAdapter(BenchmarkAdapter):
     """
@@ -98,12 +145,14 @@ class OolongPairsAdapter(BenchmarkAdapter):
     Uses the D&D transcripts from oolongbench/oolong-real dataset,
     which contains questions about interactions and relationships
     between characters (inherently pairwise).
+
+    Uses streaming mode to avoid memory issues.
     """
 
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._dataset: Optional[Any] = None
-        self._items: list[dict[str, Any]] = []
+        self._item_cache: dict[str, dict[str, Any]] = {}
 
     def get_name(self) -> str:
         return "oolong_pairs"
@@ -112,88 +161,54 @@ class OolongPairsAdapter(BenchmarkAdapter):
         return "OOLONG-Pairs"
 
     def supports_parallel_items(self) -> bool:
-        return True
+        # Disable parallel items due to streaming dataset limitations
+        return False
 
     def get_item_timeout_seconds(self) -> Optional[int]:
         """Longer timeout for quadratic complexity tasks."""
         return 300  # 5 minutes
 
     async def get_total_items(self) -> int:
-        """Get total items from dataset."""
-        if not self._items:
-            await self.preload()
-        return len(self._items)
+        """Get total items from dataset (known constant)."""
+        return OOLONG_PAIRS_TOTAL_ITEMS
 
     async def preload(self) -> None:
-        """Load OOLONG-Real dataset from HuggingFace."""
-        if self._items:
+        """Initialize streaming dataset connection."""
+        if self._dataset is not None:
             return
 
         try:
-            import os
-
-            logger.info("Loading OOLONG-Pairs dataset (oolong-real with dnd config)")
-            hf_token = os.environ.get("HF_TOKEN")
-
-            # Load the D&D config from oolong-real
-            # This contains questions about D&D transcripts that require
-            # understanding relationships between characters/events
-            dataset = await load_dataset_with_retry(
-                "oolongbench/oolong-real",
-                "dnd",
-                split="test",
-                token=hf_token,
-            )
-
-            self._items = []
-            for i, item in enumerate(dataset):
-                # Filter for questions that likely require pairwise reasoning
-                # (questions about relationships, comparisons, interactions)
-                question = item["question"].lower()
-                question_type = item.get("question_type", "")
-
-                # Include all items but tag those that are explicitly pairwise
-                is_pairwise = any(kw in question for kw in [
-                    "between", "relationship", "interact", "compare",
-                    "versus", "vs", "together", "both", "each other",
-                    "difference", "similar", "conflict", "alliance"
-                ])
-
-                self._items.append({
-                    "id": str(i),
-                    "context_window_text": item["context_window_text"],
-                    "question": item["question"],
-                    "answer": str(item["answer"]),
-                    "question_type": question_type,
-                    "campaign": item.get("campaign", ""),
-                    "episodes": item.get("episodes", []),
-                    "is_pairwise": is_pairwise,
-                })
-
-            logger.info(f"Loaded {len(self._items)} OOLONG-Pairs items")
-
+            logger.info("Initializing OOLONG-Pairs streaming dataset (oolong-real dnd)")
+            self._dataset = await _load_streaming_dataset()
+            logger.info("OOLONG-Pairs streaming dataset ready")
         except Exception as e:
-            logger.error("Failed to load OOLONG-Pairs dataset", error=str(e))
+            logger.error("Failed to initialize OOLONG-Pairs dataset", error=str(e))
             raise
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         """Yield all item IDs."""
-        if not self._items:
-            await self.preload()
-        for item in self._items:
-            yield item["id"]
+        for i in range(OOLONG_PAIRS_TOTAL_ITEMS):
+            yield str(i)
+
+    async def _get_item(self, item_id: str) -> Optional[dict[str, Any]]:
+        """Get item by ID, using cache or loading from stream."""
+        if item_id in self._item_cache:
+            return self._item_cache[item_id]
+
+        try:
+            target_idx = int(item_id)
+            dataset = await _load_streaming_dataset()
+            item = await asyncio.to_thread(_get_item_by_index_sync, dataset, target_idx)
+            if item:
+                self._item_cache[item_id] = item
+            return item
+        except Exception as e:
+            logger.error("Failed to load item from streaming dataset", item_id=item_id, error=str(e))
+            return None
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single OOLONG-Pairs item."""
-        if not self._items:
-            await self.preload()
-
-        # Find item
-        item = None
-        for i in self._items:
-            if i["id"] == item_id:
-                item = i
-                break
+        item = await self._get_item(item_id)
 
         if not item:
             return ItemResult(

@@ -5,16 +5,23 @@ Tests long-context reasoning and aggregation capabilities requiring
 semantic classification and aggregation across nearly all dataset entries.
 
 Uses the oolongbench/oolong-synth dataset from HuggingFace.
+
+IMPORTANT: This adapter uses streaming mode to avoid loading the entire
+21GB dataset into memory. Items are loaded on-demand.
 """
+import asyncio
+import os
 import time
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import load_dataset_with_retry
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Total items in the oolong-synth test split (from dataset info)
+OOLONG_SYNTH_TOTAL_ITEMS = 5200
 
 
 def _compute_numeric_score(expected: str, predicted: str) -> float:
@@ -71,6 +78,44 @@ def _extract_answer(response: str) -> str:
     return cleaned
 
 
+async def _load_streaming_dataset() -> Any:
+    """Load oolong-synth dataset in streaming mode."""
+    from datasets import load_dataset
+    hf_token = os.environ.get("HF_TOKEN")
+    return await asyncio.to_thread(
+        load_dataset,
+        "oolongbench/oolong-synth",
+        split="test",
+        streaming=True,
+        token=hf_token,
+    )
+
+
+def _get_item_by_index_sync(dataset: Any, target_idx: int) -> Optional[dict[str, Any]]:
+    """Get a specific item from streaming dataset by index (synchronous)."""
+    # Use skip for efficient access to specific index
+    from itertools import islice
+    try:
+        # Skip to the target index and take one item
+        item = next(islice(dataset, target_idx, target_idx + 1), None)
+        if item:
+            return {
+                "id": str(target_idx),
+                "context_window_text": item["context_window_text"],
+                "question": item["question"],
+                "answer": str(item["answer"]),
+                "answer_type": item.get("answer_type", ""),
+                "task": item.get("task", ""),
+                "task_group": item.get("task_group", ""),
+                "context_len": item.get("context_len", 0),
+                "dataset": item.get("dataset", ""),
+                "num_labels": item.get("num_labels", 0),
+            }
+    except Exception:
+        pass
+    return None
+
+
 @register_adapter("oolong")
 class OolongAdapter(BenchmarkAdapter):
     """
@@ -81,12 +126,14 @@ class OolongAdapter(BenchmarkAdapter):
     then aggregating these chunks to form a final answer.
 
     Processing costs scale linearly with input length.
+
+    Uses streaming mode to avoid loading the 21GB dataset into memory.
     """
 
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._dataset: Optional[Any] = None
-        self._items: list[dict[str, Any]] = []
+        self._item_cache: dict[str, dict[str, Any]] = {}
 
     def get_name(self) -> str:
         return "oolong"
@@ -95,71 +142,51 @@ class OolongAdapter(BenchmarkAdapter):
         return "OOLONG"
 
     def supports_parallel_items(self) -> bool:
-        return True
+        # Disable parallel items due to streaming dataset limitations
+        return False
 
     async def get_total_items(self) -> int:
-        """Get total items from dataset."""
-        if not self._items:
-            await self.preload()
-        return len(self._items)
+        """Get total items from dataset (known constant)."""
+        return OOLONG_SYNTH_TOTAL_ITEMS
 
     async def preload(self) -> None:
-        """Load OOLONG dataset from HuggingFace."""
-        if self._items:
+        """Initialize streaming dataset connection."""
+        if self._dataset is not None:
             return
 
         try:
-            import os
-
-            logger.info("Loading OOLONG dataset (oolong-synth)")
-            hf_token = os.environ.get("HF_TOKEN")
-
-            # Load the test split from oolong-synth
-            dataset = await load_dataset_with_retry(
-                "oolongbench/oolong-synth",
-                split="test",
-                token=hf_token,
-            )
-
-            self._items = []
-            for i, item in enumerate(dataset):
-                self._items.append({
-                    "id": str(i),
-                    "context_window_text": item["context_window_text"],
-                    "question": item["question"],
-                    "answer": str(item["answer"]),
-                    "answer_type": item.get("answer_type", ""),
-                    "task": item.get("task", ""),
-                    "task_group": item.get("task_group", ""),
-                    "context_len": item.get("context_len", 0),
-                    "dataset": item.get("dataset", ""),
-                    "num_labels": item.get("num_labels", 0),
-                })
-
-            logger.info(f"Loaded {len(self._items)} OOLONG items")
-
+            logger.info("Initializing OOLONG streaming dataset (oolong-synth)")
+            self._dataset = await _load_streaming_dataset()
+            logger.info("OOLONG streaming dataset ready")
         except Exception as e:
-            logger.error("Failed to load OOLONG dataset", error=str(e))
+            logger.error("Failed to initialize OOLONG dataset", error=str(e))
             raise
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         """Yield all item IDs."""
-        if not self._items:
-            await self.preload()
-        for item in self._items:
-            yield item["id"]
+        for i in range(OOLONG_SYNTH_TOTAL_ITEMS):
+            yield str(i)
+
+    async def _get_item(self, item_id: str) -> Optional[dict[str, Any]]:
+        """Get item by ID, using cache or loading from stream."""
+        if item_id in self._item_cache:
+            return self._item_cache[item_id]
+
+        # Load item from streaming dataset
+        try:
+            target_idx = int(item_id)
+            dataset = await _load_streaming_dataset()
+            item = await asyncio.to_thread(_get_item_by_index_sync, dataset, target_idx)
+            if item:
+                self._item_cache[item_id] = item
+            return item
+        except Exception as e:
+            logger.error("Failed to load item from streaming dataset", item_id=item_id, error=str(e))
+            return None
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single OOLONG item."""
-        if not self._items:
-            await self.preload()
-
-        # Find item
-        item = None
-        for i in self._items:
-            if i["id"] == item_id:
-                item = i
-                break
+        item = await self._get_item(item_id)
 
         if not item:
             return ItemResult(
