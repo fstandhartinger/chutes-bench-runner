@@ -352,6 +352,7 @@ def main() -> int:
                         current_total,
                     )
                     target = current_total
+                target = max(min_workers, target)
                 base_workers = min(base_max, target)
                 extra_workers = max(0, target - base_max)
             logger.info(
