@@ -507,6 +507,19 @@ class BenchmarkWorker:
                 item_concurrency=settings.worker_item_concurrency,
             )
 
+    async def _preload_adapter(self, run_id: str, adapter: BenchmarkAdapter) -> None:
+        """Preload adapter data while keeping the run heartbeat fresh."""
+        if adapter.__class__.preload is BenchmarkAdapter.preload:
+            return
+        heartbeat_interval = max(settings.worker_heartbeat_seconds, 30)
+        preload_task = asyncio.create_task(adapter.preload())
+        while True:
+            done, _ = await asyncio.wait({preload_task}, timeout=heartbeat_interval)
+            self.last_progress_at[run_id] = datetime.utcnow()
+            if preload_task in done:
+                await preload_task
+                return
+
     async def requeue_stale_runs(self) -> None:
         """Requeue stale running runs after a worker restart or stall."""
         async with async_session_maker() as db:
@@ -1000,6 +1013,9 @@ class BenchmarkWorker:
                     "total": len(items_to_evaluate),
                 },
             )
+
+            if pending_item_ids:
+                await self._preload_adapter(run.id, adapter)
 
             if not pending_item_ids:
                 accuracy = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
