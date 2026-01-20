@@ -140,24 +140,53 @@ curl -O ${BACKEND_URL}/api/runs/<run-id>/export?format=zip`}</CodeBlock>
 
       <Card>
         <CardHeader>
-          <CardTitle>6) Artificial Analysis Benchmarks</CardTitle>
+          <CardTitle>6) List Available Models</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-ink-300">
+          <p>
+            Get a list of all models available on Chutes. Use any model ID or slug from this list
+            with the bench runner or Artificial Analysis endpoints.
+          </p>
+          <CodeBlock>{`# List all available Chutes models (OpenAI-compatible)
+curl https://llm.chutes.ai/v1/models
+
+# Example: extract model IDs
+curl -s https://llm.chutes.ai/v1/models | jq '.data[].id'`}</CodeBlock>
+          <p className="text-sm text-ink-400">
+            Each model object includes: <code className="text-ink-200">id</code> (model slug),{" "}
+            <code className="text-ink-200">chute_id</code>, pricing, context length, and supported features.
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>7) Artificial Analysis Benchmarks</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-ink-300">
           <p>
             Resolve a Chutes model to its Artificial Analysis entry and fetch benchmark scores.
             The endpoint accepts a bench runner model UUID, chute_id, model slug, or model name.
           </p>
-          <CodeBlock>{`curl "${BACKEND_URL}/api/benchmarks/artificial-analysis?model_id=<model-uuid|chute_id|model-slug|model-name>"`}</CodeBlock>
+          <CodeBlock>{`# Get AA benchmarks for a model
+curl "${BACKEND_URL}/api/benchmarks/artificial-analysis?model_id=deepseek-ai/DeepSeek-V3"
+
+# Using chute_id
+curl "${BACKEND_URL}/api/benchmarks/artificial-analysis?model_id=0d7184a2-32a3-53e0-9607-058c37edaab5"`}</CodeBlock>
           <CodeBlock>{`# Optional flags
 # include_raw=true -> include full AA payload
 # llm_fallback=false -> disable LLM-based fallback mapping
 curl "${BACKEND_URL}/api/benchmarks/artificial-analysis?model_id=<model>&include_raw=true&llm_fallback=false"`}</CodeBlock>
+          <p className="text-sm text-ink-400">
+            Returns benchmark scores like coding_index, math_index, intelligence_index, GPQA, LiveCodeBench, etc.
+            The service automatically maps Chutes model names to their Artificial Analysis equivalents.
+          </p>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>7) Public Key</CardTitle>
+          <CardTitle>8) Public Key</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-ink-300">
           <p>Fetch the public key for offline verification.</p>
