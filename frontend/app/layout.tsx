@@ -20,7 +20,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className="min-h-screen bg-ink-900 text-ink-100 antialiased">
+      <body className="min-h-screen bg-ink-900 text-ink-100 antialiased overflow-x-hidden">
         <AuthProvider>
           <div className="flex min-h-screen flex-col">
             <Header />

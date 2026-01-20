@@ -23,6 +23,10 @@ from app.api.schemas import (
     ItemResultsResponse,
     ModelResponse,
     ModelsListResponse,
+    ArtificialAnalysisResponse,
+    ArtificialAnalysisScore,
+    ArtificialAnalysisMatch,
+    ArtificialAnalysisModel,
     PublicKeyResponse,
     MaintenanceStatusResponse,
     OpsOverviewResponse,
@@ -81,6 +85,7 @@ from app.services.signed_export_service import (
     verify_signed_zip_export,
 )
 from app.services import comparison_service
+from app.services.artificial_analysis_service import ArtificialAnalysisService, ChutesModelSummary
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api")
@@ -140,6 +145,64 @@ async def sync_models_endpoint(
     """Sync models from Chutes API (admin only)."""
     count = await sync_models(db)
     return SyncModelsResponse(synced=count, message=f"Synced {count} models")
+
+
+@router.get("/benchmarks/artificial-analysis", response_model=ArtificialAnalysisResponse)
+async def get_artificial_analysis_scores(
+    db: SessionDep,
+    model_id: str = Query(..., description="Bench runner model UUID, chute_id, or model slug"),
+    provider: Optional[str] = Query(default="chutes"),
+    include_raw: bool = Query(default=False),
+    llm_fallback: bool = Query(default=True),
+):
+    """Resolve a Chutes model to Artificial Analysis and return benchmark scores."""
+    model = await resolve_model_identifier(db, model_id, provider=provider)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+    if model.provider != "chutes":
+        raise HTTPException(status_code=400, detail="Artificial Analysis lookup supports Chutes models only")
+
+    service = ArtificialAnalysisService()
+    summary = ChutesModelSummary(
+        slug=model.slug,
+        name=model.name,
+        tagline=model.tagline,
+        user=model.user,
+        chute_id=model.chute_id,
+    )
+    match, scores = await service.get_benchmarks_for_model(
+        summary,
+        include_raw=include_raw,
+        llm_fallback=llm_fallback,
+    )
+
+    response = ArtificialAnalysisResponse(
+        model=ModelResponse.model_validate(model),
+        match=ArtificialAnalysisMatch(
+            slug=match.slug,
+            method=match.method,
+            confidence=match.confidence,
+            candidates=match.candidates,
+            llm_used=match.llm_used,
+            notes=match.notes,
+        ),
+    )
+
+    if scores is None:
+        response.message = "No Artificial Analysis match found or scores unavailable."
+        return response
+
+    response.artificial_analysis = ArtificialAnalysisModel(
+        slug=scores.slug,
+        name=scores.name,
+        short_name=scores.short_name,
+        model_url=scores.model_url,
+        hosts_url=scores.hosts_url,
+        scores=[ArtificialAnalysisScore(**score) for score in scores.scores],
+        raw=scores.raw,
+    )
+
+    return response
 
 
 # Benchmarks endpoints

@@ -17,6 +17,39 @@ export interface Model {
   is_active: boolean;
 }
 
+export interface ArtificialAnalysisScore {
+  key: string;
+  label: string;
+  value: number;
+  format: "percent" | "raw";
+}
+
+export interface ArtificialAnalysisMatch {
+  slug?: string | null;
+  method: string;
+  confidence?: number | null;
+  candidates: string[];
+  llm_used: boolean;
+  notes?: string | null;
+}
+
+export interface ArtificialAnalysisModel {
+  slug: string;
+  name?: string | null;
+  short_name?: string | null;
+  model_url?: string | null;
+  hosts_url?: string | null;
+  scores: ArtificialAnalysisScore[];
+  raw?: Record<string, unknown> | null;
+}
+
+export interface ArtificialAnalysisResponse {
+  model: Model;
+  match: ArtificialAnalysisMatch;
+  artificial_analysis?: ArtificialAnalysisModel | null;
+  message?: string | null;
+}
+
 export interface Benchmark {
   name: string;
   display_name: string;
@@ -162,6 +195,20 @@ export async function getModels(
   if (search) params.set("search", search);
   if (provider) params.set("provider", provider);
   return fetchAPI(`/api/models?${params}`);
+}
+
+export async function getArtificialAnalysisScores(
+  modelId: string,
+  provider = "chutes",
+  includeRaw = false,
+  llmFallback = true
+): Promise<ArtificialAnalysisResponse> {
+  const params = new URLSearchParams();
+  params.set("model_id", modelId);
+  params.set("provider", provider);
+  if (includeRaw) params.set("include_raw", "true");
+  if (!llmFallback) params.set("llm_fallback", "false");
+  return fetchAPI(`/api/benchmarks/artificial-analysis?${params.toString()}`);
 }
 
 export async function getBenchmarks(): Promise<{ benchmarks: Benchmark[] }> {

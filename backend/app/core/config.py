@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     chutes_inference_timeout_seconds: int = 300
     chutes_rate_limit_sleep_seconds: int = 30
 
+    # Artificial Analysis (public site scraping + optional LLM mapping)
+    artificial_analysis_base_url: str = "https://artificialanalysis.ai"
+    artificial_analysis_sitemap_url: str = "https://artificialanalysis.ai/sitemap.xml"
+    artificial_analysis_timeout_seconds: int = 10
+    artificial_analysis_cache_ttl_seconds: int = 3600
+    artificial_analysis_llm_fallback: bool = True
+    artificial_analysis_mapper_model: str = "deepseek-ai/DeepSeek-V3.2-TEE"
+
     # Gremium API
     enable_gremium_provider: bool = False
     gremium_api_base_url: str = "https://chutes-model-gremium.onrender.com"

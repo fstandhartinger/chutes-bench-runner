@@ -1,6 +1,11 @@
 """Tests for API endpoints."""
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
+
+from app.models.model import Model
+from app.services.artificial_analysis_service import ArtificialAnalysisScores, MatchResult
 
 
 def test_health_check(client: TestClient):
@@ -110,6 +115,50 @@ def test_export_format_validation(client: TestClient):
     """Test export format validation."""
     response = client.get("/api/runs/00000000-0000-0000-0000-000000000000/export?format=invalid")
     assert response.status_code == 422
+
+
+def test_artificial_analysis_lookup_success(client: TestClient, test_session, monkeypatch):
+    """Test Artificial Analysis lookup with stubbed scores."""
+
+    async def seed_model():
+        model = Model(slug="glm-4-7", name="GLM-4.7", provider="chutes")
+        test_session.add(model)
+        await test_session.commit()
+        await test_session.refresh(model)
+        return model
+
+    model = asyncio.get_event_loop().run_until_complete(seed_model())
+
+    async def fake_get_benchmarks_for_model(self, summary, include_raw=False, llm_fallback=True):
+        match = MatchResult(
+            slug="glm-4-7",
+            method="exact",
+            confidence=1.0,
+            candidates=["glm-4-7"],
+            llm_used=False,
+        )
+        scores = ArtificialAnalysisScores(
+            slug="glm-4-7",
+            name="GLM-4.7 (Reasoning)",
+            short_name="GLM-4.7",
+            model_url="https://artificialanalysis.ai/models/glm-4-7",
+            hosts_url=None,
+            scores=[{"key": "aime25", "label": "AIME 2025 (Competition Math)", "value": 0.95, "format": "percent"}],
+            raw=None,
+        )
+        return match, scores
+
+    monkeypatch.setattr(
+        "app.services.artificial_analysis_service.ArtificialAnalysisService.get_benchmarks_for_model",
+        fake_get_benchmarks_for_model,
+    )
+
+    response = client.get("/api/benchmarks/artificial-analysis", params={"model_id": model.slug})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["match"]["slug"] == "glm-4-7"
+    assert data["artificial_analysis"]["slug"] == "glm-4-7"
+    assert data["artificial_analysis"]["scores"][0]["key"] == "aime25"
 
 
 

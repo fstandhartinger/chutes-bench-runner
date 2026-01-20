@@ -140,7 +140,24 @@ curl -O ${BACKEND_URL}/api/runs/<run-id>/export?format=zip`}</CodeBlock>
 
       <Card>
         <CardHeader>
-          <CardTitle>6) Public Key</CardTitle>
+          <CardTitle>6) Artificial Analysis Benchmarks</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-ink-300">
+          <p>
+            Resolve a Chutes model to its Artificial Analysis entry and fetch benchmark scores.
+            The endpoint accepts a bench runner model UUID, chute_id, or model slug.
+          </p>
+          <CodeBlock>{`curl "${BACKEND_URL}/api/benchmarks/artificial-analysis?model_id=<model-uuid|chute_id|model-slug>"`}</CodeBlock>
+          <CodeBlock>{`# Optional flags
+# include_raw=true -> include full AA payload
+# llm_fallback=false -> disable LLM-based fallback mapping
+curl "${BACKEND_URL}/api/benchmarks/artificial-analysis?model_id=<model>&include_raw=true&llm_fallback=false"`}</CodeBlock>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>7) Public Key</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-ink-300">
           <p>Fetch the public key for offline verification.</p>

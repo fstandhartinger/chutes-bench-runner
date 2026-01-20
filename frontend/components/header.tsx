@@ -65,7 +65,7 @@ export function Header() {
 
   return (
     <header className="sticky top-0 z-50 border-b border-ink-500 bg-ink-900/80 backdrop-blur-xl">
-      <div className="mx-auto flex h-16 max-w-screen-xl items-center justify-between px-6">
+      <div className="mx-auto flex h-16 w-full max-w-screen-xl items-center justify-between px-6">
         <Link href="/" className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-moss/10">
             <svg
@@ -127,7 +127,7 @@ export function Header() {
 
       {isMenuOpen && (
         <div id="mobile-nav" className="border-t border-ink-500/60 bg-ink-900/95 md:hidden">
-          <div className="mx-auto flex max-w-screen-xl flex-col gap-4 px-6 py-4">
+          <div className="mx-auto flex w-full max-w-screen-xl flex-col gap-4 px-6 py-4">
             <nav className="flex flex-col gap-3">
               {navItems.map((item) => (
                 <Link

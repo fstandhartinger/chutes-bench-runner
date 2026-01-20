@@ -39,6 +39,43 @@ class ModelsListResponse(BaseModel):
     total: int
 
 
+class ArtificialAnalysisScore(APIModel):
+    """Artificial Analysis benchmark score entry."""
+    key: str
+    label: str
+    value: float
+    format: str = "raw"
+
+
+class ArtificialAnalysisMatch(APIModel):
+    """Artificial Analysis mapping result."""
+    slug: Optional[str] = None
+    method: str
+    confidence: Optional[float] = None
+    candidates: list[str] = []
+    llm_used: bool = False
+    notes: Optional[str] = None
+
+
+class ArtificialAnalysisModel(APIModel):
+    """Artificial Analysis model scores."""
+    slug: str
+    name: Optional[str] = None
+    short_name: Optional[str] = None
+    model_url: Optional[str] = None
+    hosts_url: Optional[str] = None
+    scores: list[ArtificialAnalysisScore]
+    raw: Optional[dict[str, Any]] = None
+
+
+class ArtificialAnalysisResponse(APIModel):
+    """Artificial Analysis lookup response."""
+    model: ModelResponse
+    match: ArtificialAnalysisMatch
+    artificial_analysis: Optional[ArtificialAnalysisModel] = None
+    message: Optional[str] = None
+
+
 # Benchmark schemas
 class BenchmarkInfo(APIModel):
     """Benchmark info schema."""

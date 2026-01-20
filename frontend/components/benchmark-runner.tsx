@@ -23,10 +23,13 @@ import {
   createEventSource,
   getOpsOverview,
   getServiceStatus,
+  getArtificialAnalysisScores,
   type Model,
   type Benchmark,
   type Run,
   type RunEvent,
+  type ArtificialAnalysisResponse,
+  type ArtificialAnalysisScore,
   type MaintenanceStatus,
 } from "@/lib/api";
 import {
@@ -73,6 +76,9 @@ export function BenchmarkRunner() {
   const [workerCapacity, setWorkerCapacity] = useState<number>(() => getWorkerSlots());
   const [queueSchedule, setQueueSchedule] = useState<Record<string, QueueEstimate>>({});
   const [maintenance, setMaintenance] = useState<MaintenanceStatus | null>(null);
+  const [aaScores, setAaScores] = useState<ArtificialAnalysisResponse | null>(null);
+  const [aaLoading, setAaLoading] = useState(false);
+  const [aaError, setAaError] = useState<string | null>(null);
   const progressRef = useRef<HTMLDivElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const lastEventIdRef = useRef<string | null>(null);
@@ -113,6 +119,11 @@ export function BenchmarkRunner() {
   useEffect(() => {
     runningRef.current = running;
   }, [running]);
+
+  useEffect(() => {
+    setAaScores(null);
+    setAaError(null);
+  }, [selectedModel, provider]);
 
   useEffect(() => {
     if (currentRun) {
@@ -183,6 +194,31 @@ export function BenchmarkRunner() {
     const interval = window.setInterval(loadServiceStatus, 30000);
     return () => window.clearInterval(interval);
   }, [loadServiceStatus]);
+
+  const loadArtificialAnalysisScores = useCallback(async () => {
+    if (!selectedModel || provider !== "chutes") return;
+    setAaLoading(true);
+    setAaError(null);
+    try {
+      const response = await getArtificialAnalysisScores(selectedModel, provider, false, true);
+      setAaScores(response);
+    } catch (e) {
+      setAaScores(null);
+      setAaError(e instanceof Error ? e.message : "Failed to load Artificial Analysis scores");
+    } finally {
+      setAaLoading(false);
+    }
+  }, [selectedModel, provider]);
+
+  const formatAaValue = (score: ArtificialAnalysisScore) => {
+    if (score.format === "percent") {
+      return formatPercent(score.value);
+    }
+    if (Number.isFinite(score.value)) {
+      return score.value.toFixed(3);
+    }
+    return "—";
+  };
 
   useEffect(() => {
     if (!currentRun || !["queued", "running"].includes(currentRun.status)) return;
@@ -483,6 +519,64 @@ export function BenchmarkRunner() {
               </Select>
               {models.length === 0 && (
                 <p className="text-xs text-ink-400">No models available for this provider.</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-sm font-medium text-ink-200">
+                  Artificial Analysis Benchmarks
+                </label>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={loadArtificialAnalysisScores}
+                  disabled={!selectedModel || provider !== "chutes" || aaLoading}
+                >
+                  {aaLoading ? "Loading..." : "Fetch AA Scores"}
+                </Button>
+              </div>
+              {provider !== "chutes" && (
+                <p className="text-xs text-ink-500">
+                  Artificial Analysis lookups are available for Chutes models only.
+                </p>
+              )}
+              {aaError && (
+                <p className="text-xs text-red-400">{aaError}</p>
+              )}
+              {aaScores?.match && (
+                <div className="rounded-lg border border-ink-600 bg-ink-800/50 p-3 text-xs text-ink-300 space-y-2">
+                  <div>
+                    Mapping:{" "}
+                    <span className="text-ink-100">
+                      {aaScores.match.slug || "No match"}
+                    </span>{" "}
+                    <span className="text-ink-500">
+                      ({aaScores.match.method}
+                      {aaScores.match.confidence !== null && aaScores.match.confidence !== undefined
+                        ? ` · ${(aaScores.match.confidence * 100).toFixed(1)}%`
+                        : ""}
+                      )
+                    </span>
+                  </div>
+                  {aaScores.artificial_analysis ? (
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {aaScores.artificial_analysis.scores.map((score) => (
+                        <div
+                          key={score.key}
+                          className="rounded-md border border-ink-700 bg-ink-900/70 px-3 py-2"
+                        >
+                          <div className="text-ink-400">{score.label}</div>
+                          <div className="text-sm text-ink-100">{formatAaValue(score)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-ink-500">
+                      {aaScores.message || "No Artificial Analysis scores available."}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           </div>
