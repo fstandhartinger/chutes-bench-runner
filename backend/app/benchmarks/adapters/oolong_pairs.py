@@ -116,6 +116,11 @@ class OolongPairsAdapter(BenchmarkAdapter):
         self._cache_limit = 128
         self._preloaded: bool = False
         self._target_item_ids: Optional[set[int]] = None
+        self._use_streaming: bool = False
+        self._stream_iter = None
+        self._stream_index = -1
+        self._stream_last_item_id: Optional[str] = None
+        self._stream_last_item: Optional[dict[str, Any]] = None
 
     def get_name(self) -> str:
         return "oolong_pairs"
@@ -124,8 +129,8 @@ class OolongPairsAdapter(BenchmarkAdapter):
         return "OOLONG-Pairs"
 
     def supports_parallel_items(self) -> bool:
-        # Allow parallel items; dataset access is indexed and cached on disk.
-        return True
+        # Streaming mode needs sequential access for deterministic iteration.
+        return not self._use_streaming
 
     def get_item_timeout_seconds(self) -> Optional[int]:
         """Longer timeout for quadratic complexity tasks."""
@@ -142,19 +147,33 @@ class OolongPairsAdapter(BenchmarkAdapter):
         from datasets import load_dataset
 
         target_count = len(self._target_item_ids) if self._target_item_ids else None
-        logger.info(
-            "Loading OOLONG-Pairs dataset (non-streaming, cached by HuggingFace)",
-            target_count=target_count,
-        )
         hf_token = os.environ.get("HF_TOKEN")
-        self._dataset = await asyncio.to_thread(
-            load_dataset,
-            "oolongbench/oolong-real",
-            "dnd",
-            split="test",
-            token=hf_token,
-            keep_in_memory=False,
-        )
+        if self._use_streaming:
+            logger.info(
+                "Loading OOLONG-Pairs dataset (streaming)",
+                target_count=target_count,
+            )
+            self._dataset = await asyncio.to_thread(
+                load_dataset,
+                "oolongbench/oolong-real",
+                "dnd",
+                split="test",
+                token=hf_token,
+                streaming=True,
+            )
+        else:
+            logger.info(
+                "Loading OOLONG-Pairs dataset (non-streaming, cached by HuggingFace)",
+                target_count=target_count,
+            )
+            self._dataset = await asyncio.to_thread(
+                load_dataset,
+                "oolongbench/oolong-real",
+                "dnd",
+                split="test",
+                token=hf_token,
+                keep_in_memory=False,
+            )
         self._preloaded = True
 
     async def enumerate_items(self) -> AsyncIterator[str]:
@@ -187,14 +206,24 @@ class OolongPairsAdapter(BenchmarkAdapter):
         # Track target items for preloading and item access.
         self._target_item_ids = {int(item_id) for item_id in items_to_evaluate}
         self._item_cache.clear()
+        self._use_streaming = subset_pct >= 100 and subset_count is None
+        if self._use_streaming:
+            self._stream_iter = None
+            self._stream_index = -1
+            self._stream_last_item_id = None
+            self._stream_last_item = None
 
         return total_items, items_to_evaluate
 
     async def _get_item(self, item_id: str) -> Optional[dict[str, Any]]:
         """Get item by ID from dataset."""
-        cached = self._item_cache.get(item_id)
-        if cached is not None:
-            return cached
+        if self._use_streaming:
+            if self._stream_last_item_id == item_id and self._stream_last_item is not None:
+                return self._stream_last_item
+        else:
+            cached = self._item_cache.get(item_id)
+            if cached is not None:
+                return cached
         if not self._preloaded:
             await self.preload()
         if self._dataset is None:
@@ -204,6 +233,39 @@ class OolongPairsAdapter(BenchmarkAdapter):
             idx = int(item_id)
         except (TypeError, ValueError):
             return None
+
+        if self._use_streaming:
+            if self._stream_iter is None:
+                self._stream_iter = iter(self._dataset)
+                self._stream_index = -1
+            raw_item = None
+            while self._stream_index < idx:
+                try:
+                    raw_item = next(self._stream_iter)
+                except StopIteration:
+                    return None
+                self._stream_index += 1
+            if raw_item is None or self._stream_index != idx:
+                return None
+            question = raw_item["question"].lower()
+            is_pairwise = any(kw in question for kw in [
+                "between", "relationship", "interact", "compare",
+                "versus", "vs", "together", "both", "each other",
+                "difference", "similar", "conflict", "alliance"
+            ])
+            item = {
+                "id": str(idx),
+                "context_window_text": raw_item["context_window_text"],
+                "question": raw_item["question"],
+                "answer": str(raw_item["answer"]),
+                "question_type": raw_item.get("question_type", ""),
+                "campaign": raw_item.get("campaign", ""),
+                "episodes": raw_item.get("episodes", []),
+                "is_pairwise": is_pairwise,
+            }
+            self._stream_last_item_id = item_id
+            self._stream_last_item = item
+            return item
 
         def _load_item() -> dict[str, Any]:
             item = self._dataset[idx]
