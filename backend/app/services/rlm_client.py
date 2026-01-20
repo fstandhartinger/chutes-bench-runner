@@ -26,7 +26,7 @@ logger = get_logger(__name__)
 settings = get_settings()
 RLM_MODEL_ALIASES = {
     "rlm-gpt-4o": "gpt-4o",
-    "rlm-claude-3-5-sonnet": "claude-3-5-sonnet-20240620",
+    "rlm-claude-3-5-sonnet": "claude-sonnet-4-20250514",
 }
 
 
