@@ -6,11 +6,13 @@ semantic classification and aggregation across nearly all dataset entries.
 
 Uses the oolongbench/oolong-synth dataset from HuggingFace.
 
-IMPORTANT: This adapter uses streaming mode to avoid loading the entire
-21GB dataset into memory. Items are loaded on-demand.
+This adapter efficiently loads items by iterating through the streaming dataset
+once and caching the items needed for evaluation.
 """
 import asyncio
+import hashlib
 import os
+import random
 import time
 from typing import Any, AsyncIterator, Optional
 
@@ -78,29 +80,41 @@ def _extract_answer(response: str) -> str:
     return cleaned
 
 
-async def _load_streaming_dataset() -> Any:
-    """Load oolong-synth dataset in streaming mode."""
+def _iterate_and_cache_items_sync(
+    target_indices: set[int],
+    hf_token: Optional[str],
+) -> dict[str, dict[str, Any]]:
+    """
+    Iterate through streaming dataset once and cache only the items we need.
+
+    This is much more efficient than random access on a streaming dataset.
+    """
     from datasets import load_dataset
-    hf_token = os.environ.get("HF_TOKEN")
-    return await asyncio.to_thread(
-        load_dataset,
+
+    logger.info(
+        "Loading OOLONG items from streaming dataset",
+        target_count=len(target_indices),
+        max_index=max(target_indices) if target_indices else 0,
+    )
+
+    dataset = load_dataset(
         "oolongbench/oolong-synth",
         split="test",
         streaming=True,
         token=hf_token,
     )
 
+    cache: dict[str, dict[str, Any]] = {}
+    max_needed = max(target_indices) if target_indices else -1
 
-def _get_item_by_index_sync(dataset: Any, target_idx: int) -> Optional[dict[str, Any]]:
-    """Get a specific item from streaming dataset by index (synchronous)."""
-    # Use skip for efficient access to specific index
-    from itertools import islice
-    try:
-        # Skip to the target index and take one item
-        item = next(islice(dataset, target_idx, target_idx + 1), None)
-        if item:
-            return {
-                "id": str(target_idx),
+    for idx, item in enumerate(dataset):
+        if idx > max_needed:
+            # We've passed all the indices we need
+            break
+
+        if idx in target_indices:
+            cache[str(idx)] = {
+                "id": str(idx),
                 "context_window_text": item["context_window_text"],
                 "question": item["question"],
                 "answer": str(item["answer"]),
@@ -111,9 +125,21 @@ def _get_item_by_index_sync(dataset: Any, target_idx: int) -> Optional[dict[str,
                 "dataset": item.get("dataset", ""),
                 "num_labels": item.get("num_labels", 0),
             }
-    except Exception:
-        pass
-    return None
+
+            if len(cache) % 50 == 0:
+                logger.info(
+                    "OOLONG loading progress",
+                    cached=len(cache),
+                    target=len(target_indices),
+                    current_idx=idx,
+                )
+
+        if len(cache) == len(target_indices):
+            # Found all items we need
+            break
+
+    logger.info("OOLONG items loaded", cached=len(cache), target=len(target_indices))
+    return cache
 
 
 @register_adapter("oolong")
@@ -127,13 +153,13 @@ class OolongAdapter(BenchmarkAdapter):
 
     Processing costs scale linearly with input length.
 
-    Uses streaming mode to avoid loading the 21GB dataset into memory.
+    Uses streaming mode efficiently by iterating once and caching needed items.
     """
 
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
-        self._dataset: Optional[Any] = None
         self._item_cache: dict[str, dict[str, Any]] = {}
+        self._preloaded: bool = False
 
     def get_name(self) -> str:
         return "oolong"
@@ -142,47 +168,69 @@ class OolongAdapter(BenchmarkAdapter):
         return "OOLONG"
 
     def supports_parallel_items(self) -> bool:
-        # Disable parallel items due to streaming dataset limitations
-        return False
+        # Enable parallel items since we pre-cache everything
+        return True
 
     async def get_total_items(self) -> int:
         """Get total items from dataset (known constant)."""
         return OOLONG_SYNTH_TOTAL_ITEMS
 
     async def preload(self) -> None:
-        """Initialize streaming dataset connection."""
-        if self._dataset is not None:
-            return
-
-        try:
-            logger.info("Initializing OOLONG streaming dataset (oolong-synth)")
-            self._dataset = await _load_streaming_dataset()
-            logger.info("OOLONG streaming dataset ready")
-        except Exception as e:
-            logger.error("Failed to initialize OOLONG dataset", error=str(e))
-            raise
+        """No-op - items are loaded in get_items_for_evaluation."""
+        pass
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         """Yield all item IDs."""
         for i in range(OOLONG_SYNTH_TOTAL_ITEMS):
             yield str(i)
 
-    async def _get_item(self, item_id: str) -> Optional[dict[str, Any]]:
-        """Get item by ID, using cache or loading from stream."""
-        if item_id in self._item_cache:
-            return self._item_cache[item_id]
+    async def get_items_for_evaluation(
+        self,
+        subset_pct: int,
+        seed: str,
+        subset_count: Optional[int] = None,
+    ) -> tuple[int, list[str]]:
+        """
+        Override to efficiently load only the items we need.
 
-        # Load item from streaming dataset
-        try:
-            target_idx = int(item_id)
-            dataset = await _load_streaming_dataset()
-            item = await asyncio.to_thread(_get_item_by_index_sync, dataset, target_idx)
-            if item:
-                self._item_cache[item_id] = item
-            return item
-        except Exception as e:
-            logger.error("Failed to load item from streaming dataset", item_id=item_id, error=str(e))
-            return None
+        Instead of loading items one-by-one with random access (which is O(n^2)
+        on streaming datasets), we:
+        1. Determine which item IDs we need based on subset sampling
+        2. Iterate through the streaming dataset once, caching only needed items
+        """
+        total_items = OOLONG_SYNTH_TOTAL_ITEMS
+
+        # Generate all item IDs
+        all_item_ids = [str(i) for i in range(total_items)]
+
+        # Get the subset we'll evaluate
+        items_to_evaluate = self.get_deterministic_subset(
+            all_item_ids, subset_pct, seed, subset_count
+        )
+
+        # Convert to indices for efficient lookup
+        target_indices = {int(item_id) for item_id in items_to_evaluate}
+
+        # Load items from streaming dataset (single pass)
+        if not self._preloaded:
+            hf_token = os.environ.get("HF_TOKEN")
+            self._item_cache = await asyncio.to_thread(
+                _iterate_and_cache_items_sync,
+                target_indices,
+                hf_token,
+            )
+            self._preloaded = True
+            logger.info(
+                "OOLONG preload complete",
+                cached_items=len(self._item_cache),
+                target_items=len(items_to_evaluate),
+            )
+
+        return total_items, items_to_evaluate
+
+    async def _get_item(self, item_id: str) -> Optional[dict[str, Any]]:
+        """Get item by ID from cache."""
+        return self._item_cache.get(item_id)
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single OOLONG item."""
