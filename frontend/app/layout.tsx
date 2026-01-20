@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { AuthProvider } from "@/contexts/auth-context";
 import { Header } from "@/components/header";
@@ -6,6 +6,11 @@ import { Header } from "@/components/header";
 export const metadata: Metadata = {
   title: "Chutes Bench Runner",
   description: "Run LLM benchmarks against Chutes-hosted models with one click",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({
