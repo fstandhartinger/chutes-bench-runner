@@ -91,70 +91,63 @@ def _extract_answer(response: str) -> str:
     return cleaned
 
 
-def _iterate_and_cache_items_sync(
+def _load_items_by_index_sync(
     target_indices: set[int],
     hf_token: Optional[str],
 ) -> dict[str, dict[str, Any]]:
     """
-    Iterate through streaming dataset once and cache only the items we need.
+    Load specific items by index using non-streaming mode with direct indexing.
 
-    This is much more efficient than random access on a streaming dataset.
+    Non-streaming mode allows O(1) access to items by index, which is much faster
+    than iterating through a streaming dataset. The dataset is cached by HuggingFace
+    after first download.
     """
     from datasets import load_dataset
 
     logger.info(
-        "Loading OOLONG-Pairs items from streaming dataset",
+        "Loading OOLONG-Pairs dataset (non-streaming, cached by HuggingFace)",
         target_count=len(target_indices),
-        max_index=max(target_indices) if target_indices else 0,
     )
 
+    # Load in non-streaming mode - HuggingFace will cache it locally
     dataset = load_dataset(
         "oolongbench/oolong-real",
         "dnd",
         split="test",
-        streaming=True,
         token=hf_token,
     )
 
+    logger.info("OOLONG-Pairs dataset loaded, extracting items by index")
+
     cache: dict[str, dict[str, Any]] = {}
-    max_needed = max(target_indices) if target_indices else -1
 
-    for idx, item in enumerate(dataset):
-        if idx > max_needed:
-            # We've passed all the indices we need
-            break
+    for i, idx in enumerate(sorted(target_indices)):
+        item = dataset[idx]
+        question = item["question"].lower()
+        is_pairwise = any(kw in question for kw in [
+            "between", "relationship", "interact", "compare",
+            "versus", "vs", "together", "both", "each other",
+            "difference", "similar", "conflict", "alliance"
+        ])
+        cache[str(idx)] = {
+            "id": str(idx),
+            "context_window_text": item["context_window_text"],
+            "question": item["question"],
+            "answer": str(item["answer"]),
+            "question_type": item.get("question_type", ""),
+            "campaign": item.get("campaign", ""),
+            "episodes": item.get("episodes", []),
+            "is_pairwise": is_pairwise,
+        }
 
-        if idx in target_indices:
-            question = item["question"].lower()
-            is_pairwise = any(kw in question for kw in [
-                "between", "relationship", "interact", "compare",
-                "versus", "vs", "together", "both", "each other",
-                "difference", "similar", "conflict", "alliance"
-            ])
-            cache[str(idx)] = {
-                "id": str(idx),
-                "context_window_text": item["context_window_text"],
-                "question": item["question"],
-                "answer": str(item["answer"]),
-                "question_type": item.get("question_type", ""),
-                "campaign": item.get("campaign", ""),
-                "episodes": item.get("episodes", []),
-                "is_pairwise": is_pairwise,
-            }
+        if (i + 1) % 100 == 0:
+            logger.info(
+                "OOLONG-Pairs item extraction progress",
+                extracted=i + 1,
+                target=len(target_indices),
+            )
 
-            if len(cache) % 50 == 0:
-                logger.info(
-                    "OOLONG-Pairs loading progress",
-                    cached=len(cache),
-                    target=len(target_indices),
-                    current_idx=idx,
-                )
-
-        if len(cache) == len(target_indices):
-            # Found all items we need
-            break
-
-    logger.info("OOLONG-Pairs items loaded", cached=len(cache), target=len(target_indices))
+    logger.info("OOLONG-Pairs items extracted", cached=len(cache), target=len(target_indices))
     return cache
 
 
@@ -235,11 +228,11 @@ class OolongPairsAdapter(BenchmarkAdapter):
         # Convert to indices for efficient lookup
         target_indices = {int(item_id) for item_id in items_to_evaluate}
 
-        # Load items from streaming dataset (single pass)
+        # Load items using non-streaming mode with direct indexing
         if not self._preloaded:
             hf_token = os.environ.get("HF_TOKEN")
             self._item_cache = await asyncio.to_thread(
-                _iterate_and_cache_items_sync,
+                _load_items_by_index_sync,
                 target_indices,
                 hf_token,
             )
