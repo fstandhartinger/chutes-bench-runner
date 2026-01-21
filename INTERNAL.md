@@ -11,7 +11,7 @@
 | `chutes-bench-runner-api-v2` | Web Service | Starter | FastAPI backend + API |
 | `chutes-bench-runner-ui` | Web Service | Starter | Next.js frontend |
 
-**Note**: Benchmark execution is now on the dedicated Sandy server (Hetzner). The Render worker remains deployed but is disabled; keep it off to avoid duplicate workers.
+**Note**: Benchmark execution is now on the dedicated Sandy server (Hetzner). The Render worker has been removed; do not reintroduce it to avoid duplicate workers.
 
 ### Database (Neon.tech)
 
