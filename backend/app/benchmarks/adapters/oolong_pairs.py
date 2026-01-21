@@ -205,11 +205,7 @@ class OolongPairsAdapter(BenchmarkAdapter):
         # Track target items for preloading and item access.
         self._target_item_ids = {int(item_id) for item_id in items_to_evaluate}
         self._item_cache.clear()
-        self._use_streaming = subset_pct >= 100 and subset_count is None
-        if self._use_streaming:
-            self._stream_iter = None
-            self._stream_index = -1
-            self._stream_lock = asyncio.Lock()
+        self._use_streaming = False
 
         return total_items, items_to_evaluate
 
