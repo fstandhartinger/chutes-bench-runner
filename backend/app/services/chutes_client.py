@@ -151,6 +151,7 @@ class ChutesClient:
                 headers={
                     "Authorization": f"Bearer {auth_token}",
                     "Content-Type": "application/json",
+                    "X-Identifier": "chutes-bench-runner",
                 },
             )
         return self._client
