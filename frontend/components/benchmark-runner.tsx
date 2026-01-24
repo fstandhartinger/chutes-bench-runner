@@ -56,6 +56,15 @@ const SUBSET_OPTIONS = [
   { value: "5", label: "5%" },
   { value: "1", label: "1% (Quick test)" },
 ];
+const JANUS_CATEGORY = "Janus Intelligence";
+const CATEGORY_ORDER = ["Core Benchmarks", JANUS_CATEGORY, "Affine Environments"];
+const JANUS_BENCHMARKS = [
+  "janus_research",
+  "janus_tool_use",
+  "janus_multimodal",
+  "janus_streaming",
+  "janus_cost",
+];
 
 export function BenchmarkRunner() {
   const [models, setModels] = useState<Model[]>([]);
@@ -105,10 +114,9 @@ export function BenchmarkRunner() {
       }
       groups.get(category)?.push(benchmark);
     }
-    const categoryOrder = ["Core Benchmarks", "Affine Environments"];
     return Array.from(groups.entries()).sort(([a], [b]) => {
-      const aIndex = categoryOrder.indexOf(a);
-      const bIndex = categoryOrder.indexOf(b);
+      const aIndex = CATEGORY_ORDER.indexOf(a);
+      const bIndex = CATEGORY_ORDER.indexOf(b);
       if (aIndex !== -1 || bIndex !== -1) {
         return (aIndex === -1 ? 99 : aIndex) - (bIndex === -1 ? 99 : bIndex);
       }
@@ -277,6 +285,18 @@ export function BenchmarkRunner() {
       return next;
     });
   };
+
+  const selectJanusPreset = useCallback(() => {
+    setSelectedBenchmarks((prev) => {
+      const next = new Set(prev);
+      for (const name of JANUS_BENCHMARKS) {
+        if (benchmarks.some((benchmark) => benchmark.name === name && benchmark.is_enabled)) {
+          next.add(name);
+        }
+      }
+      return next;
+    });
+  }, [benchmarks]);
 
   // Start benchmark run
   const startRun = async () => {
@@ -491,6 +511,7 @@ export function BenchmarkRunner() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="chutes">Chutes (direct)</SelectItem>
+                  <SelectItem value="janus">Janus Gateway</SelectItem>
                   <SelectItem value="rlm">Chutes RLM Gateway</SelectItem>
                   <SelectItem value="gremium-openai">Gremium (OpenAI)</SelectItem>
                   <SelectItem value="gremium-anthropic">Gremium (Anthropic)</SelectItem>
@@ -681,6 +702,52 @@ export function BenchmarkRunner() {
                       {items.length} benchmark{items.length === 1 ? "" : "s"}
                     </span>
                   </div>
+                  {category === JANUS_CATEGORY && (
+                    <div className="rounded-lg border border-moss/30 bg-moss/5 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                          <h4 className="text-sm font-semibold text-moss">
+                            Janus Competition Benchmarks
+                          </h4>
+                          <p className="mt-1 text-xs text-ink-400">
+                            These benchmarks measure research, tool use, multimodal, streaming,
+                            and cost efficiency. Results contribute to the Janus composite score.
+                          </p>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={selectJanusPreset}
+                          className="border-moss/50 text-moss hover:bg-moss/10"
+                        >
+                          Select All Janus
+                        </Button>
+                      </div>
+
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
+                        <div className="text-center">
+                          <div className="font-semibold text-ink-200">Quality</div>
+                          <div className="text-moss">40%</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="font-semibold text-ink-200">Speed</div>
+                          <div className="text-moss">20%</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="font-semibold text-ink-200">Cost</div>
+                          <div className="text-moss">15%</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="font-semibold text-ink-200">Streaming</div>
+                          <div className="text-moss">15%</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="font-semibold text-ink-200">Modality</div>
+                          <div className="text-moss">10%</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     {items.map((benchmark) => {
                       const totalItems = benchmark.total_items || 0;

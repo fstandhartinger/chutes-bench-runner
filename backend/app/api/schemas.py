@@ -83,6 +83,8 @@ class BenchmarkInfo(APIModel):
     display_name: str
     description: Optional[str] = None
     category: Optional[str] = None
+    janus_scoring_weight: Optional[float] = None
+    janus_metrics: Optional[list[str]] = None
     is_enabled: bool = True
     supports_subset: bool = True
     requires_setup: bool = False

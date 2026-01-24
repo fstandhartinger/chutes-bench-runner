@@ -102,27 +102,28 @@ async def list_models(
 ):
     """List available Chutes models."""
     settings = get_settings()
-    if provider and provider.startswith("gremium"):
+    provider_filter = "chutes" if provider == "janus" else provider
+    if provider_filter and provider_filter.startswith("gremium"):
         if settings.enable_gremium_provider:
             await ensure_gremium_models(db)
             await db.commit()
-        models = await get_models(db, search=search, provider=provider, limit=limit, offset=offset)
+        models = await get_models(db, search=search, provider=provider_filter, limit=limit, offset=offset)
         return ModelsListResponse(
             models=[ModelResponse.model_validate(m) for m in models],
             total=len(models),
         )
-    if provider == "rlm":
+    if provider_filter == "rlm":
         if settings.enable_rlm_provider:
             await ensure_rlm_models(db)
             await db.commit()
-        models = await get_models(db, search=search, provider=provider, limit=limit, offset=offset)
+        models = await get_models(db, search=search, provider=provider_filter, limit=limit, offset=offset)
         return ModelsListResponse(
             models=[ModelResponse.model_validate(m) for m in models],
             total=len(models),
         )
 
-    models = await get_models(db, search=search, provider=provider, limit=limit, offset=offset)
-    if provider in (None, "chutes"):
+    models = await get_models(db, search=search, provider=provider_filter, limit=limit, offset=offset)
+    if provider_filter in (None, "chutes"):
         llm_identifiers = await get_chutes_client().get_llm_identifiers()
         if llm_identifiers:
             models = [
@@ -276,7 +277,12 @@ async def list_benchmarks(db: SessionDep):
                 name=b.name,
                 display_name=b.display_name,
                 description=b.description,
-                category=(b.config or {}).get("category") or "Core Benchmarks",
+                category=(
+                    (b.config or {}).get("category")
+                    or ("Janus Intelligence" if b.name.startswith("janus_") else "Core Benchmarks")
+                ),
+                janus_scoring_weight=(b.config or {}).get("janus_scoring_weight"),
+                janus_metrics=(b.config or {}).get("janus_metrics"),
                 is_enabled=b.is_enabled,
                 supports_subset=b.supports_subset,
                 requires_setup=b.requires_setup,
@@ -309,7 +315,7 @@ async def create_benchmark_run(
             detail=settings.maintenance_message,
         )
     provider = request.provider or "chutes"
-    allowed_providers = {"chutes", "gremium-openai", "gremium-anthropic", "rlm"}
+    allowed_providers = {"chutes", "gremium-openai", "gremium-anthropic", "rlm", "janus"}
     if provider not in allowed_providers:
         raise HTTPException(status_code=400, detail="Unsupported provider")
     if provider.startswith("gremium") and not settings.enable_gremium_provider:
@@ -317,13 +323,15 @@ async def create_benchmark_run(
     if provider == "rlm" and not settings.enable_rlm_provider:
         raise HTTPException(status_code=400, detail="RLM provider is not enabled.")
 
+    provider_lookup = "chutes" if provider == "janus" else provider
+
     # Validate model exists
     model = await get_model_by_id(db, request.model_id)
     if not model:
-        model = await resolve_model_identifier(db, request.model_id, provider=provider)
+        model = await resolve_model_identifier(db, request.model_id, provider=provider_lookup)
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
-    if model.provider != provider:
+    if model.provider != provider_lookup:
         raise HTTPException(status_code=400, detail="Model does not match selected provider")
 
     auth_mode = "system"
@@ -375,6 +383,11 @@ async def create_benchmark_run(
         finally:
             if access_token:
                 await client.close()
+    elif provider == "janus":
+        provider_metadata = {
+            "provider": provider,
+            "base_url": settings.janus_gateway_base_url,
+        }
     elif provider == "rlm":
         rlm_client = RLMClient(
             api_key=settings.rlm_api_key or settings.chutes_api_key,
@@ -446,7 +459,7 @@ async def create_benchmark_run_with_api_key(
             detail=settings.maintenance_message,
         )
     provider = request.provider or "chutes"
-    allowed_providers = {"chutes", "gremium-openai", "gremium-anthropic", "rlm"}
+    allowed_providers = {"chutes", "gremium-openai", "gremium-anthropic", "rlm", "janus"}
     if provider not in allowed_providers:
         raise HTTPException(status_code=400, detail="Unsupported provider")
     if provider.startswith("gremium") and not settings.enable_gremium_provider:
@@ -454,16 +467,17 @@ async def create_benchmark_run_with_api_key(
     if provider == "rlm" and not settings.enable_rlm_provider:
         raise HTTPException(status_code=400, detail="RLM provider is not enabled.")
 
-    model = await resolve_model_identifier(db, request.model_id, provider=provider)
+    provider_lookup = "chutes" if provider == "janus" else provider
+    model = await resolve_model_identifier(db, request.model_id, provider=provider_lookup)
     if not model:
         await sync_models(db)
-        model = await resolve_model_identifier(db, request.model_id, provider=provider)
+        model = await resolve_model_identifier(db, request.model_id, provider=provider_lookup)
     if not model:
         raise HTTPException(
             status_code=404,
             detail="Model not found. Provide a bench runner model UUID, Chutes chute_id, or model slug.",
         )
-    if model.provider != provider:
+    if model.provider != provider_lookup:
         raise HTTPException(status_code=400, detail="Model does not match selected provider")
 
     provider_metadata: Optional[dict[str, Any]] = None
@@ -494,6 +508,11 @@ async def create_benchmark_run_with_api_key(
                     )
         finally:
             await client.close()
+    elif provider == "janus":
+        provider_metadata = {
+            "provider": provider,
+            "base_url": settings.janus_gateway_base_url,
+        }
     elif provider == "rlm":
         rlm_client = RLMClient(
             api_key=settings.rlm_api_key or settings.chutes_api_key,

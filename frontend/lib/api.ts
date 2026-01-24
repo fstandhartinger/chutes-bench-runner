@@ -55,6 +55,8 @@ export interface Benchmark {
   display_name: string;
   description?: string;
   category?: string;
+  janus_scoring_weight?: number;
+  janus_metrics?: string[];
   is_enabled: boolean;
   supports_subset: boolean;
   requires_setup: boolean;
@@ -169,6 +171,15 @@ export interface MaintenanceStatus {
   message: string;
 }
 
+export interface JanusCompositeScore {
+  composite: number;
+  quality: number;
+  speed: number;
+  cost: number;
+  streaming: number;
+  modality: number;
+}
+
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
   const response = await fetch(url, {
@@ -213,6 +224,10 @@ export async function getArtificialAnalysisScores(
 
 export async function getBenchmarks(): Promise<{ benchmarks: Benchmark[] }> {
   return fetchAPI("/api/benchmarks");
+}
+
+export async function getJanusCompositeScore(runId: string): Promise<JanusCompositeScore> {
+  return fetchAPI(`/api/janus/composite-score/${runId}`);
 }
 
 export async function getRuns(

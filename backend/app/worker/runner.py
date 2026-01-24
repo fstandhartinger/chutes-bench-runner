@@ -26,6 +26,7 @@ from app.models.run import (
 )
 from app.services import auth_service
 from app.services.chutes_client import get_chutes_client
+from app.services.janus_client import get_janus_client
 from app.services.gremium_client import GremiumClient
 from app.services.rlm_client import RLMClient
 from app.services.inference_client import InferenceClient
@@ -271,6 +272,8 @@ class BenchmarkWorker:
                 api_key=settings.rlm_api_key or settings.chutes_api_key,
                 base_url=settings.rlm_api_base_url,
             )
+        if run.provider == "janus":
+            return get_janus_client(api_key=run.auth_api_key)
         if run.auth_mode == "idp":
             if not run.auth_session_id:
                 raise RuntimeError("Run is missing Chutes session credentials")

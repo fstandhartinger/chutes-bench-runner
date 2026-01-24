@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.api.janus import router as janus_router
 from app.api.auth_routes import router as auth_router
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
@@ -60,6 +61,7 @@ app.add_middleware(
 # Include API routes
 app.include_router(router)
 app.include_router(auth_router, prefix="/api")
+app.include_router(janus_router)
 
 
 @app.get("/")

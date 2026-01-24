@@ -11,10 +11,12 @@ import {
   cancelRun,
   getBenchmarkDetails,
   getExportUrl,
+  getJanusCompositeScore,
   type Run,
   type ItemResult,
   type BenchmarkRunBenchmark,
   type BenchmarkSummary,
+  type JanusCompositeScore,
 } from "@/lib/api";
 import {
   computeQueueSchedule,
@@ -354,6 +356,8 @@ export default function RunDetailPage() {
   const [showErrorBreakdown, setShowErrorBreakdown] = useState(false);
   const [queueSchedule, setQueueSchedule] = useState<Record<string, QueueEstimate>>({});
   const [canceling, setCanceling] = useState(false);
+  const [janusComposite, setJanusComposite] = useState<JanusCompositeScore | null>(null);
+  const [janusCompositeError, setJanusCompositeError] = useState<string | null>(null);
   const workerSlots = getWorkerSlots();
 
   const fetchAllItems = useCallback(async () => {
@@ -401,6 +405,33 @@ export default function RunDetailPage() {
     const interval = window.setInterval(loadRun, 15000);
     return () => window.clearInterval(interval);
   }, [run, loadRun]);
+
+  useEffect(() => {
+    if (!run) return;
+    const hasJanusBenchmarks = run.benchmarks.some((rb) => rb.benchmark_name.startsWith("janus_"));
+    if (!hasJanusBenchmarks) {
+      setJanusComposite(null);
+      setJanusCompositeError(null);
+      return;
+    }
+    let active = true;
+    setJanusCompositeError(null);
+    getJanusCompositeScore(run.id)
+      .then((data) => {
+        if (active) {
+          setJanusComposite(data);
+        }
+      })
+      .catch((err) => {
+        if (active) {
+          setJanusComposite(null);
+          setJanusCompositeError(err instanceof Error ? err.message : "Failed to load composite score");
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [run]);
 
   const loadQueueStatus = useCallback(async () => {
     try {
@@ -479,6 +510,8 @@ export default function RunDetailPage() {
   const selectedRb = run.benchmarks.find(
     (rb) => rb.benchmark_name === selectedBenchmark
   );
+  const formatPercentOrDash = (value?: number | null) =>
+    value !== undefined && value !== null ? formatPercent(value) : "—";
 
   // Calculate stats
   const correctCount =
@@ -518,6 +551,41 @@ export default function RunDetailPage() {
   const elapsedMs = startedAt
     ? Math.max(0, (completedAt ? completedAt.getTime() : now.getTime()) - startedAt.getTime())
     : null;
+  const isJanusRun = run.benchmarks.some((rb) => rb.benchmark_name.startsWith("janus_"));
+  const janusStreaming = run.benchmarks.find(
+    (rb) => rb.benchmark_name === "janus_streaming"
+  );
+  const janusCost = run.benchmarks.find((rb) => rb.benchmark_name === "janus_cost");
+  const streamingMetrics = (() => {
+    const raw = janusStreaming?.metrics;
+    if (!raw || typeof raw !== "object") {
+      return null;
+    }
+    const avgTtftMs = typeof raw.avg_ttft_ms === "number" ? raw.avg_ttft_ms : null;
+    const avgTps = typeof raw.avg_tps === "number" ? raw.avg_tps : null;
+    const avgContinuity =
+      typeof raw.avg_continuity === "number"
+        ? raw.avg_continuity
+        : typeof raw.continuity_score === "number"
+        ? raw.continuity_score
+        : null;
+    if (avgTtftMs === null && avgTps === null && avgContinuity === null) {
+      return null;
+    }
+    return { avgTtftMs, avgTps, avgContinuity };
+  })();
+  const costMetrics = (() => {
+    const raw = janusCost?.metrics;
+    if (!raw || typeof raw !== "object") {
+      return null;
+    }
+    const tokenSavingsPct =
+      typeof raw.token_savings_pct === "number" ? raw.token_savings_pct : null;
+    if (tokenSavingsPct === null) {
+      return null;
+    }
+    return { tokenSavingsPct };
+  })();
   const etaSeconds =
     run.status === "running" ? estimateRunRemainingSeconds(run, now) : null;
   const queueInfo = run.status === "queued" ? queueSchedule[run.id] : undefined;
@@ -788,6 +856,94 @@ export default function RunDetailPage() {
           </div>
         </CardContent>
       </Card>
+
+      {isJanusRun && (
+        <Card className="mb-8">
+          <CardHeader>
+            <CardTitle className="text-moss">Janus Composite Score</CardTitle>
+            {janusCompositeError && (
+              <p className="text-xs text-red-400">{janusCompositeError}</p>
+            )}
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-4 text-center sm:grid-cols-3 lg:grid-cols-6">
+              <div>
+                <div className="text-2xl font-bold text-moss">
+                  {formatPercentOrDash(janusComposite?.composite)}
+                </div>
+                <div className="text-xs text-ink-400">Composite</div>
+              </div>
+              <div>
+                <div className="text-xl text-ink-200">
+                  {formatPercentOrDash(janusComposite?.quality)}
+                </div>
+                <div className="text-xs text-ink-400">Quality (40%)</div>
+              </div>
+              <div>
+                <div className="text-xl text-ink-200">
+                  {formatPercentOrDash(janusComposite?.speed)}
+                </div>
+                <div className="text-xs text-ink-400">Speed (20%)</div>
+              </div>
+              <div>
+                <div className="text-xl text-ink-200">
+                  {formatPercentOrDash(janusComposite?.cost)}
+                </div>
+                <div className="text-xs text-ink-400">Cost (15%)</div>
+              </div>
+              <div>
+                <div className="text-xl text-ink-200">
+                  {formatPercentOrDash(janusComposite?.streaming)}
+                </div>
+                <div className="text-xs text-ink-400">Streaming (15%)</div>
+              </div>
+              <div>
+                <div className="text-xl text-ink-200">
+                  {formatPercentOrDash(janusComposite?.modality)}
+                </div>
+                <div className="text-xs text-ink-400">Modality (10%)</div>
+              </div>
+            </div>
+
+            {(streamingMetrics || costMetrics) && (
+              <div className="mt-4 grid grid-cols-2 gap-4 rounded-lg bg-ink-800/50 p-3 text-center text-xs sm:grid-cols-4">
+                <div>
+                  <div className="text-sm font-medium text-ink-200">
+                    {streamingMetrics?.avgTtftMs !== null && streamingMetrics?.avgTtftMs !== undefined
+                      ? `${Math.round(streamingMetrics.avgTtftMs)}ms`
+                      : "—"}
+                  </div>
+                  <div className="text-xs text-ink-400">Avg TTFT</div>
+                </div>
+                <div>
+                  <div className="text-sm font-medium text-ink-200">
+                    {streamingMetrics?.avgTps !== null && streamingMetrics?.avgTps !== undefined
+                      ? `${streamingMetrics.avgTps.toFixed(1)} tok/s`
+                      : "—"}
+                  </div>
+                  <div className="text-xs text-ink-400">Avg TPS</div>
+                </div>
+                <div>
+                  <div className="text-sm font-medium text-ink-200">
+                    {streamingMetrics?.avgContinuity !== null && streamingMetrics?.avgContinuity !== undefined
+                      ? formatPercent(streamingMetrics.avgContinuity)
+                      : "—"}
+                  </div>
+                  <div className="text-xs text-ink-400">Continuity</div>
+                </div>
+                <div>
+                  <div className="text-sm font-medium text-ink-200">
+                    {costMetrics?.tokenSavingsPct !== null && costMetrics?.tokenSavingsPct !== undefined
+                      ? `${costMetrics.tokenSavingsPct.toFixed(1)}%`
+                      : "—"}
+                  </div>
+                  <div className="text-xs text-ink-400">Token Savings</div>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {run.provider.startsWith("gremium") && run.provider_metadata && (
         <Card className="mb-8">

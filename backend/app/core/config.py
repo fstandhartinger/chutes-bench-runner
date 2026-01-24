@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     chutes_inference_timeout_seconds: int = 300
     chutes_rate_limit_sleep_seconds: int = 30
 
+    # Janus Gateway
+    janus_gateway_base_url: str = "https://janus-gateway-bqou.onrender.com/v1"
+    janus_gateway_api_key: Optional[str] = None
+
     # Artificial Analysis (public site scraping + optional LLM mapping)
     artificial_analysis_base_url: str = "https://artificialanalysis.ai"
     artificial_analysis_sitemap_url: str = "https://artificialanalysis.ai/sitemap.xml"
