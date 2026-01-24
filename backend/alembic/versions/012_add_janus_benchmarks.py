@@ -1,7 +1,7 @@
 """Add Janus benchmark entries.
 
-Revision ID: 012
-Revises: 011
+Revision ID: 012_add_janus_benchmarks
+Revises: 011_add_model_comparisons
 Create Date: 2025-01-15
 """
 from typing import Sequence, Union
@@ -10,8 +10,8 @@ from uuid import uuid4
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "012"
-down_revision: Union[str, None] = "011"
+revision: str = "012_add_janus_benchmarks"
+down_revision: Union[str, None] = "011_add_model_comparisons"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
