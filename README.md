@@ -165,6 +165,8 @@ SANDY_DOCKER_UPSTREAM=docker-primary
 ```
 Production uses the dedicated Sandy host `https://sandy.65.109.64.180.nip.io`.
 
+If you invoke Sandy’s `/agent/run` for agentic benchmarks, pass `apiBaseUrl` pointing at the Janus model router and keep `model=janus-router` to allow Chutes model routing + fallbacks. Upload the agent pack and set `JANUS_SYSTEM_PROMPT_PATH=/workspace/agent-pack/prompts/system.md`.
+
 ## Configuration reference
 
 Required:
