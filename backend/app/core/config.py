@@ -100,6 +100,13 @@ class Settings(BaseSettings):
     # Benchmark data cache
     bench_data_dir: str = "/tmp/chutes-bench-data"
 
+    # K2 Vendor Verifier (K2VV)
+    k2vv_dataset_url: str = "https://statics.moonshot.cn/k2vv/tool-calls.tar.gz"
+    k2vv_reference_model: str = "kimi-k2-0905-preview"
+    k2vv_reference_results_path: Optional[str] = None
+    k2vv_request_overrides_json: Optional[str] = None
+    k2vv_timeout_seconds: int = 600
+
     # Sandy Sandbox
     sandy_base_url: str = "https://sandy.65.109.64.180.nip.io"
     sandy_api_key: Optional[str] = None

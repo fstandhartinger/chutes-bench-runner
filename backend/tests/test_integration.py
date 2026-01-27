@@ -66,7 +66,7 @@ class TestBenchmarksAPI:
         assert response.status_code == 200
         data = response.json()
         assert "benchmarks" in data
-        assert len(data["benchmarks"]) == 25  # 22 original + 3 long-context (s_niah, oolong, oolong_pairs)
+        assert len(data["benchmarks"]) == 26  # 22 original + 3 long-context + Kimi Vendor Verifier
 
     def test_benchmarks_have_required_fields(self, client):
         """Test benchmarks have required fields."""
