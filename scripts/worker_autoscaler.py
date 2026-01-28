@@ -177,8 +177,9 @@ def get_worker_counts(
         return 0, 0
 
     names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    base_prefix = f"{base_project}_worker_"
-    extra_prefix = f"{extra_project}_worker_"
+    # Docker Compose uses hyphens in container names (e.g., chutes-bench-runner-worker-1)
+    base_prefix = f"{base_project}-worker-"
+    extra_prefix = f"{extra_project}-worker-"
     base_count = sum(1 for name in names if name.startswith(base_prefix))
     extra_count = sum(1 for name in names if name.startswith(extra_prefix))
     return base_count, extra_count
