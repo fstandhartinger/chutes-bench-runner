@@ -182,6 +182,16 @@ def get_worker_counts(
     extra_prefix = f"{extra_project}-worker-"
     base_count = sum(1 for name in names if name.startswith(base_prefix))
     extra_count = sum(1 for name in names if name.startswith(extra_prefix))
+
+    # Debug logging to help diagnose count issues
+    if base_count == 0 and extra_count == 0 and names:
+        worker_names = [n for n in names if "worker" in n.lower()]
+        if worker_names:
+            logger.debug(
+                "No workers matched prefixes %s/%s, but found worker-like names: %s",
+                base_prefix, extra_prefix, worker_names[:5],
+            )
+
     return base_count, extra_count
 
 
@@ -260,11 +270,23 @@ def compute_target_workers(
     min_workers: int,
     worker_max_concurrent: int,
 ) -> int:
-    backlog = running + queued
-    if backlog <= 0:
+    """Compute target worker count based on queue depth.
+
+    IMPORTANT: We only scale based on QUEUED jobs, not running ones.
+    Running jobs are already claimed by existing workers and don't need
+    additional capacity. Counting running jobs in the backlog was causing
+    a bug where workers never scaled down even with an empty queue.
+
+    The scale-down logic:
+    - When queue is empty (queued=0), scale down to min_workers
+    - Workers processing running jobs will finish and become available
+    - If runs are stuck in "running" state, the stale run check will requeue them
+    """
+    # Only count queued jobs for scaling - running jobs are already being handled
+    if queued <= 0:
         return min_workers
     per_worker = max(worker_max_concurrent, 1)
-    desired = math.ceil(backlog / per_worker)
+    desired = math.ceil(queued / per_worker)
     return max(min_workers, min(max_workers, desired))
 
 
