@@ -47,8 +47,13 @@ app = FastAPI(
 # CORS middleware
 cors_origins = [
     "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:5174",
     "https://chutes-bench-runner-ui.onrender.com",
     "https://chutes-bench-runner-frontend.onrender.com",
+    "https://chutes-credit-system.onrender.com",
+    "https://chutes.ai",
+    "https://www.chutes.ai",
 ]
 app.add_middleware(
     CORSMiddleware,
