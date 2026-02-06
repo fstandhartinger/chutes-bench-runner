@@ -120,7 +120,7 @@ async def callback(
         scopes=tokens.get("scope", ""),
     )
     
-    logger.info("OAuth login successful", username=session.username)
+    logger.info("OAuth login successful", session_id=session.session_id[:8])
     
     # Return session info and cookie instruction
     # The frontend will set the cookie and redirect
@@ -228,7 +228,6 @@ async def auth_status(request: Request, db: SessionDep):
         "user": user,
         "has_invoke_scope": has_invoke_scope,
     }
-
 
 
 

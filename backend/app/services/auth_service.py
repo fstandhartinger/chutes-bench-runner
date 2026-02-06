@@ -207,7 +207,7 @@ async def create_session(
     await db.commit()
     await db.refresh(session)
     
-    logger.info("Created session", session_id=session_id[:8], username=username)
+    logger.info("Created session", session_id=session_id[:8], user_id=user_id[:8])
     return session
 
 
@@ -223,8 +223,12 @@ async def get_session(db: AsyncSession, session_id: str) -> Optional[UserSession
     session = result.scalar_one_or_none()
     
     if session:
-        # Update last_used_at
-        session.last_used_at = datetime.utcnow()
+        # Sliding expiration: keep sessions alive for SESSION_LIFETIME_DAYS after last successful usage.
+        now = datetime.utcnow()
+        session.last_used_at = now
+        refresh_window = timedelta(days=max(1, SESSION_LIFETIME_DAYS - 1))
+        if session.expires_at - now < refresh_window:
+            session.expires_at = now + timedelta(days=SESSION_LIFETIME_DAYS)
         await db.commit()
     
     return session
@@ -288,8 +292,6 @@ async def cleanup_expired_sessions(db: AsyncSession) -> int:
     )
     await db.commit()
     return result.rowcount
-
-
 
 
 

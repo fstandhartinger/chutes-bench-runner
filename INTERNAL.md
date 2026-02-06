@@ -15,7 +15,7 @@
 
 ### Database (Neon.tech)
 
-- **Project**: `chutes-bench-runner` (`tiny-credit-33821742`)
+- **Project**: `chutes-bench-runner` (internal)
 - **Database**: `neondb`
 - **Important**: Connection string uses `sslmode=require`, but asyncpg requires `ssl=require`. The backend's `config.py` converts this automatically.
 
@@ -37,7 +37,7 @@ CHUTES_CLIENT_SECRET=<IDP client secret>
 CHUTES_IDP_URL=https://auth.chutes.ai
 FRONTEND_URL=https://chutes-bench-runner-ui.onrender.com
 ADMIN_SECRET=<secret for admin endpoints>
-SANDY_BASE_URL=https://sandy.65.109.64.180.nip.io
+SANDY_BASE_URL=https://sandy.example.com
 SANDY_API_KEY=<sandy-api-key>
 SANDY_DOCKER_UPSTREAM=docker-primary
 BENCH_SIGNING_PRIVATE_KEY=<base64 or PEM Ed25519 private key>
@@ -51,8 +51,7 @@ GDPVAL_JUDGE_MODEL=<optional override>
 
 **API Key Location**: System-wide `$CHUTES_API_KEY` environment variable. Use `echo $CHUTES_API_KEY` to access.
 
-**Sandy host**: Production sandboxes use the dedicated Sandy server at
-`https://sandy.65.109.64.180.nip.io` (old `94.130.222.43` deployment deprecated; keep online until sandboxes drain).
+**Sandy host**: Production sandboxes use a dedicated Sandy server (internal).
 
 If `/api/ops/sandy/resources` returns 502, the Sandy controller/worker stack likely crashed on the Sandy host:
 ```
@@ -140,7 +139,7 @@ NEXT_PUBLIC_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 **Fix**: Use Standard plan (2GB) for worker service
 
 ### 12. Hetzner Worker Pool (Production)
-Benchmark workers run on the **old Sandy host** (`94.130.222.43`) to avoid Render OOMs and reduce cost. The new Sandy host (`65.109.64.180`) should only run the Sandy controller + sandbox workers. Render worker should stay disabled.
+Benchmark workers run on a dedicated Sandy host (internal) to avoid Render OOMs and reduce cost. Render worker should stay disabled.
 
 **Why**: Hetzner has plenty of CPU/RAM and is cheaper than multiple Render instances.
 

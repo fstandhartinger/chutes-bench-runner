@@ -229,10 +229,12 @@ export function BenchmarkRunner() {
   };
 
   useEffect(() => {
-    if (!currentRun || !["queued", "running"].includes(currentRun.status)) return;
+    const runId = currentRun?.id;
+    const runStatus = currentRun?.status;
+    if (!runId || !runStatus || !["queued", "running"].includes(runStatus)) return;
     const interval = window.setInterval(async () => {
       try {
-        const updated = await getRun(currentRun.id);
+        const updated = await getRun(runId);
         setCurrentRun(updated);
       } catch (e) {
         console.warn("Failed to refresh run", e);

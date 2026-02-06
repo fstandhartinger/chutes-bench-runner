@@ -111,7 +111,7 @@ frontend (Next.js)
             -> Sandy sandbox (code/CLI benchmarks)
 ```
 
-Production note: benchmark workers run on the old Sandy host (`94.130.222.43`) for stability and cost; the new Sandy host (`65.109.64.180`) is reserved for the Sandy controller + sandboxes. The Render worker service stays disabled.
+Production note: benchmark workers run on a dedicated Sandy host (internal) for stability and cost. The Render worker service stays disabled.
 
 ## Local development
 
@@ -163,9 +163,9 @@ SANDY_BASE_URL=https://<sandy-host>
 SANDY_API_KEY=<sandy-key>
 SANDY_DOCKER_UPSTREAM=docker-primary
 ```
-Production uses the dedicated Sandy host `https://sandy.65.109.64.180.nip.io`.
+Production uses a dedicated Sandy host (internal).
 
-If you invoke Sandy’s `/agent/run` for agentic benchmarks, pass `apiBaseUrl` pointing at the Janus model router and keep `model=janus-router` to allow Chutes model routing + fallbacks. Upload the agent pack and set `JANUS_SYSTEM_PROMPT_PATH=/workspace/agent-pack/prompts/system.md`.
+If you invoke Sandy’s `/agent/run` for agentic benchmarks, pass `apiBaseUrl` pointing at the Janus model router, keep `model=janus-router`, and set `rawPrompt: true` so Claude Code runs in research mode. Upload the agent pack and set `JANUS_SYSTEM_PROMPT_PATH` (or `systemPromptPath`) to `/workspace/agent-pack/prompts/system.md`.
 If benchmarks emit files (logs, images), write them to `/workspace/artifacts` and cache sandbox artifact URLs server‑side before the sandbox exits.
 
 ## Configuration reference

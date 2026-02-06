@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     k2vv_timeout_seconds: int = 600
 
     # Sandy Sandbox
-    sandy_base_url: str = "https://sandy.65.109.64.180.nip.io"
+    sandy_base_url: str = "https://sandy.example.com"
     sandy_api_key: Optional[str] = None
     sandy_volume_root: str = "/var/lib/sandy/volumes"
     sandy_docker_upstream: Optional[str] = None

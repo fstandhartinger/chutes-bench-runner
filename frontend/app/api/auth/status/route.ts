@@ -17,8 +17,22 @@ export async function GET(request: NextRequest) {
     });
 
     const data = await response.json();
-    
-    return NextResponse.json(data);
+
+    const next = NextResponse.json(data);
+    // Refresh cookie expiry so users stay signed in for 30 days after last usage.
+    if (sessionId && data?.authenticated) {
+      next.cookies.set({
+        name: SESSION_COOKIE_NAME,
+        value: sessionId,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 30,
+      });
+    }
+
+    return next;
   } catch (error) {
     console.error('Error proxying auth status:', error);
     return NextResponse.json({
@@ -29,7 +43,6 @@ export async function GET(request: NextRequest) {
     });
   }
 }
-
 
 
 
