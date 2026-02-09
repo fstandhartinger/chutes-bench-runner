@@ -259,41 +259,75 @@ class ArtificialAnalysisService:
         return "".join(decoded_parts)
 
     def _extract_model_payload(self, decoded: str, slug: str) -> Optional[dict[str, Any]]:
+        """
+        Extract the JSON payload for a given model slug from the decoded Next.js stream.
+
+        The AA /models/<slug> pages currently contain multiple JSON blobs that repeat the same
+        `"slug":"<slug>"` substring (for example: a small "model card" object and a larger
+        "performance metrics" object). The older implementation grabbed the *first* match which
+        often lacks benchmark fields, resulting in an empty scores list.
+        """
+
         needle = f'"slug":"{slug}"'
-        idx = decoded.find(needle)
-        if idx == -1:
+        indices = [m.start() for m in re.finditer(re.escape(needle), decoded)]
+        if not indices:
             return None
-        start = None
+
+        best_payload: Optional[dict[str, Any]] = None
+        best_score_key_hits = -1
+        best_size = -1
+
+        for idx in indices:
+            payload = self._extract_json_object_around(decoded, idx)
+            if not payload:
+                continue
+            score_key_hits = len(set(payload.keys()).intersection(SCORE_LABELS.keys()))
+            size = len(payload.keys())
+            candidate = (score_key_hits, size)
+            best = (best_score_key_hits, best_size)
+            if candidate > best:
+                best_payload = payload
+                best_score_key_hits = score_key_hits
+                best_size = size
+
+        return best_payload
+
+    def _extract_json_object_around(self, decoded: str, idx: int) -> Optional[dict[str, Any]]:
+        """Extract the JSON object enclosing `idx` (which must point inside the object text)."""
+        start: Optional[int] = None
         depth = 0
         for i in range(idx, -1, -1):
             ch = decoded[i]
-            if ch == '}':
+            if ch == "}":
                 depth += 1
-            elif ch == '{':
+            elif ch == "{":
                 if depth == 0:
                     start = i
                     break
                 depth -= 1
         if start is None:
             return None
+
         level = 0
-        end = None
+        end: Optional[int] = None
         for i in range(start, len(decoded)):
             ch = decoded[i]
-            if ch == '{':
+            if ch == "{":
                 level += 1
-            elif ch == '}':
+            elif ch == "}":
                 level -= 1
                 if level == 0:
                     end = i
                     break
         if end is None:
             return None
+
         try:
-            return json.loads(decoded[start : end + 1])
+            parsed = json.loads(decoded[start : end + 1])
         except Exception as exc:
             logger.debug("Failed to parse AA payload", error=str(exc))
             return None
+        return parsed if isinstance(parsed, dict) else None
 
     def _normalize(self, value: str) -> str:
         text = value.lower().strip()
