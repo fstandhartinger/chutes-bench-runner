@@ -46,6 +46,11 @@ def _is_retryable_item_error(error: Optional[str]) -> bool:
     if not error:
         return False
     message = error.lower()
+    # Fail fast on systemic Sandy creation failures; retrying each item just burns attempts.
+    if "all upstreams failed to create sandbox" in message:
+        return False
+    if "sandy api key is not configured" in message:
+        return False
     if "sandbox not found" in message or "sandbox missing" in message:
         return True
     if "sandbox expired" in message or "sandbox terminated" in message:
@@ -87,6 +92,10 @@ def _is_fatal_item_error(error: Optional[str]) -> bool:
     if not error:
         return False
     message = error.lower()
+    if "all upstreams failed to create sandbox" in message:
+        return True
+    if "sandy api key is not configured" in message:
+        return True
     if "model not found" in message or "no such model" in message or "http 404" in message:
         if "sandbox" in message or "sandy" in message:
             return False

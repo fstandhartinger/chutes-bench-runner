@@ -47,7 +47,8 @@ class SandyService:
                          Defaults to True for benchmark sandboxes.
         """
         if not self.api_key:
-            logger.error("Sandy API key is not configured")
+            self.last_error = "Sandy API key is not configured"
+            logger.error(self.last_error)
             return None
         delay_seconds = 1
         last_error: Optional[str] = None
