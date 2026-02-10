@@ -512,6 +512,17 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             #
             # Some models get stuck re-running harmless commands (e.g. `pwd`) when they don't
             # perceive progress. We treat that as a stall and demand a different action.
+            #
+            # IMPORTANT: Abort check must run before the early-continue warning below, otherwise
+            # we'd never reach the abort path for repeaters.
+            if same_action_streak >= _MAX_REPEAT_STREAK_BEFORE_ABORT and action_kind != "PATCH":
+                logger.warning(
+                    "Agent stuck repeating the same action; aborting loop early",
+                    action=action_kind,
+                    streak=same_action_streak,
+                )
+                break
+
             if action_kind in {"READ", "SEARCH", "RUN"} and same_action_streak >= 2:
                 messages.append(
                     {
@@ -524,16 +535,6 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                     }
                 )
                 continue
-
-            # If a model keeps repeating itself after warnings, abort the loop early so we still have
-            # time to request a final PATCH attempt and run the harness.
-            if same_action_streak >= _MAX_REPEAT_STREAK_BEFORE_ABORT and action_kind != "PATCH":
-                logger.warning(
-                    "Agent stuck repeating the same action; aborting loop early",
-                    action=action_kind,
-                    streak=same_action_streak,
-                )
-                break
 
             if action_kind == "DONE":
                 # Don't accept DONE unless something actually changed in the repo.
