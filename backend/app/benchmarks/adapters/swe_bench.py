@@ -737,33 +737,75 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                     timeout_ms=600000,
                 )
 
-            clone_cmd = f"rm -rf /workspace/repo && git clone https://github.com/{repo}.git /workspace/repo"
-            clone_result: Optional[dict[str, Any]] = None
+            # Prefer using the official SWE-Bench Pro Docker image as the source-of-truth repo
+            # instead of cloning from GitHub. This avoids transient GitHub network failures and
+            # guarantees the repo/environment matches the harness.
+            dockerhub_username = "jefzda"
+            dockerhub_tag = (item.get("dockerhub_tag") or "").strip()
+            if dockerhub_tag:
+                image_uri = f"{dockerhub_username}/sweap-images:{dockerhub_tag}"
+            else:
+                image_uri = self._get_dockerhub_image_uri(
+                    item["instance_id"], item.get("repo", ""), dockerhub_username
+                )
+
+            pull_result: Optional[dict[str, Any]] = None
             for attempt in range(1, 4):
-                clone_result = await self.sandy.execute_command(
+                pull_result = await self.sandy.execute_command(
                     sandbox_id,
-                    clone_cmd,
+                    f"docker pull {image_uri}",
                     timeout_ms=900000,
                 )
-                if clone_result.get("exit_code") == 0:
+                if pull_result.get("exit_code") == 0:
                     break
                 if attempt < 3:
-                    await asyncio.sleep(min(5 * attempt, 15))
-            if not clone_result or clone_result.get("exit_code") != 0:
+                    await asyncio.sleep(min(10 * attempt, 30))
+            if not pull_result or pull_result.get("exit_code") != 0:
                 return ItemResult(
                     item_id=item_id,
-                    error=(clone_result or {}).get("stderr") or "Failed to clone repo",
+                    error=(pull_result or {}).get("stderr") or "Failed to pull Docker image",
+                    metadata={"instance_id": instance_id},
+                )
+
+            host_volume = await self._get_host_volume(sandbox_id)
+            if not host_volume:
+                return ItemResult(item_id=item_id, error="Sandy host volume path unavailable")
+
+            # Copy /app from the task image into the sandbox workspace for the agent to modify.
+            # This gives the agent a full git repo without any external network dependency.
+            copy_result = await self.sandy.execute_command(
+                sandbox_id,
+                (
+                    f"docker run --rm -v {host_volume}:/workspace --entrypoint /bin/bash {image_uri} "
+                    f"-lc \"rm -rf /workspace/repo && cp -a /app /workspace/repo\""
+                ),
+                timeout_ms=900000,
+            )
+            if copy_result.get("exit_code") != 0:
+                stderr = (copy_result.get("stderr") or "").strip()
+                stdout = (copy_result.get("stdout") or "").strip()
+                detail = stderr or stdout or "Failed to copy repo from Docker image"
+                if len(detail) > 800:
+                    detail = detail[:800].rstrip() + "…"
+                return ItemResult(
+                    item_id=item_id,
+                    error=detail,
                     metadata={"instance_id": instance_id, "repo": repo},
                 )
 
+            # Ensure the repo is at the expected base commit before the agent begins.
             checkout_result = await self.sandy.execute_command(
                 sandbox_id,
-                f"cd /workspace/repo && git checkout {base_commit}",
+                f"cd /workspace/repo && git reset --hard {base_commit} && git checkout {base_commit}",
             )
             if checkout_result.get("exit_code") != 0:
+                detail = (checkout_result.get("stderr") or checkout_result.get("stdout") or "").strip()
+                detail = detail or "Failed to checkout base commit"
+                if len(detail) > 800:
+                    detail = detail[:800].rstrip() + "…"
                 return ItemResult(
                     item_id=item_id,
-                    error=checkout_result.get("stderr") or "Failed to checkout base commit",
+                    error=detail,
                     metadata={"instance_id": instance_id, "repo": repo},
                 )
 
@@ -827,36 +869,6 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                 self._download_run_script(item["instance_id"], "parser.py"),
             )
             await self.sandy.write_file(sandbox_id, "entryscript.sh", entryscript)
-
-            dockerhub_username = "jefzda"
-            dockerhub_tag = (item.get("dockerhub_tag") or "").strip()
-            if dockerhub_tag:
-                image_uri = f"{dockerhub_username}/sweap-images:{dockerhub_tag}"
-            else:
-                image_uri = self._get_dockerhub_image_uri(
-                    item["instance_id"], item.get("repo", ""), dockerhub_username
-                )
-            pull_result: Optional[dict[str, Any]] = None
-            for attempt in range(1, 4):
-                pull_result = await self.sandy.execute_command(
-                    sandbox_id,
-                    f"docker pull {image_uri}",
-                    timeout_ms=900000,
-                )
-                if pull_result.get("exit_code") == 0:
-                    break
-                if attempt < 3:
-                    await asyncio.sleep(min(10 * attempt, 30))
-            if not pull_result or pull_result.get("exit_code") != 0:
-                return ItemResult(
-                    item_id=item_id,
-                    error=(pull_result or {}).get("stderr") or "Failed to pull Docker image",
-                    metadata={"instance_id": instance_id},
-                )
-
-            host_volume = await self._get_host_volume(sandbox_id)
-            if not host_volume:
-                return ItemResult(item_id=item_id, error="Sandy host volume path unavailable")
 
             run_result = await self.sandy.execute_command(
                 sandbox_id,
