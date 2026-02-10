@@ -28,7 +28,9 @@ _MAX_AGENT_STEPS = 150
 _MAX_AGENT_TOTAL_TOKENS = 1_000_000
 
 # Keep agent/tool I/O bounded so we don't explode context windows.
-_MAX_AGENT_RESPONSE_TOKENS = 2048
+# PATCH actions can be moderately large; keep this high enough that unified diffs fit
+# without getting cut mid-fence, but still bounded to avoid runaway cost.
+_MAX_AGENT_RESPONSE_TOKENS = 4096
 _MAX_TOOL_OUTPUT_CHARS = 12000
 _DEFAULT_FILE_READ_LINES = 200
 _MAX_SEARCH_LINES = 200
@@ -206,7 +208,8 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
         return (
             "You are an autonomous software engineering agent for SWE-Bench Pro.\n"
             "You are operating inside a Linux sandbox with a git repository checked out at /workspace/repo.\n"
-            "You MUST respond with exactly ONE action per turn in the format below and nothing else.\n\n"
+            "You MUST respond with exactly ONE action per turn in the format below and nothing else.\n"
+            "Do NOT repeat the action block. Do NOT add any explanation.\n\n"
             "ACTION: RUN\n"
             "COMMAND: <shell command>\n\n"
             "ACTION: READ\n"
@@ -223,8 +226,10 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             "ACTION: DONE\n\n"
             "Rules:\n"
             "- Use repo-relative paths (no leading '/').\n"
+            "- Do NOT open interactive tools/editors (vim, nano, less, more).\n"
             "- Keep changes minimal and focused.\n"
             "- Prefer small incremental patches.\n"
+            "- For PATCH: the diff MUST be complete and MUST include the closing ``` fence.\n"
             "- If you run tests, run only what is necessary.\n"
         )
 
@@ -258,6 +263,11 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             return 0, 0
 
     def _parse_agent_action(self, text: str) -> dict[str, Any]:
+        # Enforce "exactly one action" to prevent ambiguous multi-block outputs that are
+        # easy for models to produce when truncation happens.
+        action_headers = re.findall(r"^\\s*ACTION:\\s*\\w+\\s*$", text or "", re.IGNORECASE | re.MULTILINE)
+        if len(action_headers) != 1:
+            raise ValueError("Response must contain exactly ONE ACTION block")
         match = re.search(r"^\\s*ACTION:\\s*(\\w+)\\s*$", text or "", re.IGNORECASE | re.MULTILINE)
         if not match:
             raise ValueError("Missing ACTION header")
