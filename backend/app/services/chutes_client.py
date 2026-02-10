@@ -698,10 +698,13 @@ class ChutesClient:
         max_output_length = await self.get_model_max_output_length(model_slug)
         context_length = await self.get_model_context_length(model_slug)
         safe_max_tokens: Optional[int] = None
+        # Only apply the global "min_output_tokens" default when the caller did not
+        # request an explicit max_tokens. Callers (e.g., agent loops) often want a
+        # smaller bounded output; overriding it upward can trigger model limit errors
+        # and waste retries/cost.
         desired_max_tokens = requested_max_tokens
-        if (max_output_length or context_length) and min_output_tokens:
-            if desired_max_tokens is None or desired_max_tokens < min_output_tokens:
-                desired_max_tokens = min_output_tokens
+        if requested_max_tokens is None and (max_output_length or context_length) and min_output_tokens:
+            desired_max_tokens = min_output_tokens
 
         input_tokens = self._estimate_tokens(prompt)
         if system_prompt:
@@ -885,10 +888,13 @@ class ChutesClient:
         max_output_length = await self.get_model_max_output_length(model_slug)
         context_length = await self.get_model_context_length(model_slug)
         safe_max_tokens: Optional[int] = None
+        # Only apply the global "min_output_tokens" default when the caller did not
+        # request an explicit max_tokens. Callers (e.g., agent loops) often want a
+        # smaller bounded output; overriding it upward can trigger model limit errors
+        # and waste retries/cost.
         desired_max_tokens = requested_max_tokens
-        if (max_output_length or context_length) and min_output_tokens:
-            if desired_max_tokens is None or desired_max_tokens < min_output_tokens:
-                desired_max_tokens = min_output_tokens
+        if requested_max_tokens is None and (max_output_length or context_length) and min_output_tokens:
+            desired_max_tokens = min_output_tokens
 
         input_tokens = self._estimate_messages_tokens(messages)
         if context_length and input_tokens >= context_length:
