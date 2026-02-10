@@ -139,12 +139,24 @@ def fetch_runs_total(base_url: str, status: str, timeout: int, logger: logging.L
     return None
 
 
-def run_compose(cmd: list[str], logger: logging.Logger, dry_run: bool, timeout: int) -> bool:
+def run_compose(
+    cmd: list[str],
+    logger: logging.Logger,
+    dry_run: bool,
+    timeout: int,
+    cwd: Optional[str] = None,
+) -> bool:
     logger.info("Compose command: %s", " ".join(cmd))
     if dry_run:
         return True
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+        )
     except subprocess.TimeoutExpired:
         logger.warning("Compose command timed out after %ss", timeout)
         return False
@@ -204,6 +216,7 @@ def scale_base(
     logger: logging.Logger,
     dry_run: bool,
     timeout: int,
+    cwd: Optional[str] = None,
 ) -> bool:
     cmd = [
         *compose_command,
@@ -219,7 +232,7 @@ def scale_base(
         "--scale",
         f"worker={workers}",
     ]
-    return run_compose(cmd, logger, dry_run, timeout)
+    return run_compose(cmd, logger, dry_run, timeout, cwd=cwd)
 
 
 def scale_extra(
@@ -231,6 +244,7 @@ def scale_extra(
     logger: logging.Logger,
     dry_run: bool,
     timeout: int,
+    cwd: Optional[str] = None,
 ) -> bool:
     if workers <= 0:
         cmd = [
@@ -244,7 +258,7 @@ def scale_extra(
             "down",
             "--remove-orphans",
         ]
-        return run_compose(cmd, logger, dry_run, timeout)
+        return run_compose(cmd, logger, dry_run, timeout, cwd=cwd)
 
     cmd = [
         *compose_command,
@@ -260,7 +274,145 @@ def scale_extra(
         "--scale",
         f"worker={workers}",
     ]
-    return run_compose(cmd, logger, dry_run, timeout)
+    return run_compose(cmd, logger, dry_run, timeout, cwd=cwd)
+
+
+def _read_text(path: str) -> Optional[str]:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def _write_text(path: str, content: str) -> bool:
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        return True
+    except Exception:
+        return False
+
+
+def get_git_head(repo_path: str, logger: logging.Logger, timeout: int) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("git rev-parse timed out after %ss", timeout)
+        return None
+    except Exception as exc:
+        logger.warning("Failed to read git HEAD: %s", exc)
+        return None
+
+    if result.returncode != 0:
+        logger.warning("git rev-parse failed: %s", (result.stderr or "").strip())
+        return None
+
+    head = (result.stdout or "").strip()
+    return head or None
+
+
+def maybe_rebuild_and_recreate_workers(
+    repo_path: str,
+    compose_file: str,
+    env_file: str,
+    base_project: str,
+    extra_project: str,
+    current_base: int,
+    current_extra: int,
+    compose_command: list[str],
+    logger: logging.Logger,
+    dry_run: bool,
+    timeout: int,
+) -> bool:
+    """Ensure running workers match the current repo HEAD.
+
+    The autoscaler historically ran `up ... --no-build` which means worker
+    containers can keep running an old image indefinitely after `git pull`.
+    This hook rebuilds the worker image once per git SHA and (optionally)
+    recreates running containers so they pick up the rebuilt image.
+    """
+    if _int_env("AUTO_BUILD_ON_GIT_CHANGE", 1) != 1:
+        return False
+
+    head = get_git_head(repo_path, logger, timeout=timeout)
+    if not head:
+        return False
+
+    state_file = _str_env("AUTO_BUILD_STATE_FILE", os.path.join(repo_path, ".autoscaler_last_built_sha"))
+    last_built = (_read_text(state_file) or "").strip()
+    if last_built == head:
+        return False
+
+    logger.info("Git HEAD update detected (last_built=%s head=%s); building worker image.", last_built or "-", head)
+    build_cmd = [
+        *compose_command,
+        "-f",
+        compose_file,
+        "--env-file",
+        env_file,
+        "build",
+        "worker",
+    ]
+    if not run_compose(build_cmd, logger, dry_run, timeout, cwd=repo_path):
+        logger.warning("Worker image build failed; keeping existing workers.")
+        return False
+
+    if not _write_text(state_file, f"{head}\n"):
+        logger.warning("Failed to write build state file %s; build may repeat on restart.", state_file)
+
+    if _int_env("AUTO_RECREATE_ON_GIT_CHANGE", 1) != 1:
+        return True
+
+    # Recreate existing containers so they pick up the rebuilt image. We keep
+    # the current scale (autoscaler may adjust it later in the same tick).
+    if current_base > 0:
+        recreate_base_cmd = [
+            *compose_command,
+            "-p",
+            base_project,
+            "-f",
+            compose_file,
+            "--env-file",
+            env_file,
+            "up",
+            "-d",
+            "--no-build",
+            "--force-recreate",
+            "--no-deps",
+            "--scale",
+            f"worker={current_base}",
+        ]
+        run_compose(recreate_base_cmd, logger, dry_run, timeout, cwd=repo_path)
+
+    if current_extra > 0:
+        recreate_extra_cmd = [
+            *compose_command,
+            "-p",
+            extra_project,
+            "-f",
+            compose_file,
+            "--env-file",
+            env_file,
+            "up",
+            "-d",
+            "--no-build",
+            "--force-recreate",
+            "--no-deps",
+            "--scale",
+            f"worker={current_extra}",
+        ]
+        run_compose(recreate_extra_cmd, logger, dry_run, timeout, cwd=repo_path)
+
+    return True
 
 
 def compute_target_workers(
@@ -298,6 +450,7 @@ def main() -> int:
     backend_url = _str_env("BACKEND_URL", "https://chutes-bench-runner-api-v2.onrender.com").rstrip("/")
     compose_file = _str_env("COMPOSE_FILE", "/opt/chutes-bench-runner/docker-compose.worker.yml")
     env_file = _str_env("ENV_FILE", "/opt/chutes-bench-runner/.env.worker")
+    repo_path = _str_env("REPO_PATH", os.path.dirname(compose_file) or "/opt/chutes-bench-runner")
     base_max = _int_env("BASE_MAX_WORKERS", 4)
     extra_max = _int_env("EXTRA_MAX_WORKERS", 2)
     max_workers = _int_env("MAX_WORKERS", base_max + extra_max)
@@ -330,6 +483,27 @@ def main() -> int:
     last_target: Optional[int] = None
 
     while True:
+        # Detect code updates and make sure running worker containers actually pick them up.
+        current_base, current_extra = get_worker_counts(
+            base_project,
+            extra_project,
+            logger,
+            timeout=compose_timeout,
+        )
+        maybe_rebuild_and_recreate_workers(
+            repo_path=repo_path,
+            compose_file=compose_file,
+            env_file=env_file,
+            base_project=base_project,
+            extra_project=extra_project,
+            current_base=current_base,
+            current_extra=current_extra,
+            compose_command=compose_command,
+            logger=logger,
+            dry_run=dry_run,
+            timeout=compose_timeout,
+        )
+
         running = fetch_runs_total(backend_url, "running", timeout, logger)
         queued = fetch_runs_total(backend_url, "queued", timeout, logger)
         if running is None or queued is None:
@@ -344,12 +518,7 @@ def main() -> int:
             )
             base_workers = min(base_max, target)
             extra_workers = max(0, target - base_max)
-            current_base, current_extra = get_worker_counts(
-                base_project,
-                extra_project,
-                logger,
-                timeout=compose_timeout,
-            )
+            current_base, current_extra = get_worker_counts(base_project, extra_project, logger, timeout=compose_timeout)
             current_total = current_base + current_extra
             mem_pct, mem_avail = get_memory_stats()
             if mem_pct is not None:
@@ -394,6 +563,7 @@ def main() -> int:
                     logger,
                     dry_run,
                     compose_timeout,
+                    cwd=repo_path,
                 )
                 ok_extra = scale_extra(
                     extra_project,
@@ -404,6 +574,7 @@ def main() -> int:
                     logger,
                     dry_run,
                     compose_timeout,
+                    cwd=repo_path,
                 )
                 if ok_base and ok_extra:
                     last_target = target
