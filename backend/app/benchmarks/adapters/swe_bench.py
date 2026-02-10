@@ -505,8 +505,9 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
         prompt = (
             "You are a software engineer fixing a bug in a GitHub repository. "
             "The repository is cloned at /workspace/repo and checked out to the base commit. "
-            "Make the required code changes in the repo. Do not generate a patch yourself; "
-            "the harness will create the patch after you finish.\n\n"
+            "Make the required code changes in the repo.\n"
+            "Use the PATCH action (a unified diff) to apply your changes.\n"
+            "When the fix is complete, respond with ACTION: DONE.\n\n"
             f"Repository: {repo or 'unknown'}\n"
             f"Base Commit: {base_commit}\n"
             f"Issue Description:\n{item.get('problem_statement')}\n"
