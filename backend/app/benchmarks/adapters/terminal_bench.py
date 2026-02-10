@@ -11,6 +11,7 @@ import yaml
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
 from app.benchmarks.utils import load_dataset_with_retry
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -332,13 +333,24 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     agent_timeout = int((item.get("max_agent_timeout_sec") or 180) * 1000)
                     test_timeout = int((item.get("max_test_timeout_sec") or 300) * 1000)
 
-                    agent_name = "claude-code" if "claude" in self.model_slug.lower() else "codex"
+                    settings = get_settings()
+                    agent_api_base_url = self.client.get_api_base_url()
+                    agent_api_key = self.client.get_api_key() or settings.chutes_api_key
+                    agent_env_vars = {
+                        "OPENAI_API_KEY": agent_api_key,
+                        "OPENAI_BASE_URL": agent_api_base_url,
+                        "OPENAI_API_BASE": agent_api_base_url,
+                    }
+
+                    agent_name = "codex"
                     agent_result = await self.sandy.run_agent(
                         sandbox_id,
                         agent=agent_name,
                         model=self.model_slug,
                         prompt=prompt + f"\nContainer name: {container_name}\n",
                         max_duration=max(60, int(agent_timeout / 1000)),
+                        api_base_url=agent_api_base_url,
+                        env_vars=agent_env_vars,
                     )
                     agent_summary = agent_result.get("summary") or {}
                     agent_events = agent_result.get("events") or []

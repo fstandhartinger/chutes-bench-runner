@@ -336,17 +336,33 @@ class SandyService:
         model: str,
         prompt: str,
         max_duration: int = 600,
+        *,
+        raw_prompt: bool = False,
+        api_base_url: Optional[str] = None,
+        env_vars: Optional[dict[str, str]] = None,
+        system_prompt: Optional[str] = None,
+        system_prompt_path: Optional[str] = None,
     ):
         """Stream agent events from Sandy."""
         if not self.api_key:
             raise RuntimeError("Sandy API key is not configured")
         timeout = httpx.Timeout(None)
-        payload = {
+        payload: dict[str, Any] = {
             "agent": agent,
             "model": model,
             "prompt": prompt,
             "maxDuration": max_duration,
         }
+        if raw_prompt:
+            payload["rawPrompt"] = True
+        if api_base_url:
+            payload["apiBaseUrl"] = api_base_url
+        if env_vars:
+            payload["envVars"] = env_vars
+        if system_prompt:
+            payload["systemPrompt"] = system_prompt
+        if system_prompt_path:
+            payload["systemPromptPath"] = system_prompt_path
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
                 "POST",
@@ -372,6 +388,12 @@ class SandyService:
         model: str,
         prompt: str,
         max_duration: int = 600,
+        *,
+        raw_prompt: bool = False,
+        api_base_url: Optional[str] = None,
+        env_vars: Optional[dict[str, str]] = None,
+        system_prompt: Optional[str] = None,
+        system_prompt_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run an agent in the sandbox and return summary + collected events."""
         events: List[Dict[str, Any]] = []
@@ -382,6 +404,11 @@ class SandyService:
             model=model,
             prompt=prompt,
             max_duration=max_duration,
+            raw_prompt=raw_prompt,
+            api_base_url=api_base_url,
+            env_vars=env_vars,
+            system_prompt=system_prompt,
+            system_prompt_path=system_prompt_path,
         ):
             if isinstance(event, dict):
                 events.append(event)
