@@ -144,7 +144,13 @@ class SWEBenchProAdapter(BenchmarkAdapter):
         return f"{dockerhub_username}/sweap-images:{tag}"
 
     def _create_entryscript(self, sample: dict[str, Any]) -> str:
+        # Align with the official SWE-Bench Pro harness: `before_repo_set_cmd` contains multiple lines,
+        # but only the *final* command (typically `git checkout <sha> -- <test files>`) should run
+        # after applying the model patch. Running the full block would reset/clean the repo again
+        # and wipe the patch we just applied.
         before_repo_set_cmd = sample.get("before_repo_set_cmd", "").strip()
+        if before_repo_set_cmd:
+            before_repo_set_cmd = before_repo_set_cmd.splitlines()[-1].strip()
         try:
             selected = ast.literal_eval(sample.get("selected_test_files_to_run", "[]"))
         except Exception:
