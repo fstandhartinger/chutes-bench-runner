@@ -299,7 +299,9 @@ def _write_text(path: str, content: str) -> bool:
 def get_git_head(repo_path: str, logger: logging.Logger, timeout: int) -> Optional[str]:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            # systemd services sometimes run without HOME set, so global git config
+            # (including safe.directory) may not be loaded. Pin safe.directory per-call.
+            ["git", "-c", f"safe.directory={repo_path}", "rev-parse", "HEAD"],
             cwd=repo_path,
             capture_output=True,
             text=True,
