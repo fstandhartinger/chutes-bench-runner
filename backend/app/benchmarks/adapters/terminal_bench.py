@@ -334,12 +334,9 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     test_timeout = int((item.get("max_test_timeout_sec") or 300) * 1000)
 
                     settings = get_settings()
-                    agent_api_base_url = self.client.get_api_base_url()
                     agent_api_key = self.client.get_api_key() or settings.chutes_api_key
                     agent_env_vars = {
-                        "OPENAI_API_KEY": agent_api_key,
-                        "OPENAI_BASE_URL": agent_api_base_url,
-                        "OPENAI_API_BASE": agent_api_base_url,
+                        "CHUTES_API_KEY": agent_api_key,
                     }
 
                     agent_name = "codex"
@@ -349,7 +346,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                         model=self.model_slug,
                         prompt=prompt + f"\nContainer name: {container_name}\n",
                         max_duration=max(60, int(agent_timeout / 1000)),
-                        api_base_url=agent_api_base_url,
+                        raw_prompt=True,
                         env_vars=agent_env_vars,
                     )
                     agent_summary = agent_result.get("summary") or {}

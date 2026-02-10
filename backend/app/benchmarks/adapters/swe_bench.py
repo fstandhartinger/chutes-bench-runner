@@ -82,6 +82,7 @@ class SWEBenchProAdapter(BenchmarkAdapter):
                         "before_repo_set_cmd": str(item.get("before_repo_set_cmd", "")),
                         "selected_test_files_to_run": str(item.get("selected_test_files_to_run", "")),
                         "base_commit": str(item.get("base_commit", "")),
+                        "dockerhub_tag": str(item.get("dockerhub_tag", "")),
                         "fail_to_pass": str(item.get("fail_to_pass", "")),
                         "pass_to_pass": str(item.get("pass_to_pass", "")),
                     }
@@ -183,16 +184,14 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             return f"{fallback_root}/{sandbox_id}"
         return None
 
-    def _build_agent_env(self) -> tuple[str, dict[str, str]]:
-        """Build OpenAI-compatible env vars for Sandy agent runners."""
-        api_base_url = self.client.get_api_base_url()
+    def _build_agent_env(self) -> dict[str, str]:
+        """Build env vars for Sandy agent runners.
+
+        Sandy's Codex runner expects a `CHUTES_API_KEY` and will route through the
+        Chutes responses proxy by default. Do not override the API base URL here.
+        """
         api_key = self.client.get_api_key() or get_settings().chutes_api_key
-        env_vars = {
-            "OPENAI_API_KEY": api_key,
-            "OPENAI_BASE_URL": api_base_url,
-            "OPENAI_API_BASE": api_base_url,
-        }
-        return api_base_url, env_vars
+        return {"CHUTES_API_KEY": api_key}
 
     async def _ensure_sandbox(self) -> Optional[str]:
         if self._sandbox_id:
@@ -301,14 +300,14 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                     metadata={"instance_id": instance_id, "repo": repo},
                 )
 
-            agent_api_base_url, agent_env_vars = self._build_agent_env()
+            agent_env_vars = self._build_agent_env()
             agent_result = await self.sandy.run_agent(
                 sandbox_id,
                 agent=agent_name,
                 model=self.model_slug,
                 prompt=prompt + "\nWork inside /workspace/repo.",
                 max_duration=1800,
-                api_base_url=agent_api_base_url,
+                raw_prompt=True,
                 env_vars=agent_env_vars,
             )
             agent_summary = agent_result.get("summary") or {}
@@ -371,9 +370,13 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             await self.sandy.write_file(sandbox_id, "entryscript.sh", entryscript)
 
             dockerhub_username = "jefzda"
-            image_uri = self._get_dockerhub_image_uri(
-                item["instance_id"], item.get("repo", ""), dockerhub_username
-            )
+            dockerhub_tag = (item.get("dockerhub_tag") or "").strip()
+            if dockerhub_tag:
+                image_uri = f"{dockerhub_username}/sweap-images:{dockerhub_tag}"
+            else:
+                image_uri = self._get_dockerhub_image_uri(
+                    item["instance_id"], item.get("repo", ""), dockerhub_username
+                )
             pull_result: Optional[dict[str, Any]] = None
             for attempt in range(1, 4):
                 pull_result = await self.sandy.execute_command(
