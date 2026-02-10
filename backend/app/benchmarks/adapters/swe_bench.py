@@ -19,6 +19,8 @@ logger = get_logger(__name__)
 
 SWE_BENCH_REPO = "https://raw.githubusercontent.com/scaleapi/SWE-bench_Pro-os/main"
 
+_DOCKER_RUN_OUTPUT_PREVIEW_CHARS = 4000
+
 
 @register_adapter("swe_bench_pro")
 class SWEBenchProAdapter(BenchmarkAdapter):
@@ -409,6 +411,10 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             stdout_log = await self._read_file(sandbox_id, "/workspace/stdout.log")
             stderr_log = await self._read_file(sandbox_id, "/workspace/stderr.log")
 
+            docker_stdout = run_result.get("stdout") or ""
+            docker_stderr = run_result.get("stderr") or ""
+            docker_combined_lower = (docker_stdout + "\n" + docker_stderr).lower()
+
             passed_tests = set()
             if output and isinstance(output.get("tests"), list):
                 passed_tests = {
@@ -427,9 +433,29 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             is_correct = (f2p | p2p) <= passed_tests
 
             error = None
-            if run_result.get("exit_code") != 0 and not output:
-                # When we can't parse harness output, treat as infra/error.
-                error = run_result.get("stderr") or run_result.get("error")
+            failure_reason = None
+            if not output:
+                # If the harness doesn't produce parseable output, we need to decide whether this is
+                # infra (docker/sandbox) or a model failure (e.g., patch did not apply cleanly).
+                if any(
+                    needle in docker_combined_lower
+                    for needle in (
+                        "patch does not apply",
+                        "error: patch failed",
+                        "patch failed",
+                    )
+                ):
+                    # Model produced an invalid/unapplicable patch.
+                    failure_reason = "Patch failed to apply in harness"
+                    error = None
+                    is_correct = False
+                else:
+                    # Treat missing harness output as infra by default so we don't silently hide
+                    # issues like docker daemon failures or missing evaluation scripts.
+                    failure_reason = "Harness did not produce parseable output"
+                    error = run_result.get("stderr") or run_result.get("error") or "Harness execution failed"
+                    if isinstance(error, str) and len(error) > 800:
+                        error = error[:800].rstrip() + "…"
 
             latency_ms = int((time.time() - start_time) * 1000)
             return ItemResult(
@@ -446,7 +472,10 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                     "stdout": stdout_log,
                     "stderr": stderr_log,
                     "exit_code": run_result.get("exit_code"),
+                    "docker_stdout_preview": docker_stdout[:_DOCKER_RUN_OUTPUT_PREVIEW_CHARS],
+                    "docker_stderr_preview": docker_stderr[:_DOCKER_RUN_OUTPUT_PREVIEW_CHARS],
                     "agent_summary": agent_summary,
+                    "failure_reason": failure_reason,
                 },
                 error=error,
                 metadata={
