@@ -5,6 +5,8 @@ import asyncio
 import ast
 import json
 import os
+import re
+import shlex
 import time
 from typing import Any, AsyncIterator, Optional
 
@@ -20,6 +22,16 @@ logger = get_logger(__name__)
 SWE_BENCH_REPO = "https://raw.githubusercontent.com/scaleapi/SWE-bench_Pro-os/main"
 
 _DOCKER_RUN_OUTPUT_PREVIEW_CHARS = 4000
+
+# SWE-Bench Pro leaderboard constraints (Scale).
+_MAX_AGENT_STEPS = 150
+_MAX_AGENT_TOTAL_TOKENS = 1_000_000
+
+# Keep agent/tool I/O bounded so we don't explode context windows.
+_MAX_AGENT_RESPONSE_TOKENS = 2048
+_MAX_TOOL_OUTPUT_CHARS = 12000
+_DEFAULT_FILE_READ_LINES = 200
+_MAX_SEARCH_LINES = 200
 
 
 @register_adapter("swe_bench_pro")
@@ -184,14 +196,276 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             return f"{fallback_root}/{sandbox_id}"
         return None
 
-    def _build_agent_env(self) -> dict[str, str]:
-        """Build env vars for Sandy agent runners.
+    def _agent_system_prompt(self) -> str:
+        return (
+            "You are an autonomous software engineering agent for SWE-Bench Pro.\n"
+            "You are operating inside a Linux sandbox with a git repository checked out at /workspace/repo.\n"
+            "You MUST respond with exactly ONE action per turn in the format below and nothing else.\n\n"
+            "ACTION: RUN\n"
+            "COMMAND: <shell command>\n\n"
+            "ACTION: READ\n"
+            "PATH: <repo-relative path>\n"
+            "START_LINE: <optional integer>\n"
+            "END_LINE: <optional integer>\n\n"
+            "ACTION: SEARCH\n"
+            "PATTERN: <regex>\n"
+            "PATH: <optional repo-relative path or '.'>\n\n"
+            "ACTION: PATCH\n"
+            "```diff\n"
+            "<unified diff to apply to the repo>\n"
+            "```\n\n"
+            "ACTION: DONE\n\n"
+            "Rules:\n"
+            "- Use repo-relative paths (no leading '/').\n"
+            "- Keep changes minimal and focused.\n"
+            "- Prefer small incremental patches.\n"
+            "- If you run tests, run only what is necessary.\n"
+        )
 
-        Sandy's Codex runner expects a `CHUTES_API_KEY` and will route through the
-        Chutes responses proxy by default. Do not override the API base URL here.
-        """
-        api_key = self.client.get_api_key() or get_settings().chutes_api_key
-        return {"CHUTES_API_KEY": api_key}
+    @staticmethod
+    def _truncate_for_prompt(value: str, limit: int = _MAX_TOOL_OUTPUT_CHARS) -> str:
+        value = value or ""
+        if len(value) <= limit:
+            return value
+        return value[:limit].rstrip() + "…"
+
+    @staticmethod
+    def _usage_tokens(metadata: dict[str, Any]) -> tuple[int, int]:
+        usage = metadata.get("usage") if isinstance(metadata, dict) else None
+        if not isinstance(usage, dict):
+            return 0, 0
+        input_tokens = (
+            usage.get("prompt_tokens")
+            or usage.get("input_tokens")
+            or usage.get("inputTokens")
+            or 0
+        )
+        output_tokens = (
+            usage.get("completion_tokens")
+            or usage.get("output_tokens")
+            or usage.get("outputTokens")
+            or 0
+        )
+        try:
+            return int(input_tokens or 0), int(output_tokens or 0)
+        except Exception:
+            return 0, 0
+
+    def _parse_agent_action(self, text: str) -> dict[str, Any]:
+        match = re.search(r"^\\s*ACTION:\\s*(\\w+)\\s*$", text or "", re.IGNORECASE | re.MULTILINE)
+        if not match:
+            raise ValueError("Missing ACTION header")
+        action = match.group(1).strip().upper()
+
+        if action == "DONE":
+            return {"action": "DONE"}
+
+        if action == "RUN":
+            cmd_match = re.search(r"^\\s*COMMAND:\\s*(.+)$", text, re.IGNORECASE | re.MULTILINE)
+            if not cmd_match:
+                raise ValueError("Missing COMMAND for RUN action")
+            return {"action": "RUN", "command": cmd_match.group(1).strip()}
+
+        if action == "READ":
+            path_match = re.search(r"^\\s*PATH:\\s*(.+)$", text, re.IGNORECASE | re.MULTILINE)
+            if not path_match:
+                raise ValueError("Missing PATH for READ action")
+            path = path_match.group(1).strip().lstrip("/")
+            start_match = re.search(r"^\\s*START_LINE:\\s*(\\d+)\\s*$", text, re.IGNORECASE | re.MULTILINE)
+            end_match = re.search(r"^\\s*END_LINE:\\s*(\\d+)\\s*$", text, re.IGNORECASE | re.MULTILINE)
+            start_line = int(start_match.group(1)) if start_match else 1
+            end_line = int(end_match.group(1)) if end_match else start_line + _DEFAULT_FILE_READ_LINES - 1
+            start_line = max(1, start_line)
+            end_line = max(start_line, end_line)
+            # Clamp to a sane window.
+            if end_line - start_line + 1 > _DEFAULT_FILE_READ_LINES:
+                end_line = start_line + _DEFAULT_FILE_READ_LINES - 1
+            return {"action": "READ", "path": path, "start_line": start_line, "end_line": end_line}
+
+        if action == "SEARCH":
+            pattern_match = re.search(r"^\\s*PATTERN:\\s*(.+)$", text, re.IGNORECASE | re.MULTILINE)
+            if not pattern_match:
+                raise ValueError("Missing PATTERN for SEARCH action")
+            path_match = re.search(r"^\\s*PATH:\\s*(.+)$", text, re.IGNORECASE | re.MULTILINE)
+            scope = (path_match.group(1).strip() if path_match else ".").lstrip("/") or "."
+            return {"action": "SEARCH", "pattern": pattern_match.group(1).strip(), "path": scope}
+
+        if action == "PATCH":
+            diff_match = re.search(r"```diff\\s*(.*?)```", text, re.IGNORECASE | re.DOTALL)
+            if not diff_match:
+                raise ValueError("Missing ```diff fenced block for PATCH action")
+            diff = diff_match.group(1).strip("\n") + "\n"
+            return {"action": "PATCH", "diff": diff}
+
+        raise ValueError(f"Unknown ACTION: {action}")
+
+    async def _exec_repo(self, sandbox_id: str, command: str, *, timeout_ms: int = 300000) -> dict[str, Any]:
+        return await self.sandy.execute_command(
+            sandbox_id,
+            command,
+            cwd="/workspace/repo",
+            timeout_ms=timeout_ms,
+        )
+
+    async def _execute_agent_action(self, sandbox_id: str, action: dict[str, Any]) -> str:
+        kind = action.get("action")
+        if kind == "RUN":
+            res = await self._exec_repo(sandbox_id, str(action.get("command") or ""))
+            stdout = self._truncate_for_prompt(res.get("stdout") or "")
+            stderr = self._truncate_for_prompt(res.get("stderr") or "")
+            return f"OBSERVATION: exit_code={res.get('exit_code')}\\nSTDOUT:\\n{stdout}\\n\\nSTDERR:\\n{stderr}"
+
+        if kind == "READ":
+            path = str(action.get("path") or "").lstrip("/")
+            start_line = int(action.get("start_line") or 1)
+            end_line = int(action.get("end_line") or start_line + _DEFAULT_FILE_READ_LINES - 1)
+            cmd = f"sed -n '{start_line},{end_line}p' {shlex.quote(path)}"
+            res = await self._exec_repo(sandbox_id, cmd)
+            stdout = self._truncate_for_prompt(res.get("stdout") or "")
+            stderr = self._truncate_for_prompt(res.get("stderr") or "")
+            return (
+                f"OBSERVATION: READ {path} lines {start_line}-{end_line} exit_code={res.get('exit_code')}\\n"
+                f"{stdout}\\n\\nSTDERR:\\n{stderr}"
+            )
+
+        if kind == "SEARCH":
+            pattern = str(action.get("pattern") or "")
+            scope = str(action.get("path") or ".").lstrip("/") or "."
+            cmd = (
+                f"rg -n --no-heading --line-number -S {shlex.quote(pattern)} {shlex.quote(scope)} "
+                f"| head -n {_MAX_SEARCH_LINES} || true"
+            )
+            res = await self._exec_repo(sandbox_id, cmd)
+            stdout = self._truncate_for_prompt(res.get("stdout") or "")
+            stderr = self._truncate_for_prompt(res.get("stderr") or "")
+            return (
+                f"OBSERVATION: SEARCH pattern={pattern!r} scope={scope!r} exit_code={res.get('exit_code')}\\n"
+                f"{stdout}\\n\\nSTDERR:\\n{stderr}"
+            )
+
+        if kind == "PATCH":
+            diff = str(action.get("diff") or "")
+            if len(diff) > 200000:
+                return "OBSERVATION: PATCH too large; please send a smaller, focused diff."
+            await self.sandy.write_file(sandbox_id, "agent.patch", diff)
+            check = await self._exec_repo(sandbox_id, "git apply --check /workspace/agent.patch")
+            if check.get("exit_code") != 0:
+                stderr = self._truncate_for_prompt(check.get("stderr") or check.get("stdout") or "")
+                return f"OBSERVATION: PATCH failed pre-check\\n{stderr}"
+            apply_res = await self._exec_repo(sandbox_id, "git apply -v --whitespace=nowarn /workspace/agent.patch")
+            stdout = self._truncate_for_prompt(apply_res.get("stdout") or "")
+            stderr = self._truncate_for_prompt(apply_res.get("stderr") or "")
+            return (
+                f"OBSERVATION: PATCH applied exit_code={apply_res.get('exit_code')}\\nSTDOUT:\\n{stdout}\\n\\nSTDERR:\\n{stderr}"
+            )
+
+        return f"OBSERVATION: Unknown action kind: {kind!r}"
+
+    async def _run_agent_loop(
+        self,
+        sandbox_id: str,
+        *,
+        prompt: str,
+        item: dict[str, Any],
+    ) -> tuple[str, dict[str, Any], int, int]:
+        start = time.monotonic()
+        input_tokens = 0
+        output_tokens = 0
+        trace: list[dict[str, Any]] = []
+
+        status_res = await self._exec_repo(sandbox_id, "git status -sb || true")
+        ls_res = await self._exec_repo(sandbox_id, "ls -la || true")
+        status_txt = self._truncate_for_prompt(status_res.get("stdout") or "")
+        ls_txt = self._truncate_for_prompt(ls_res.get("stdout") or "")
+
+        extra_context = (
+            "\n\nDataset fields (for reference):\n"
+            f"- selected_test_files_to_run: {item.get('selected_test_files_to_run')}\n"
+            f"- fail_to_pass: {item.get('fail_to_pass')}\n"
+            f"- pass_to_pass: {item.get('pass_to_pass')}\n"
+            f"- before_repo_set_cmd: {item.get('before_repo_set_cmd')}\n"
+        )
+
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self._agent_system_prompt()},
+            {
+                "role": "user",
+                "content": (
+                    prompt
+                    + extra_context
+                    + "\n\nInitial repo status:\n"
+                    + status_txt
+                    + "\n\nTop-level listing:\n"
+                    + ls_txt
+                    + f"\n\nConstraints: max_steps={_MAX_AGENT_STEPS}, token_limit={_MAX_AGENT_TOTAL_TOKENS}."
+                    + "\nRespond with an ACTION now."
+                ),
+            },
+        ]
+
+        last_assistant = ""
+        for step in range(1, _MAX_AGENT_STEPS + 1):
+            if (input_tokens + output_tokens) >= _MAX_AGENT_TOTAL_TOKENS:
+                break
+            # Conservative time cap for the agent loop so we still have time to run the harness.
+            if time.monotonic() - start > 1800:
+                break
+
+            assistant_text, meta = await self.client.get_completion_messages(
+                self.model_slug,
+                messages,
+                temperature=0.0,
+                max_tokens=_MAX_AGENT_RESPONSE_TOKENS,
+            )
+            last_assistant = assistant_text
+            in_toks, out_toks = self._usage_tokens(meta)
+            input_tokens += in_toks
+            output_tokens += out_toks
+
+            trace.append(
+                {
+                    "step": step,
+                    "action_raw": self._truncate_for_prompt(assistant_text, 4000),
+                    "usage": meta.get("usage") if isinstance(meta, dict) else None,
+                }
+            )
+
+            messages.append({"role": "assistant", "content": assistant_text})
+
+            try:
+                action = self._parse_agent_action(assistant_text)
+            except Exception as exc:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "OBSERVATION: Invalid action format. "
+                            f"Error: {exc}. "
+                            "Please respond again with a single ACTION in the required format."
+                        ),
+                    }
+                )
+                continue
+
+            if action.get("action") == "DONE":
+                break
+
+            observation = await self._execute_agent_action(sandbox_id, action)
+            observation = (
+                observation
+                + f"\n\nBudget: step={step}/{_MAX_AGENT_STEPS}, "
+                f"tokens_used={input_tokens + output_tokens}/{_MAX_AGENT_TOTAL_TOKENS}."
+            )
+            messages.append({"role": "user", "content": observation})
+
+        meta_out = {
+            "agent_steps": len(trace),
+            "agent_input_tokens": input_tokens,
+            "agent_output_tokens": output_tokens,
+            "agent_trace_tail": trace[-25:],
+            "agent_wall_time_s": round(time.monotonic() - start, 3),
+        }
+        return last_assistant, meta_out, input_tokens, output_tokens
 
     async def _ensure_sandbox(self) -> Optional[str]:
         if self._sandbox_id:
@@ -241,8 +515,10 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
 
         start_time = time.time()
         agent_output = ""
-        agent_summary: dict[str, Any] = {}
-        agent_name = "codex"
+        agent_meta: dict[str, Any] = {}
+        agent_input_tokens = 0
+        agent_output_tokens = 0
+        agent_name = "bench_runner_loop"
 
         try:
             # SWE-Bench requires Docker socket access for running docker pull/run.
@@ -300,21 +576,10 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                     metadata={"instance_id": instance_id, "repo": repo},
                 )
 
-            agent_env_vars = self._build_agent_env()
-            agent_result = await self.sandy.run_agent(
+            agent_output, agent_meta, agent_input_tokens, agent_output_tokens = await self._run_agent_loop(
                 sandbox_id,
-                agent=agent_name,
-                model=self.model_slug,
-                prompt=prompt + "\nWork inside /workspace/repo.",
-                max_duration=1800,
-                raw_prompt=True,
-                env_vars=agent_env_vars,
-            )
-            agent_summary = agent_result.get("summary") or {}
-            agent_events = agent_result.get("events") or []
-            agent_output = next(
-                (event.get("text") for event in reversed(agent_events) if event.get("type") == "output"),
-                "",
+                prompt=prompt,
+                item=item,
             )
 
             # Include untracked/new files (git diff alone will not).
@@ -343,15 +608,18 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                     is_correct=False,
                     score=0.0,
                     latency_ms=latency_ms,
+                    input_tokens=agent_input_tokens,
+                    output_tokens=agent_output_tokens,
                     judge_output={
-                        "agent_summary": agent_summary,
+                        "agent": agent_name,
+                        "agent_meta": agent_meta,
                         "failure_reason": "Agent did not produce a patch",
                     },
                     metadata={
                         "instance_id": instance_id,
                         "repo": repo,
                         "agent": agent_name,
-                        "agent_summary": agent_summary,
+                        "agent_meta": agent_meta,
                     },
                 )
 
@@ -470,6 +738,8 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                 is_correct=is_correct,
                 score=1.0 if is_correct else 0.0,
                 latency_ms=latency_ms,
+                input_tokens=agent_input_tokens,
+                output_tokens=agent_output_tokens,
                 judge_output={
                     "output": output,
                     "stdout": stdout_log,
@@ -477,7 +747,8 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                     "exit_code": run_result.get("exit_code"),
                     "docker_stdout_preview": docker_stdout[:_DOCKER_RUN_OUTPUT_PREVIEW_CHARS],
                     "docker_stderr_preview": docker_stderr[:_DOCKER_RUN_OUTPUT_PREVIEW_CHARS],
-                    "agent_summary": agent_summary,
+                    "agent": agent_name,
+                    "agent_meta": agent_meta,
                     "failure_reason": failure_reason,
                 },
                 error=error,
@@ -485,7 +756,7 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                     "instance_id": instance_id,
                     "repo": repo,
                     "agent": agent_name,
-                    "agent_summary": agent_summary,
+                    "agent_meta": agent_meta,
                 },
             )
 
