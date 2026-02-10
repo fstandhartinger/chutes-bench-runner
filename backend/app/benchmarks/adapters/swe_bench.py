@@ -34,6 +34,8 @@ _MAX_AGENT_RESPONSE_TOKENS = 4096
 _MAX_TOOL_OUTPUT_CHARS = 12000
 _DEFAULT_FILE_READ_LINES = 200
 _MAX_SEARCH_LINES = 200
+_FORCE_PATCH_STEP = 60
+_MAX_REPEAT_STREAK_BEFORE_ABORT = 8
 
 
 @register_adapter("swe_bench_pro")
@@ -405,6 +407,7 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
         last_action_key: Optional[tuple[Any, ...]] = None
         same_action_streak = 0
         nudges_sent: set[int] = set()
+        last_repo_change_step = 0
 
         status_res = await self._exec_repo(sandbox_id, "git status -sb || true")
         ls_res = await self._exec_repo(sandbox_id, "ls -la || true")
@@ -505,18 +508,32 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                 same_action_streak = 0
             last_action_key = current_key
 
-            # Prevent models from burning the full budget repeating the same READ/SEARCH.
-            if action_kind in {"READ", "SEARCH"} and same_action_streak >= 2:
+            # Prevent models from burning the full budget repeating the same action.
+            #
+            # Some models get stuck re-running harmless commands (e.g. `pwd`) when they don't
+            # perceive progress. We treat that as a stall and demand a different action.
+            if action_kind in {"READ", "SEARCH", "RUN"} and same_action_streak >= 2:
                 messages.append(
                     {
                         "role": "user",
                         "content": (
                             "OBSERVATION: You repeated the exact same action multiple times and made no progress. "
-                            "Do something different now (SEARCH, RUN, or PATCH)."
+                            "Do something different now (READ/SEARCH to gather relevant context, then PATCH). "
+                            "Do NOT repeat the same command/action again."
                         ),
                     }
                 )
                 continue
+
+            # If a model keeps repeating itself after warnings, abort the loop early so we still have
+            # time to request a final PATCH attempt and run the harness.
+            if same_action_streak >= _MAX_REPEAT_STREAK_BEFORE_ABORT and action_kind != "PATCH":
+                logger.warning(
+                    "Agent stuck repeating the same action; aborting loop early",
+                    action=action_kind,
+                    streak=same_action_streak,
+                )
+                break
 
             if action_kind == "DONE":
                 # Don't accept DONE unless something actually changed in the repo.
@@ -545,6 +562,7 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                 status = await self._exec_repo(sandbox_id, "git status --porcelain || true")
                 if (status.get("stdout") or "").strip():
                     has_repo_changes = True
+                    last_repo_change_step = step
                     diffstat = await self._exec_repo(sandbox_id, "git diff --stat || true")
                     diffstat_txt = self._truncate_for_prompt(diffstat.get("stdout") or "", 2000)
                     if diffstat_txt.strip():
@@ -557,18 +575,68 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             messages.append({"role": "user", "content": observation})
 
             # Nudge models that haven't made any repo changes for a long time.
-            if not has_repo_changes and step in {30, 60, 90, 120} and step not in nudges_sent:
+            if not has_repo_changes and step in {30, 45, _FORCE_PATCH_STEP, 90, 120} and step not in nudges_sent:
                 nudges_sent.add(step)
+                force_patch = step >= _FORCE_PATCH_STEP and not patch_attempted
                 messages.append(
                     {
                         "role": "user",
                         "content": (
                             "OBSERVATION: You still haven't made any changes to the repo. "
-                            "You must attempt a fix now (PATCH or RUN to edit files). "
-                            "Do not keep reading the same files."
+                            + (
+                                "Your next action MUST be PATCH with a small, focused unified diff. "
+                                "Do not run more exploratory commands."
+                                if force_patch
+                                else "You must attempt a fix now (PATCH preferred; RUN is allowed for edits). "
+                            )
+                            + " Do not keep repeating the same commands."
                         ),
                     }
                 )
+
+        # Final attempt: if we timed out / bailed without any repo changes, try one explicit PATCH request.
+        if not has_repo_changes and not patch_attempted and (input_tokens + output_tokens) < _MAX_AGENT_TOTAL_TOKENS:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "OBSERVATION: Final attempt. You MUST respond with ACTION: PATCH now. "
+                        "Provide a small unified diff that implements a plausible fix for the issue. "
+                        "No more READ/SEARCH/RUN actions."
+                    ),
+                }
+            )
+            assistant_text, meta = await self.client.get_completion_messages(
+                self.model_slug,
+                messages,
+                temperature=0.0,
+                max_tokens=_MAX_AGENT_RESPONSE_TOKENS,
+            )
+            last_assistant = assistant_text
+            in_toks, out_toks = self._usage_tokens(meta)
+            input_tokens += in_toks
+            output_tokens += out_toks
+            trace.append(
+                {
+                    "step": len(trace) + 1,
+                    "action_raw": self._truncate_for_prompt(assistant_text, 4000),
+                    "usage": meta.get("usage") if isinstance(meta, dict) else None,
+                }
+            )
+            messages.append({"role": "assistant", "content": assistant_text})
+            try:
+                action = self._parse_agent_action(assistant_text)
+                if action.get("action") == "PATCH":
+                    observation = await self._execute_agent_action(sandbox_id, action)
+                    patch_attempted = True
+                    status = await self._exec_repo(sandbox_id, "git status --porcelain || true")
+                    if (status.get("stdout") or "").strip():
+                        has_repo_changes = True
+                        last_repo_change_step = len(trace)
+                    messages.append({"role": "user", "content": observation})
+            except Exception:
+                # If the final attempt can't be parsed/applied, let the caller fail with empty patch.
+                pass
 
         meta_out = {
             "agent_steps": len(trace),
@@ -576,6 +644,7 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             "agent_output_tokens": output_tokens,
             "agent_trace_tail": trace[-25:],
             "agent_wall_time_s": round(time.monotonic() - start, 3),
+            "agent_last_repo_change_step": last_repo_change_step or None,
         }
         return last_assistant, meta_out, input_tokens, output_tokens
 
