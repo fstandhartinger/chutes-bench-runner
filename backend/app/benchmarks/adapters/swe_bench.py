@@ -209,7 +209,8 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             "You are an autonomous software engineering agent for SWE-Bench Pro.\n"
             "You are operating inside a Linux sandbox with a git repository checked out at /workspace/repo.\n"
             "You MUST respond with exactly ONE action per turn in the format below and nothing else.\n"
-            "Do NOT repeat the action block. Do NOT add any explanation.\n\n"
+            "Do NOT add any explanation.\n\n"
+            "Available actions (pick exactly one):\n\n"
             "ACTION: RUN\n"
             "COMMAND: <shell command>\n\n"
             "ACTION: READ\n"
@@ -226,11 +227,22 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
             "ACTION: DONE\n\n"
             "Rules:\n"
             "- Use repo-relative paths (no leading '/').\n"
+            "- You may edit files either via ACTION: PATCH or via ACTION: RUN commands that write to files.\n"
             "- Do NOT open interactive tools/editors (vim, nano, less, more).\n"
             "- Keep changes minimal and focused.\n"
+            "- Avoid repeating the exact same action; if something didn't help, choose a different action.\n"
             "- Prefer small incremental patches.\n"
             "- For PATCH: the diff MUST be complete and MUST include the closing ``` fence.\n"
             "- If you run tests, run only what is necessary.\n"
+            "\nExample PATCH:\n"
+            "```diff\n"
+            "diff --git a/path/to/file.py b/path/to/file.py\n"
+            "--- a/path/to/file.py\n"
+            "+++ b/path/to/file.py\n"
+            "@@\n"
+            "-old\n"
+            "+new\n"
+            "```\n"
         )
 
     @staticmethod
@@ -388,6 +400,11 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
         input_tokens = 0
         output_tokens = 0
         trace: list[dict[str, Any]] = []
+        has_repo_changes = False
+        patch_attempted = False
+        last_action_key: Optional[tuple[Any, ...]] = None
+        same_action_streak = 0
+        nudges_sent: set[int] = set()
 
         status_res = await self._exec_repo(sandbox_id, "git status -sb || true")
         ls_res = await self._exec_repo(sandbox_id, "ls -la || true")
@@ -463,16 +480,95 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                 )
                 continue
 
-            if action.get("action") == "DONE":
-                break
+            action_kind = action.get("action")
+
+            def action_key(a: dict[str, Any]) -> tuple[Any, ...]:
+                kind = a.get("action")
+                if kind == "RUN":
+                    return ("RUN", str(a.get("command") or ""))
+                if kind == "READ":
+                    return ("READ", str(a.get("path") or ""), int(a.get("start_line") or 1), int(a.get("end_line") or 1))
+                if kind == "SEARCH":
+                    return ("SEARCH", str(a.get("pattern") or ""), str(a.get("path") or "."))
+                if kind == "PATCH":
+                    # Avoid treating repeated identical patches as "stalls" since users may re-send
+                    # the same diff after a failed pre-check, and it's still useful to attempt.
+                    return ("PATCH",)
+                if kind == "DONE":
+                    return ("DONE",)
+                return ("UNKNOWN", str(kind))
+
+            current_key = action_key(action)
+            if current_key == last_action_key:
+                same_action_streak += 1
+            else:
+                same_action_streak = 0
+            last_action_key = current_key
+
+            # Prevent models from burning the full budget repeating the same READ/SEARCH.
+            if action_kind in {"READ", "SEARCH"} and same_action_streak >= 2:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "OBSERVATION: You repeated the exact same action multiple times and made no progress. "
+                            "Do something different now (SEARCH, RUN, or PATCH)."
+                        ),
+                    }
+                )
+                continue
+
+            if action_kind == "DONE":
+                # Don't accept DONE unless something actually changed in the repo.
+                status = await self._exec_repo(sandbox_id, "git status --porcelain")
+                if (status.get("stdout") or "").strip():
+                    has_repo_changes = True
+                    break
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "OBSERVATION: You responded ACTION: DONE, but the repository has no changes. "
+                            "You must modify the repo (PATCH or RUN) before DONE."
+                        ),
+                    }
+                )
+                continue
 
             observation = await self._execute_agent_action(sandbox_id, action)
+            if action_kind == "PATCH":
+                patch_attempted = True
+
+            # Track whether the agent has actually changed the repo, and give it a compact diffstat
+            # to confirm progress after write-like actions.
+            if action_kind in {"RUN", "PATCH"}:
+                status = await self._exec_repo(sandbox_id, "git status --porcelain || true")
+                if (status.get("stdout") or "").strip():
+                    has_repo_changes = True
+                    diffstat = await self._exec_repo(sandbox_id, "git diff --stat || true")
+                    diffstat_txt = self._truncate_for_prompt(diffstat.get("stdout") or "", 2000)
+                    if diffstat_txt.strip():
+                        observation = observation + f"\n\nREPO_DIFFSTAT:\n{diffstat_txt}"
             observation = (
                 observation
                 + f"\n\nBudget: step={step}/{_MAX_AGENT_STEPS}, "
                 f"tokens_used={input_tokens + output_tokens}/{_MAX_AGENT_TOTAL_TOKENS}."
             )
             messages.append({"role": "user", "content": observation})
+
+            # Nudge models that haven't made any repo changes for a long time.
+            if not has_repo_changes and step in {30, 60, 90, 120} and step not in nudges_sent:
+                nudges_sent.add(step)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "OBSERVATION: You still haven't made any changes to the repo. "
+                            "You must attempt a fix now (PATCH or RUN to edit files). "
+                            "Do not keep reading the same files."
+                        ),
+                    }
+                )
 
         meta_out = {
             "agent_steps": len(trace),
@@ -560,6 +656,14 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                 await self.sandy.execute_command(
                     sandbox_id,
                     "apt-get update && apt-get install -y git",
+                    timeout_ms=600000,
+                )
+            # Ensure ripgrep is available for SEARCH actions.
+            rg_check = await self.sandy.execute_command(sandbox_id, "rg --version")
+            if rg_check.get("exit_code") != 0:
+                await self.sandy.execute_command(
+                    sandbox_id,
+                    "apt-get update && apt-get install -y ripgrep",
                     timeout_ms=600000,
                 )
 
