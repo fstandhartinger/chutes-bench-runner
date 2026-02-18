@@ -192,7 +192,12 @@ pytest -v
 
 cd frontend
 npm test
+npm run test:watch
 npm run test:e2e
+
+# Sandy smoke test (requires a live Sandy host)
+cd ..
+SANDY_BASE_URL="https://<sandy-host>" SANDY_API_KEY="<sandy-key>" ./scripts/sandy_smoke_test.py
 ```
 
 ## Deployment
