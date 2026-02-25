@@ -52,6 +52,7 @@ SCORE_LABELS: dict[str, str] = {
     "aime25": "AIME 2025 (Competition Math)",
     "livecodebench": "LiveCodeBench v6 (Coding)",
     "terminalbench_hard": "Terminal-Bench Hard (Agentic Coding)",
+    "mmlu_pro": "MMLU-Pro (General Knowledge)",
     "tau2": "τ²-Bench Telecom (Tool Use)",
     "gpqa": "GPQA Diamond (Scientific Reasoning)",
     "hle": "Humanity's Last Exam",
