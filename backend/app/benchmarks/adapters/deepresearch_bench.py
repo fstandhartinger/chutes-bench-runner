@@ -441,6 +441,40 @@ class DeepResearchBenchAdapter(BenchmarkAdapter):
             "DEEPRESEARCH_OPTIMIZATION_MODE", "balanced"
         )
 
+    def _resolve_runtime_config(self) -> tuple[str, str, str]:
+        """Resolve endpoint/mode/optimization with optional per-run overrides.
+
+        A worker may attach `run_config` to the adapter (see worker runner).
+        Supported run config structure:
+        {
+          "deepresearch": {
+            "search_api_url": "https://.../api/v1/research",
+            "mode": "light" | "max",
+            "optimization_mode": "speed" | "balanced" | "quality"
+          }
+        }
+        """
+        search_api_url = self._search_api_url
+        search_mode = self._search_mode
+        search_optimization = self._search_optimization
+
+        run_config = getattr(self, "run_config", None)
+        if isinstance(run_config, dict):
+            deep_cfg = run_config.get("deepresearch")
+            if isinstance(deep_cfg, dict):
+                cfg_url = deep_cfg.get("search_api_url")
+                cfg_mode = deep_cfg.get("mode")
+                cfg_opt = deep_cfg.get("optimization_mode")
+
+                if isinstance(cfg_url, str) and cfg_url.strip():
+                    search_api_url = cfg_url.strip()
+                if isinstance(cfg_mode, str) and cfg_mode.strip():
+                    search_mode = cfg_mode.strip()
+                if isinstance(cfg_opt, str) and cfg_opt.strip():
+                    search_optimization = cfg_opt.strip()
+
+        return search_api_url, search_mode, search_optimization
+
     # -- Adapter metadata ----------------------------------------------------
 
     def get_name(self) -> str:
@@ -519,21 +553,22 @@ class DeepResearchBenchAdapter(BenchmarkAdapter):
 
     async def _call_search_api(self, query_text: str) -> tuple[str, dict[str, Any]]:
         """Call search.chutes.ai and return (report_text, metadata)."""
+        search_api_url, search_mode, search_optimization = self._resolve_runtime_config()
         headers = {
             "Authorization": f"Bearer {self._search_api_key}",
             "Content-Type": "application/json",
         }
         payload = {
             "query": query_text,
-            "mode": self._search_mode,
-            "optimizationMode": self._search_optimization,
+            "mode": search_mode,
+            "optimizationMode": search_optimization,
             "stream": False,
         }
 
         timeout = httpx.Timeout(300.0, connect=30.0)
         async with httpx.AsyncClient(timeout=timeout) as http_client:
             response = await http_client.post(
-                self._search_api_url,
+                search_api_url,
                 json=payload,
                 headers=headers,
             )
@@ -543,8 +578,9 @@ class DeepResearchBenchAdapter(BenchmarkAdapter):
         message = data.get("message", "")
         sources = data.get("sources", [])
         meta = {
-            "search_mode": self._search_mode,
-            "search_optimization": self._search_optimization,
+            "search_mode": search_mode,
+            "search_optimization": search_optimization,
+            "search_api_url": search_api_url,
             "sources_count": len(sources) if isinstance(sources, list) else 0,
             "response_length": len(message),
         }
@@ -812,6 +848,12 @@ class DeepResearchBenchAdapter(BenchmarkAdapter):
         for dim, vals in dim_sums.items():
             dim_avgs[f"{dim}_avg"] = sum(vals) / len(vals) if vals else 0.0
 
+        # Canonical dimension keys for compatibility with the official output style.
+        comprehensiveness = dim_avgs.get("comprehensiveness_avg", 0.0)
+        insight = dim_avgs.get("insight_avg", 0.0)
+        instruction_following = dim_avgs.get("instruction_following_avg", 0.0)
+        readability = dim_avgs.get("readability_avg", 0.0)
+
         # Per-topic averages
         topic_scores: dict[str, list[float]] = {}
         for r in successful:
@@ -833,8 +875,20 @@ class DeepResearchBenchAdapter(BenchmarkAdapter):
 
         return {
             "race_score": overall_avg,
+            "overall_score": overall_avg,
             "score_override": overall_avg,
             **dim_avgs,
+            "comprehensiveness": comprehensiveness,
+            "insight": insight,
+            "instruction_following": instruction_following,
+            "readability": readability,
+            "evaluation_summary": {
+                "comprehensiveness": comprehensiveness,
+                "insight": insight,
+                "instruction_following": instruction_following,
+                "readability": readability,
+                "overall_score": overall_avg,
+            },
             "completed": len(successful),
             "errors": len(errors),
             "topic_scores": topic_avgs,

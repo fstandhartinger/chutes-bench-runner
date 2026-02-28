@@ -910,6 +910,10 @@ class BenchmarkWorker:
             )
             return None
 
+        # Allow adapters to consume run-level config overrides.
+        if isinstance(run.config, dict):
+            setattr(adapter, "run_config", run.config)
+
         # Check if setup is required
         if adapter.requires_setup():
             notes = adapter.get_setup_notes()
