@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     maintenance_mode: bool = False
     maintenance_message: str = "Currently under maintenance as a new version is being deployed."
 
+    # Ops dashboard
+    ops_token_stats_cache_seconds: int = 300
+    ops_token_stats_timeout_seconds: float = 2.0
+
     # Admin
     admin_secret: Optional[str] = None
 

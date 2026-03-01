@@ -128,7 +128,7 @@ class BenchmarkItemResult(Base):
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     test_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     item_metadata: Mapped[Optional[dict]] = mapped_column(JSON_TYPE, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     # Relationships
     run_benchmark: Mapped["BenchmarkRunBenchmark"] = relationship(

@@ -328,42 +328,47 @@ export default function OpsPage() {
   const [sandboxStats, setSandboxStats] = useState<SandySandboxStats[]>([]);
 
   const loadOverview = useCallback(async () => {
+    const [overviewResult, metricsResult, resourcesResult] = await Promise.allSettled([
+      getOpsOverview(720),
+      getSandyMetrics(12),
+      getSandyResources(),
+    ]);
+
     let data: OpsOverview | null = null;
-    try {
-      data = await getOpsOverview(720);
+    if (overviewResult.status === "fulfilled") {
+      data = overviewResult.value;
       setOverview(data);
       setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load ops overview");
-    } finally {
-      setLoading(false);
+    } else {
+      const reason = overviewResult.reason;
+      setError(reason instanceof Error ? reason.message : "Failed to load ops overview");
     }
 
-    try {
-      const metrics = await getSandyMetrics(12);
-      setSandyMetrics(metrics);
-    } catch {
+    if (metricsResult.status === "fulfilled") {
+      setSandyMetrics(metricsResult.value);
+    } else {
       setSandyMetrics([]);
     }
 
-    try {
-      const resources = await getSandyResources();
-      setSandyResources(resources);
-    } catch {
+    if (resourcesResult.status === "fulfilled") {
+      setSandyResources(resourcesResult.value);
+    } else {
       setSandyResources(null);
     }
 
-    try {
-      if (data) {
+    if (data) {
+      try {
         const ids = data.workers.map((worker) => worker.worker_id);
         const stats = await getSandySandboxStats(ids);
         setSandboxStats(stats);
-      } else {
+      } catch {
         setSandboxStats([]);
       }
-    } catch {
+    } else {
       setSandboxStats([]);
     }
+
+    setLoading(false);
   }, []);
 
   useEffect(() => {

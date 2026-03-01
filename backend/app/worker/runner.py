@@ -46,6 +46,8 @@ def _is_retryable_item_error(error: Optional[str]) -> bool:
     if not error:
         return False
     message = error.lower()
+    if "currently disabled" in message or ("chute" in message and "disabled" in message):
+        return False
     # Sandy sometimes returns transient 503s while the sandbox cluster is under load.
     # Retry the current item a few times; if it still fails, we abort the benchmark
     # (see _is_fatal_item_error) so we don't burn through the entire item set.
@@ -94,6 +96,8 @@ def _is_fatal_item_error(error: Optional[str]) -> bool:
     if not error:
         return False
     message = error.lower()
+    if "currently disabled" in message or ("chute" in message and "disabled" in message):
+        return True
     if "all upstreams failed to create sandbox" in message:
         return True
     if "sandy api key is not configured" in message:

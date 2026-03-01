@@ -47,6 +47,29 @@ def _float_env(key: str, default: float) -> float:
         return default
 
 
+def _int_from_env_file(path: str, key: str) -> Optional[int]:
+    """Read an integer setting from a dotenv-style file."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                current_key, value = line.split("=", 1)
+                if current_key.strip() != key:
+                    continue
+                value = value.strip().strip("\"'")
+                try:
+                    return int(value)
+                except ValueError:
+                    return None
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+    return None
+
+
 def configure_logging(log_path: str, level: str) -> logging.Logger:
     logger = logging.getLogger("worker_autoscaler")
     logger.setLevel(level.upper())
@@ -457,7 +480,9 @@ def main() -> int:
     extra_max = _int_env("EXTRA_MAX_WORKERS", 2)
     max_workers = _int_env("MAX_WORKERS", base_max + extra_max)
     min_workers = _int_env("MIN_WORKERS", 1)
-    worker_max_concurrent = _int_env("WORKER_MAX_CONCURRENT", 2)
+    worker_max_concurrent = _int_env("WORKER_MAX_CONCURRENT", -1)
+    if worker_max_concurrent <= 0:
+        worker_max_concurrent = _int_from_env_file(env_file, "WORKER_MAX_CONCURRENT") or 2
     poll_seconds = _int_env("SCALE_INTERVAL_SECONDS", 30)
     compose_timeout = _int_env("COMPOSE_TIMEOUT_SECONDS", 120)
     memory_high = _float_env("MEMORY_HIGH_WATERMARK", 85.0)

@@ -13,3 +13,9 @@ def test_sandy_api_key_not_configured_is_fatal_and_not_retryable() -> None:
     error = "Sandy API key is not configured"
     assert _is_fatal_item_error(error) is True
     assert _is_retryable_item_error(error) is False
+
+
+def test_disabled_chute_is_fatal_and_not_retryable() -> None:
+    error = 'HTTP 503 from Chutes: {"detail":"This chute is currently disabled."}'
+    assert _is_fatal_item_error(error) is True
+    assert _is_retryable_item_error(error) is False

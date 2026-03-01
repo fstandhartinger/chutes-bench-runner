@@ -90,6 +90,104 @@ from app.services.artificial_analysis_service import ArtificialAnalysisService, 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api")
 
+_token_stats_cache: dict[str, Any] = {"value": None, "expires_at": None}
+_token_stats_lock = asyncio.Lock()
+
+
+async def _build_token_stats(db: SessionDep) -> TokenUsageStats:
+    """Build token usage windows in a single aggregate query."""
+    now = datetime.utcnow()
+    cutoff_24h = now - timedelta(hours=24)
+    cutoff_7d = now - timedelta(days=7)
+
+    token_result = await db.execute(
+        select(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            BenchmarkItemResult.created_at >= cutoff_24h,
+                            func.coalesce(BenchmarkItemResult.input_tokens, 0),
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("input_24h"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            BenchmarkItemResult.created_at >= cutoff_24h,
+                            func.coalesce(BenchmarkItemResult.output_tokens, 0),
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("output_24h"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            BenchmarkItemResult.created_at >= cutoff_7d,
+                            func.coalesce(BenchmarkItemResult.input_tokens, 0),
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("input_7d"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            BenchmarkItemResult.created_at >= cutoff_7d,
+                            func.coalesce(BenchmarkItemResult.output_tokens, 0),
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("output_7d"),
+        )
+    )
+    input_24h, output_24h, input_7d, output_7d = token_result.one()
+    return TokenUsageStats(
+        last_24h=TokenUsageWindow(
+            window_hours=24,
+            input_tokens=int(input_24h or 0),
+            output_tokens=int(output_24h or 0),
+        ),
+        last_7d=TokenUsageWindow(
+            window_hours=24 * 7,
+            input_tokens=int(input_7d or 0),
+            output_tokens=int(output_7d or 0),
+        ),
+    )
+
+
+async def _get_cached_token_stats(db: SessionDep, settings: Any) -> TokenUsageStats:
+    """Return cached token stats when fresh, otherwise refresh cache."""
+    now = datetime.utcnow()
+    cached = _token_stats_cache.get("value")
+    expires_at = _token_stats_cache.get("expires_at")
+    if isinstance(cached, TokenUsageStats) and isinstance(expires_at, datetime) and expires_at > now:
+        return cached
+
+    async with _token_stats_lock:
+        now = datetime.utcnow()
+        cached = _token_stats_cache.get("value")
+        expires_at = _token_stats_cache.get("expires_at")
+        if isinstance(cached, TokenUsageStats) and isinstance(expires_at, datetime) and expires_at > now:
+            return cached
+
+        token_stats = await _build_token_stats(db)
+        cache_seconds = max(int(settings.ops_token_stats_cache_seconds), 0)
+        _token_stats_cache["value"] = token_stats
+        _token_stats_cache["expires_at"] = now + timedelta(seconds=cache_seconds)
+        return token_stats
+
 
 # Models endpoints
 @router.get("/models", response_model=ModelsListResponse)
@@ -916,25 +1014,18 @@ async def ops_overview(
         .limit(25)
     )
 
-    async def build_token_window(hours: int) -> TokenUsageWindow:
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
-        token_result = await db.execute(
-            select(
-                func.coalesce(func.sum(BenchmarkItemResult.input_tokens), 0),
-                func.coalesce(func.sum(BenchmarkItemResult.output_tokens), 0),
-            ).where(BenchmarkItemResult.created_at >= cutoff)
+    token_stats: Optional[TokenUsageStats] = None
+    try:
+        timeout = max(float(settings.ops_token_stats_timeout_seconds), 0.1)
+        token_stats = await asyncio.wait_for(
+            _get_cached_token_stats(db, settings),
+            timeout=timeout,
         )
-        input_tokens, output_tokens = token_result.one()
-        return TokenUsageWindow(
-            window_hours=hours,
-            input_tokens=int(input_tokens or 0),
-            output_tokens=int(output_tokens or 0),
-        )
-
-    token_stats = TokenUsageStats(
-        last_24h=await build_token_window(24),
-        last_7d=await build_token_window(24 * 7),
-    )
+    except Exception as exc:
+        cached = _token_stats_cache.get("value")
+        if isinstance(cached, TokenUsageStats):
+            token_stats = cached
+        logger.warning("ops_overview_token_stats_unavailable", error=str(exc) or exc.__class__.__name__)
 
     def summarize_run(run: BenchmarkRun) -> RunSummaryResponse:
         benchmarks: Optional[list[str]]
