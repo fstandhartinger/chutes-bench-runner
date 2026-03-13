@@ -48,6 +48,8 @@ def _is_retryable_item_error(error: Optional[str]) -> bool:
     message = error.lower()
     if "currently disabled" in message or ("chute" in message and "disabled" in message):
         return False
+    if "http 402" in message or "zero balance" in message:
+        return False
     # Sandy sometimes returns transient 503s while the sandbox cluster is under load.
     # Retry the current item a few times; if it still fails, we abort the benchmark
     # (see _is_fatal_item_error) so we don't burn through the entire item set.
@@ -107,6 +109,10 @@ def _is_fatal_item_error(error: Optional[str]) -> bool:
             return False
         return True
     if "http 401" in message or "http 403" in message:
+        return True
+    # HTTP 402 = zero balance / payment required — model creator has no credits.
+    # Retrying is pointless; fail fast so worker capacity is freed for other runs.
+    if "http 402" in message or "zero balance" in message:
         return True
     if "unauthorized" in message or "forbidden" in message:
         return True
