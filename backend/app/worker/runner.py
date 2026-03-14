@@ -729,45 +729,93 @@ class BenchmarkWorker:
                         await asyncio.gather(task, return_exceptions=True)
                     self.current_run_ids.discard(run.id)
                     self.last_progress_at.pop(run.id, None)
-                logger.warning(
-                    "Requeuing stale run",
-                    run_id=run.id,
-                    updated_at=run.updated_at,
-                )
-                await db.execute(
-                    update(BenchmarkRunBenchmark)
-                    .where(BenchmarkRunBenchmark.run_id == run.id)
-                    .where(
-                        BenchmarkRunBenchmark.status.in_(
-                            [BenchmarkRunStatus.RUNNING.value]
+                retry_count = getattr(run, "retry_count", 0) or 0
+                max_retries = getattr(run, "max_retries", 3) or 3
+                new_retry = retry_count + 1
+
+                if new_retry > max_retries:
+                    # Exhausted retries — fail permanently instead of infinite requeue loop
+                    logger.error(
+                        "Failing stale run (retries exhausted)",
+                        run_id=run.id,
+                        retry_count=retry_count,
+                        max_retries=max_retries,
+                    )
+                    await db.execute(
+                        update(BenchmarkRunBenchmark)
+                        .where(BenchmarkRunBenchmark.run_id == run.id)
+                        .where(
+                            BenchmarkRunBenchmark.status.in_(
+                                [BenchmarkRunStatus.RUNNING.value, BenchmarkRunStatus.PENDING.value]
+                            )
+                        )
+                        .values(
+                            status=BenchmarkRunStatus.FAILED.value,
+                            error_message="Run stalled and retries exhausted",
+                            completed_at=now,
+                            updated_at=now,
                         )
                     )
-                    .values(
-                        status=BenchmarkRunStatus.PENDING.value,
-                        error_message=None,
-                        started_at=None,
-                        completed_at=None,
-                        updated_at=now,
+                    await db.execute(
+                        update(BenchmarkRun)
+                        .where(BenchmarkRun.id == run.id)
+                        .values(
+                            status=RunStatus.FAILED.value,
+                            error_message=f"All benchmarks failed (stale requeue retries exhausted: {retry_count}/{max_retries})",
+                            completed_at=now,
+                            updated_at=now,
+                        )
                     )
-                )
-                await db.execute(
-                    update(BenchmarkRun)
-                    .where(BenchmarkRun.id == run.id)
-                    .values(
-                        status=RunStatus.QUEUED.value,
-                        error_message=None,
-                        started_at=None,
-                        completed_at=None,
-                        updated_at=now,
+                    await db.commit()
+                    await add_run_event(
+                        db,
+                        run.id,
+                        "run_failed",
+                        message=f"Run failed: stale requeue retries exhausted ({retry_count}/{max_retries})",
                     )
-                )
-                await db.commit()
-                await add_run_event(
-                    db,
-                    run.id,
-                    "run_requeued",
-                    message="Run requeued after worker restart or stall detected",
-                )
+                else:
+                    logger.warning(
+                        "Requeuing stale run",
+                        run_id=run.id,
+                        updated_at=run.updated_at,
+                        retry=new_retry,
+                        max_retries=max_retries,
+                    )
+                    await db.execute(
+                        update(BenchmarkRunBenchmark)
+                        .where(BenchmarkRunBenchmark.run_id == run.id)
+                        .where(
+                            BenchmarkRunBenchmark.status.in_(
+                                [BenchmarkRunStatus.RUNNING.value]
+                            )
+                        )
+                        .values(
+                            status=BenchmarkRunStatus.PENDING.value,
+                            error_message=None,
+                            started_at=None,
+                            completed_at=None,
+                            updated_at=now,
+                        )
+                    )
+                    await db.execute(
+                        update(BenchmarkRun)
+                        .where(BenchmarkRun.id == run.id)
+                        .values(
+                            status=RunStatus.QUEUED.value,
+                            retry_count=new_retry,
+                            error_message=None,
+                            started_at=None,
+                            completed_at=None,
+                            updated_at=now,
+                        )
+                    )
+                    await db.commit()
+                    await add_run_event(
+                        db,
+                        run.id,
+                        "run_requeued",
+                        message=f"Stale run requeued (attempt {new_retry}/{max_retries})",
+                    )
 
     async def execute_run(self, db: AsyncSession, run: BenchmarkRun) -> None:
         """Execute all benchmarks in a run."""
