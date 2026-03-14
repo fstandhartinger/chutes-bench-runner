@@ -730,6 +730,48 @@ async def requeue_benchmark_run(
     return CancelRunResponse(success=True, message="Run requeued")
 
 
+@router.post("/admin/runs/requeue-retryable")
+async def requeue_retryable_failed_runs(
+    db: SessionDep,
+    _: AdminDep,
+):
+    """Bulk-requeue all failed runs that have retryable errors (admin only).
+
+    Skips runs whose errors indicate permanent failures (model not found,
+    invalid token, zero balance, etc.).
+    """
+    from app.models.run import BenchmarkRun, RunStatus
+
+    result = await db.execute(
+        select(BenchmarkRun).where(BenchmarkRun.status == RunStatus.FAILED.value)
+    )
+    failed_runs = result.scalars().all()
+
+    requeued = 0
+    skipped_fatal = 0
+    for run in failed_runs:
+        error = run.error_message or ""
+        error_lower = error.lower()
+        # Skip permanent/fatal errors
+        is_fatal = any(kw in error_lower for kw in [
+            "model not found", "no such model", "http 401", "http 402",
+            "http 403", "invalid token", "zero balance", "unauthorized",
+            "forbidden", "disabled", "invalid api key",
+        ])
+        if is_fatal:
+            skipped_fatal += 1
+            continue
+        success = await requeue_run(db, run.id)
+        if success:
+            requeued += 1
+
+    return {
+        "requeued": requeued,
+        "skipped_fatal": skipped_fatal,
+        "total_failed": len(failed_runs),
+    }
+
+
 @router.get("/runs/{run_id}/benchmarks/{benchmark_name}", response_model=RunBenchmarkDetailsResponse)
 async def get_run_benchmark_details(
     db: SessionDep,

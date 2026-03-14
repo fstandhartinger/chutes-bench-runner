@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
@@ -119,6 +119,37 @@ def _is_fatal_item_error(error: Optional[str]) -> bool:
     if "invalid api key" in message or "invalid api-key" in message:
         return True
     return False
+
+
+def _is_run_retryable(error: Optional[str]) -> bool:
+    """Determine whether a failed *run* should be auto-retried.
+
+    Returns True for transient infrastructure errors (sandbox failures,
+    service unavailability, timeouts).  Returns False for permanent errors
+    (model not found, auth failures, zero balance) where retrying is futile.
+    """
+    if not error:
+        return True  # no error detail → assume transient
+    message = error.lower()
+    # --- Permanent / fatal errors — never retry ---
+    if "model not found" in message or "no such model" in message:
+        return False
+    if "http 401" in message or "http 403" in message:
+        return False
+    if "http 402" in message or "zero balance" in message:
+        return False
+    if "unauthorized" in message or "forbidden" in message:
+        return False
+    if "invalid api key" in message or "invalid api-key" in message:
+        return False
+    if "invalid token" in message:
+        return False
+    if "currently disabled" in message or ("chute" in message and "disabled" in message):
+        return False
+    if "sandy api key is not configured" in message:
+        return False
+    # --- Everything else is considered transient → retry ---
+    return True
 
 
 def _apply_error_score_defaults(result: ItemResult) -> ItemResult:
@@ -834,18 +865,96 @@ class BenchmarkWorker:
 
         # Compute overall score
         if completed_benchmarks == 0 and failed_benchmarks > 0:
+            # Collect all benchmark error messages to decide retryability
+            all_errors: list[str] = []
+            async with self._db_session() as db:
+                result = await db.execute(
+                    select(BenchmarkRunBenchmark).where(BenchmarkRunBenchmark.run_id == run.id)
+                )
+                for rb_row in result.scalars():
+                    if rb_row.error_message:
+                        all_errors.append(rb_row.error_message)
+            combined_error = " | ".join(all_errors) if all_errors else "All benchmarks failed"
+
+            # Auto-retry: requeue if failure is transient and retries remain
+            retry_count = getattr(run, "retry_count", 0) or 0
+            max_retries = getattr(run, "max_retries", 3) or 3
+            if retry_count < max_retries and _is_run_retryable(combined_error):
+                new_retry = retry_count + 1
+                # Exponential backoff delay: 30s, 60s, 120s
+                backoff = min(30 * (2 ** retry_count), 300)
+                logger.warning(
+                    "Auto-retrying failed run",
+                    run_id=run.id,
+                    retry=new_retry,
+                    max_retries=max_retries,
+                    backoff_seconds=backoff,
+                    error=combined_error[:200],
+                )
+                await self._safe_add_run_event(
+                    run.id,
+                    "run_auto_retry",
+                    message=f"Auto-retrying (attempt {new_retry}/{max_retries}) after {backoff}s backoff",
+                    data={
+                        "retry_count": new_retry,
+                        "max_retries": max_retries,
+                        "backoff_seconds": backoff,
+                        "error": combined_error[:500],
+                    },
+                )
+                await asyncio.sleep(backoff)
+                # Reset run and benchmark statuses to QUEUED/PENDING
+                async with self._db_session() as db:
+                    await db.execute(
+                        update(BenchmarkRun)
+                        .where(BenchmarkRun.id == run.id)
+                        .values(
+                            status=RunStatus.QUEUED.value,
+                            retry_count=new_retry,
+                            error_message=None,
+                            started_at=None,
+                            completed_at=None,
+                        )
+                    )
+                    await db.execute(
+                        update(BenchmarkRunBenchmark)
+                        .where(BenchmarkRunBenchmark.run_id == run.id)
+                        .values(
+                            status=BenchmarkRunStatus.PENDING.value,
+                            error_message=None,
+                            score=None,
+                            metrics=None,
+                            completed_items=0,
+                            started_at=None,
+                            completed_at=None,
+                        )
+                    )
+                    # Delete item results from the failed attempt so they don't
+                    # pollute the retry.
+                    sub = select(BenchmarkRunBenchmark.id).where(
+                        BenchmarkRunBenchmark.run_id == run.id
+                    )
+                    await db.execute(
+                        delete(BenchmarkItemResult).where(
+                            BenchmarkItemResult.run_benchmark_id.in_(sub)
+                        )
+                    )
+                    await db.commit()
+                logger.info("Run requeued for retry", run_id=run.id, retry=new_retry)
+                return
+
             await self._safe_update_run_status(
                 run.id,
                 RunStatus.FAILED,
-                error_message="All benchmarks failed",
+                error_message=combined_error[:2000],
             )
             await self._safe_add_run_event(
                 run.id,
                 "run_failed",
-                message="Run failed: all benchmarks failed",
-                data={"failed_benchmarks": failed_benchmarks},
+                message=f"Run failed: all benchmarks failed (retries exhausted: {retry_count}/{max_retries})",
+                data={"failed_benchmarks": failed_benchmarks, "retry_count": retry_count},
             )
-            logger.error("Run failed", run_id=run.id, failed=failed_benchmarks)
+            logger.error("Run failed", run_id=run.id, failed=failed_benchmarks, retries_exhausted=retry_count)
             return
 
         overall_score = total_score / completed_benchmarks if completed_benchmarks > 0 else None
