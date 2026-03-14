@@ -37,7 +37,7 @@ CHUTES_CLIENT_SECRET=<IDP client secret>
 CHUTES_IDP_URL=https://auth.chutes.ai
 FRONTEND_URL=https://chutes-bench-runner-ui.onrender.com
 ADMIN_SECRET=<secret for admin endpoints>
-SANDY_BASE_URL=https://sandy.example.com
+SANDY_BASE_URL=http://88.99.58.39:7331
 SANDY_API_KEY=<sandy-api-key>
 SANDY_DOCKER_UPSTREAM=docker-primary
 BENCH_SIGNING_PRIVATE_KEY=<base64 or PEM Ed25519 private key>
@@ -48,6 +48,8 @@ CRITPT_API_KEY=<optional CritPt API key>
 AA_OMNISCIENCE_JUDGE_MODEL=<optional override>
 GDPVAL_JUDGE_MODEL=<optional override>
 ```
+
+**Full Render env vars**: Stored locally in `.env` (gitignored). This file contains the actual values for all Render environment variables including secrets.
 
 **API Key Location**: System-wide `$CHUTES_API_KEY` environment variable. Use `echo $CHUTES_API_KEY` to access.
 
