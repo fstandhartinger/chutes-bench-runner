@@ -714,22 +714,6 @@ async def cancel_benchmark_run(
     return CancelRunResponse(success=True, message="Run canceled")
 
 
-@router.post("/admin/runs/{run_id}/requeue", response_model=CancelRunResponse)
-async def requeue_benchmark_run(
-    db: SessionDep,
-    run_id: str,
-    _: AdminDep,
-):
-    """Requeue a failed or canceled benchmark run (admin only)."""
-    success = await requeue_run(db, run_id)
-    if not success:
-        raise HTTPException(
-            status_code=400,
-            detail="Run cannot be requeued (must be failed or canceled)",
-        )
-    return CancelRunResponse(success=True, message="Run requeued")
-
-
 @router.post("/admin/runs/requeue-retryable")
 async def requeue_retryable_failed_runs(
     db: SessionDep,
@@ -752,7 +736,10 @@ async def requeue_retryable_failed_runs(
     for run in failed_runs:
         error = run.error_message or ""
         error_lower = error.lower()
-        # Skip permanent/fatal errors
+        # Also check benchmark-level errors
+        for b in run.benchmarks:
+            if b.error_message:
+                error_lower += " " + b.error_message.lower()
         is_fatal = any(kw in error_lower for kw in [
             "model not found", "no such model", "http 401", "http 402",
             "http 403", "invalid token", "zero balance", "unauthorized",
@@ -770,6 +757,22 @@ async def requeue_retryable_failed_runs(
         "skipped_fatal": skipped_fatal,
         "total_failed": len(failed_runs),
     }
+
+
+@router.post("/admin/runs/{run_id}/requeue", response_model=CancelRunResponse)
+async def requeue_benchmark_run(
+    db: SessionDep,
+    run_id: str,
+    _: AdminDep,
+):
+    """Requeue a failed or canceled benchmark run (admin only)."""
+    success = await requeue_run(db, run_id)
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail="Run cannot be requeued (must be failed or canceled)",
+        )
+    return CancelRunResponse(success=True, message="Run requeued")
 
 
 @router.get("/runs/{run_id}/benchmarks/{benchmark_name}", response_model=RunBenchmarkDetailsResponse)
