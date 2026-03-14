@@ -196,16 +196,7 @@ Benchmark workers run on a dedicated Sandy host (internal) to avoid Render OOMs 
 
 **Notes**:
 - Use `app.worker.runner` (no health server) to avoid port conflicts.
-- On the current worker host (64 GB RAM), the safe range is ~8–12 workers; monitor memory + load with `docker stats` before scaling beyond that.
-- Keep existing services intact (Sandy + microvm + task containers).
-
-**Scaling beyond the base pool (extra project)**:
-If you need more workers than the base pool, launch an extra compose project. Use `docker-compose` on the old Sandy host.
-```bash
-cd /opt/chutes-bench-runner
-docker-compose -p chutes-bench-runner-extra -f docker-compose.worker.yml --env-file .env.worker up -d --scale worker=2 --no-build
-```
-This creates `chutes-bench-runner-extra-worker-*` containers without name conflicts.
+- On the dedicated bench-runner-sandy server (256 GB RAM, 12 cores), the autoscaler manages up to 36 workers. Monitor memory + load with `docker stats` before scaling beyond that.
 
 ### Dedicated Sandy Server (bench-runner-sandy)
 
@@ -214,17 +205,15 @@ Bench-runner sandboxes run on a dedicated Sandy instance:
 - **SSH**: `ssh -i ~/.ssh/hetzner-new-server root@88.99.58.39`
 - **Specs**: Intel Xeon E5-1650V3, 256GB DDR4 ECC RAM, 2x 4TB HDD (RAID-1), 12 cores, Ubuntu 24.04 LTS
 - **Sandy port**: 7331
-- **Max sandboxes**: 150
+- **Max sandboxes**: 200
 - **MCP server_id**: `bench_runner_sandy`
 - **Cost**: ~69 EUR/month
 
 This server is exclusively for chutes-bench-runner. Do NOT deploy general Sandy changes here. Update only after testing on production Sandy first.
 
-### Autoscaler (Hetzner Sandy)
+### Autoscaler (bench-runner-sandy)
 
-Both Sandy hosts can run bench workers. Keep limits host-specific and conservative:
-- `new_sandy` (125 GiB RAM): primary throughput host.
-- `old_sandy` (64 GiB RAM): overflow host, capped to avoid starving shared Sandy services.
+All bench-runner workers and the autoscaler run on the dedicated bench-runner-sandy server (88.99.58.39). Workers use `SANDY_BASE_URL=http://localhost:7331` since Sandy and workers are co-located on the same machine. new_sandy and old_sandy no longer run any bench-runner workers, autoscaler, or queue monitor.
 
 The autoscaler scales from **running + queued** backlog (not queued-only), so it avoids
 killing active workers while long runs are in flight.
@@ -254,10 +243,7 @@ tail -n 200 /var/log/chutes-bench-runner-autoscaler.log
 - `CPU_HIGH_WATERMARK` – freeze scale-up when host 1-minute load is too high.
 - `LOG_PATH`
 
-Recommended `old_sandy` profile:
-- `MIN_WORKERS=1`, `MAX_WORKERS=4`, `EXTRA_MAX_WORKERS=0`
-- `.env.worker`: `WORKER_MAX_CONCURRENT=1`, `WORKER_ITEM_CONCURRENCY=2`
-- Worker container limits: `WORKER_CONTAINER_MEM_LIMIT=8g`, `WORKER_CONTAINER_CPU_LIMIT=2.0`
+All bench-runner components (workers, autoscaler, queue monitor) now run on bench-runner-sandy (88.99.58.39). The old_sandy and new_sandy profiles are no longer used for bench-runner.
 
 ### Priority workers (internal API-key runs)
 

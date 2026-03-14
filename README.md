@@ -1,6 +1,6 @@
 # Chutes Bench Runner
 
-> **PRODUCTION SERVICE**: This is a revenue-generating product. It uses a **dedicated Sandy server** at `88.99.58.39` (bench\_runner\_sandy, port 7331, 256GB RAM, 12 cores, max 150 sandboxes) exclusively for bench-runner sandboxes. Do NOT deploy general Sandy changes to this server. Changes to Sandy on shared servers have repeatedly broken bench-runner throughput (see incident 2026-03-13). The queue health monitor (`bench-queue-monitor.service`) on new\_sandy sends Telegram alerts if the queue backs up.
+> **PRODUCTION SERVICE**: This is a revenue-generating product. ALL bench-runner components are consolidated on a **dedicated server** at `88.99.58.39` (bench\_runner\_sandy): Sandy sandbox service (port 7331, 256GB RAM, 12 cores, max 200 sandboxes), 36 autoscaled workers (`SANDY_BASE_URL=http://localhost:7331`), the autoscaler systemd service, and the queue health monitor (Telegram alerts). Do NOT deploy general Sandy changes to this server. new\_sandy and old\_sandy no longer run any bench-runner workers, autoscaler, or queue monitor.
 
 Chutes Bench Runner is a web app + API for running reproducible benchmark suites against
 models hosted on Chutes. It provides a modern UI, API-triggered runs, detailed per-item
@@ -113,8 +113,7 @@ frontend (Next.js)
             -> Sandy sandbox (code/CLI benchmarks)
 ```
 
-Production note: benchmark workers run on a dedicated Sandy host (internal) for stability and cost. The Render worker service stays disabled.
-Operations note: worker autoscaling is guarded by memory, disk, and CPU high/emergency thresholds; keep `old_sandy` on conservative caps and use `new_sandy` for burst throughput.
+Production note: all bench-runner components (workers, autoscaler, queue monitor, Sandy sandbox service) are consolidated on the dedicated bench-runner-sandy server (88.99.58.39). Workers use `SANDY_BASE_URL=http://localhost:7331` since they are co-located with Sandy. The Render worker service stays disabled. new_sandy and old_sandy run Sandy for other apps only.
 
 ## Local development
 
