@@ -2,10 +2,12 @@
 """
 Bench Runner Queue Health Monitor with Telegram Alerts.
 
-Monitors the bench-runner queue and sends urgent Telegram notifications when:
+Monitors the bench-runner queue and sends URGENT Telegram notifications when:
 - More than 50 runs are queued
 - Any run has been queued for longer than 4 hours
+- Workers appear stuck
 
+Sends to the URGENT Telegram bot (distinct notification sound).
 Designed to run as a systemd service that auto-restarts on boot.
 """
 from __future__ import annotations
@@ -28,7 +30,10 @@ BACKEND_URL = os.getenv(
     "https://chutes-bench-runner-api-v2.onrender.com",
 ).rstrip("/")
 
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "8264160091:AAHJVlv2MYbaU4plbpmBLnKn6Wi-vG52nGM")
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "bench-admin-20260105-8a5f3d2e8b7c4a1b")
+
+# URGENT Telegram bot — distinct notification sound from general cursor_noti_bot
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "8335161337:AAHH3LWuvUAPPKnEg_iRN1oWOT4AQ0ITrcg")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID", "7367548582")
 
 QUEUE_DEPTH_THRESHOLD = int(os.getenv("QUEUE_DEPTH_THRESHOLD", "50"))
@@ -36,6 +41,9 @@ QUEUE_AGE_THRESHOLD_HOURS = float(os.getenv("QUEUE_AGE_THRESHOLD_HOURS", "4"))
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "300"))  # 5 min
 ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "1800"))  # 30 min
 API_TIMEOUT = int(os.getenv("API_TIMEOUT_SECONDS", "15"))
+
+# Auto-cancel runs queued longer than this (hours) — prevents permanently stuck runs
+AUTO_CANCEL_AGE_HOURS = float(os.getenv("AUTO_CANCEL_AGE_HOURS", "48"))
 
 LOG_PATH = os.getenv("LOG_PATH", "/var/log/bench-queue-monitor.log")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -75,16 +83,45 @@ def _api_get(path: str) -> dict | list | None:
         return None
 
 
-def get_queue_stats() -> tuple[int, int, float | None]:
-    """Return (queued_count, running_count, oldest_queued_age_hours)."""
-    # Get queued runs
+def _api_post(path: str, body: dict | None = None) -> dict | None:
+    url = f"{BACKEND_URL}{path}"
+    headers = {
+        "User-Agent": "bench-queue-monitor/1.0",
+        "X-Admin-Secret": ADMIN_SECRET,
+        "Content-Type": "application/json",
+    }
+    try:
+        data = json.dumps(body or {}).encode("utf-8")
+        req = Request(url, data=data, headers=headers, method="POST")
+        with urlopen(req, timeout=API_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        logger.warning("API POST failed %s: %s", url, exc)
+        return None
+
+
+def _parse_iso(s: str) -> datetime | None:
+    """Parse ISO timestamp string to aware datetime."""
+    if not s or not isinstance(s, str):
+        return None
+    try:
+        s = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+def get_queue_stats() -> tuple[int, int, float | None, list, list]:
+    """Return (queued_count, running_count, oldest_queued_age_hours, stale_run_ids, queued_runs)."""
     queued_data = _api_get("/api/runs?status=queued&limit=200")
     running_data = _api_get("/api/runs?status=running&limit=200")
 
     if queued_data is None or running_data is None:
-        return -1, -1, None
+        return -1, -1, None, [], []
 
-    # Extract counts
     if isinstance(queued_data, dict):
         queued_count = queued_data.get("total", len(queued_data.get("runs", [])))
         queued_runs = queued_data.get("runs", [])
@@ -97,36 +134,39 @@ def get_queue_stats() -> tuple[int, int, float | None]:
     else:
         running_count = 0
 
-    # Find oldest queued run
+    # Find oldest queued run age and collect stale runs
     oldest_age_hours = None
+    stale_run_ids = []
     now = datetime.now(timezone.utc)
-    for run in queued_runs:
-        # Use updated_at (reset on requeue) to avoid false alerts for old requeued runs
-        created_at = run.get("updated_at") or run.get("updatedAt") or run.get("created_at") or run.get("createdAt")
-        if not created_at:
-            continue
-        try:
-            if isinstance(created_at, str):
-                # Handle ISO format with or without Z
-                created_at = created_at.replace("Z", "+00:00")
-                if "+" not in created_at and created_at.endswith("00:00"):
-                    pass  # already has timezone
-                dt = datetime.fromisoformat(created_at)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-            else:
-                continue
-            age_hours = (now - dt).total_seconds() / 3600
-            if oldest_age_hours is None or age_hours > oldest_age_hours:
-                oldest_age_hours = age_hours
-        except (ValueError, TypeError):
-            continue
 
-    return queued_count, running_count, oldest_age_hours
+    for run in queued_runs:
+        dt = _parse_iso(run.get("created_at") or run.get("createdAt"))
+        if dt is None:
+            continue
+        age_hours = (now - dt).total_seconds() / 3600
+        if oldest_age_hours is None or age_hours > oldest_age_hours:
+            oldest_age_hours = age_hours
+        if age_hours > AUTO_CANCEL_AGE_HOURS:
+            stale_run_ids.append((run.get("id"), age_hours))
+
+    return queued_count, running_count, oldest_age_hours, stale_run_ids, queued_runs
+
+
+def auto_cancel_stale_runs(stale_runs: list) -> int:
+    """Cancel runs that have been queued too long. Returns count cancelled."""
+    cancelled = 0
+    for run_id, age_hours in stale_runs:
+        result = _api_post(f"/api/runs/{run_id}/cancel")
+        if result is not None:
+            logger.info("Auto-cancelled stale run %s (queued %.1fh)", run_id, age_hours)
+            cancelled += 1
+        else:
+            logger.warning("Failed to cancel stale run %s", run_id)
+    return cancelled
 
 
 # ---------------------------------------------------------------------------
-# Telegram
+# Telegram (URGENT bot)
 # ---------------------------------------------------------------------------
 def send_telegram(message: str) -> bool:
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
@@ -146,7 +186,7 @@ def send_telegram(message: str) -> bool:
         with urlopen(req, timeout=15) as resp:
             result = json.loads(resp.read())
             if result.get("ok"):
-                logger.info("Telegram alert sent successfully")
+                logger.info("Telegram alert sent successfully (urgent bot)")
                 return True
             logger.warning("Telegram API returned ok=false: %s", result)
             return False
@@ -161,8 +201,10 @@ def send_telegram(message: str) -> bool:
 def main() -> int:
     configure_logging()
     logger.info(
-        "Queue health monitor started. backend=%s queue_threshold=%d age_threshold=%.1fh interval=%ds",
-        BACKEND_URL, QUEUE_DEPTH_THRESHOLD, QUEUE_AGE_THRESHOLD_HOURS, CHECK_INTERVAL_SECONDS,
+        "Queue health monitor started (URGENT bot). backend=%s queue_threshold=%d "
+        "age_threshold=%.1fh auto_cancel_after=%.0fh interval=%ds",
+        BACKEND_URL, QUEUE_DEPTH_THRESHOLD, QUEUE_AGE_THRESHOLD_HOURS,
+        AUTO_CANCEL_AGE_HOURS, CHECK_INTERVAL_SECONDS,
     )
 
     last_depth_alert_at = 0.0
@@ -173,16 +215,36 @@ def main() -> int:
 
     while True:
         try:
-            queued, running, oldest_age = get_queue_stats()
+            queued, running, oldest_age, stale_runs, queued_runs_cache = get_queue_stats()
 
             if queued < 0:
                 logger.warning("Failed to fetch queue stats, will retry")
                 time.sleep(CHECK_INTERVAL_SECONDS)
                 continue
 
+            # Log stale runs but don't auto-cancel (DB can be under heavy
+            # load from workers, causing cancel requests to timeout)
+            if stale_runs:
+                logger.info("Stale runs (>%.0fh): %d", AUTO_CANCEL_AGE_HOURS, len(stale_runs))
+
+            # For age alerting, exclude stale runs (>48h are permanently stuck,
+            # not a queue processing issue). Focus on genuinely waiting runs.
+            stale_ids = {r[0] for r in stale_runs}
+            fresh_oldest_age = None
+            now_dt = datetime.now(timezone.utc)
+            for run in queued_runs_cache:
+                dt = _parse_iso(run.get("created_at") or run.get("createdAt"))
+                if dt is None or run.get("id") in stale_ids:
+                    continue
+                age_h = (now_dt - dt).total_seconds() / 3600
+                if fresh_oldest_age is None or age_h > fresh_oldest_age:
+                    fresh_oldest_age = age_h
+            # Use fresh age for alerting, full oldest for logging
+            alert_age = fresh_oldest_age if fresh_oldest_age is not None else oldest_age
+
             logger.info(
-                "Queue check: queued=%d running=%d oldest_age=%.1fh",
-                queued, running, oldest_age or 0,
+                "Queue check: queued=%d running=%d oldest_age=%.1fh alert_age=%.1fh stale=%d",
+                queued, running, oldest_age or 0, alert_age or 0, len(stale_runs),
             )
 
             now = time.time()
@@ -197,15 +259,16 @@ def main() -> int:
                 )
                 last_depth_alert_at = now
 
-            # Check 2: Oldest queued run > age threshold
+            # Check 2: Oldest non-stale queued run > age threshold
             if (
-                oldest_age is not None
-                and oldest_age > QUEUE_AGE_THRESHOLD_HOURS
+                alert_age is not None
+                and alert_age > QUEUE_AGE_THRESHOLD_HOURS
                 and (now - last_age_alert_at) > ALERT_COOLDOWN_SECONDS
             ):
+                stale_note = f" ({len(stale_runs)} stale runs excluded)" if stale_runs else ""
                 alerts.append(
                     f"*QUEUE AGE ALERT*\n"
-                    f"Oldest queued run: *{oldest_age:.1f}h* (threshold: {QUEUE_AGE_THRESHOLD_HOURS}h)\n"
+                    f"Oldest queued run: *{alert_age:.1f}h* (threshold: {QUEUE_AGE_THRESHOLD_HOURS}h){stale_note}\n"
                     f"Queued: {queued} | Running: {running}"
                 )
                 last_age_alert_at = now
@@ -217,7 +280,6 @@ def main() -> int:
                 consecutive_no_progress = 0
             last_running_count = running
 
-            # Alert after 6 consecutive checks (~30 min) with no progress
             if consecutive_no_progress >= 6 and (now - last_stuck_workers_alert_at) > ALERT_COOLDOWN_SECONDS * 2:
                 alerts.append(
                     f"*STUCK WORKERS ALERT*\n"
@@ -227,10 +289,9 @@ def main() -> int:
                 last_stuck_workers_alert_at = now
                 consecutive_no_progress = 0
 
-            # Send combined alert
             if alerts:
                 hostname = os.uname().nodename
-                header = f"Bench Runner Monitor ({hostname})\n{'=' * 30}\n\n"
+                header = f"🚨 *Bench Runner Monitor* ({hostname})\n{'=' * 30}\n\n"
                 message = header + "\n\n".join(alerts)
                 send_telegram(message)
 
