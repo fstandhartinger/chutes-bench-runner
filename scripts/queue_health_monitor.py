@@ -101,7 +101,8 @@ def get_queue_stats() -> tuple[int, int, float | None]:
     oldest_age_hours = None
     now = datetime.now(timezone.utc)
     for run in queued_runs:
-        created_at = run.get("created_at") or run.get("createdAt")
+        # Use updated_at (reset on requeue) to avoid false alerts for old requeued runs
+        created_at = run.get("updated_at") or run.get("updatedAt") or run.get("created_at") or run.get("createdAt")
         if not created_at:
             continue
         try:
