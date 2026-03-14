@@ -1,0 +1,26 @@
+[
+  {
+    "case": "fixed_light_balanced",
+    "comprehensiveness": 0.2816453250545809,
+    "insight": 0.3263778659418671,
+    "instruction_following": 0.2842148231530938,
+    "readability": 0.40308200136816785,
+    "overall_score": 0.32998748243829257,
+    "elapsed_seconds": 4335.549072027206,
+    "sampled_items": 10,
+    "raw_results_file": "results/race/20260302_round6_reliability_fix_quick10/fixed_light_balanced/raw_results.jsonl",
+    "summary_file": "results/race/20260302_round6_reliability_fix_quick10/fixed_light_balanced/summary.json"
+  },
+  {
+    "case": "fixed_max_quality",
+    "comprehensiveness": 0.3328042471720944,
+    "insight": 0.39911427966747554,
+    "instruction_following": 0.3267427065034089,
+    "readability": 0.4421838327809297,
+    "overall_score": 0.3799158824722976,
+    "elapsed_seconds": 3806.7999749183655,
+    "sampled_items": 10,
+    "raw_results_file": "results/race/20260302_round6_reliability_fix_quick10/fixed_max_quality/raw_results.jsonl",
+    "summary_file": "results/race/20260302_round6_reliability_fix_quick10/fixed_max_quality/summary.json"
+  }
+]

@@ -51,7 +51,7 @@ GDPVAL_JUDGE_MODEL=<optional override>
 
 **API Key Location**: System-wide `$CHUTES_API_KEY` environment variable. Use `echo $CHUTES_API_KEY` to access.
 
-**Sandy host**: Production sandboxes use a dedicated Sandy server (internal).
+**Sandy host**: Bench-runner uses a **dedicated Sandy server** at `88.99.58.39` (bench\_runner\_sandy, port 7331). This server is exclusively for chutes-bench-runner and must not be shared with other Sandy workloads. Set `SANDY_BASE_URL=http://88.99.58.39:7331`.
 
 If `/api/ops/sandy/resources` returns 502, the Sandy controller/worker stack likely crashed on the Sandy host:
 ```
@@ -205,14 +205,27 @@ docker-compose -p chutes-bench-runner-extra -f docker-compose.worker.yml --env-f
 ```
 This creates `chutes-bench-runner-extra-worker-*` containers without name conflicts.
 
+### Dedicated Sandy Server (bench-runner-sandy)
+
+Bench-runner sandboxes run on a dedicated Sandy instance:
+- **IP**: 88.99.58.39
+- **SSH**: `ssh -i ~/.ssh/hetzner-new-server root@88.99.58.39`
+- **Specs**: Intel Xeon E5-1650V3, 256GB DDR4 ECC RAM, 2x 4TB HDD (RAID-1), 12 cores, Ubuntu 24.04 LTS
+- **Sandy port**: 7331
+- **Max sandboxes**: 150
+- **MCP server_id**: `bench_runner_sandy`
+- **Cost**: ~69 EUR/month
+
+This server is exclusively for chutes-bench-runner. Do NOT deploy general Sandy changes here. Update only after testing on production Sandy first.
+
 ### Autoscaler (Hetzner Sandy)
 
-The autoscaler runs on the **old Sandy host** and adjusts worker counts based on the
-current queue size. The current deployment scales the base pool up to 4 workers
-and the extra pool up to 6 workers (10 total). Increase only after checking RAM.
+Both Sandy hosts can run bench workers. Keep limits host-specific and conservative:
+- `new_sandy` (125 GiB RAM): primary throughput host.
+- `old_sandy` (64 GiB RAM): overflow host, capped to avoid starving shared Sandy services.
 
-**Note:** The autoscaler will use `docker-compose` on the old host (no `docker compose`
-subcommand). On the new host it should remain disabled.
+The autoscaler scales from **running + queued** backlog (not queued-only), so it avoids
+killing active workers while long runs are in flight.
 
 **Install:**
 ```bash
@@ -234,7 +247,15 @@ tail -n 200 /var/log/chutes-bench-runner-autoscaler.log
 - `MEMORY_HIGH_WATERMARK` (default `85`) – freeze scale-up above this %.
 - `MEMORY_EMERGENCY_WATERMARK` (default `92`) – scale down when above this %.
 - `MEMORY_SCALE_DOWN_STEP` (default `2`) – workers to drop per emergency tick.
+- `DISK_CHECK_PATH` (default `/`) – filesystem used for disk pressure checks.
+- `DISK_HIGH_WATERMARK` / `DISK_EMERGENCY_WATERMARK` – freeze scale-up / force scale-down on disk pressure.
+- `CPU_HIGH_WATERMARK` – freeze scale-up when host 1-minute load is too high.
 - `LOG_PATH`
+
+Recommended `old_sandy` profile:
+- `MIN_WORKERS=1`, `MAX_WORKERS=4`, `EXTRA_MAX_WORKERS=0`
+- `.env.worker`: `WORKER_MAX_CONCURRENT=1`, `WORKER_ITEM_CONCURRENCY=2`
+- Worker container limits: `WORKER_CONTAINER_MEM_LIMIT=8g`, `WORKER_CONTAINER_CPU_LIMIT=2.0`
 
 ### Priority workers (internal API-key runs)
 

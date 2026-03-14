@@ -1,0 +1,44 @@
+{
+  "case": {
+    "name": "fixed_light_balanced",
+    "search_api_url": "https://search.chutes.ai/api/v1/research",
+    "mode": "light",
+    "optimization_mode": "balanced"
+  },
+  "judge_model": "moonshotai/Kimi-K2.5-TEE",
+  "total_items": 50,
+  "sampled_items": 10,
+  "elapsed_seconds": 3485.7128286361694,
+  "metrics": {
+    "race_score": 0.3259214806659264,
+    "overall_score": 0.3259214806659264,
+    "score_override": 0.3259214806659264,
+    "comprehensiveness_avg": 0.2784105814090348,
+    "insight_avg": 0.3165208321754932,
+    "instruction_following_avg": 0.289335954164735,
+    "readability_avg": 0.39709262426971853,
+    "comprehensiveness": 0.2784105814090348,
+    "insight": 0.3165208321754932,
+    "instruction_following": 0.289335954164735,
+    "readability": 0.39709262426971853,
+    "evaluation_summary": {
+      "comprehensiveness": 0.2784105814090348,
+      "insight": 0.3165208321754932,
+      "instruction_following": 0.289335954164735,
+      "readability": 0.39709262426971853,
+      "overall_score": 0.3259214806659264
+    },
+    "completed": 8,
+    "errors": 2,
+    "topic_scores": {
+      "Science & Technology": 0.3289692226663774,
+      "Finance & Business": 0.2886968525995134,
+      "Crime & Law": 0.4148785105711581,
+      "Literature": 0.18846769887880402,
+      "Fashion & Beauty": 0.40524520948359855,
+      "Transportation": 0.36344827586206896
+    },
+    "avg_search_latency_ms": 89557.625
+  },
+  "raw_results_file": "results/race/20260302_round5_quick10_recency_diversity/fixed_light_balanced/raw_results.jsonl"
+}

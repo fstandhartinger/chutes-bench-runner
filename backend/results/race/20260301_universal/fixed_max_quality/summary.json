@@ -1,0 +1,60 @@
+{
+  "case": {
+    "name": "fixed_max_quality",
+    "search_api_url": "https://search.chutes.ai/api/v1/research",
+    "mode": "max",
+    "optimization_mode": "quality"
+  },
+  "judge_model": "moonshotai/Kimi-K2.5-TEE",
+  "total_items": 50,
+  "sampled_items": 50,
+  "elapsed_seconds": 6985.998507261276,
+  "metrics": {
+    "race_score": 0.4037799793167124,
+    "overall_score": 0.4037799793167124,
+    "score_override": 0.4037799793167124,
+    "comprehensiveness_avg": 0.3671714906901093,
+    "insight_avg": 0.4048934532710116,
+    "instruction_following_avg": 0.3966733713594046,
+    "readability_avg": 0.4379620762629776,
+    "comprehensiveness": 0.3671714906901093,
+    "insight": 0.4048934532710116,
+    "instruction_following": 0.3966733713594046,
+    "readability": 0.4379620762629776,
+    "evaluation_summary": {
+      "comprehensiveness": 0.3671714906901093,
+      "insight": 0.4048934532710116,
+      "instruction_following": 0.3966733713594046,
+      "readability": 0.4379620762629776,
+      "overall_score": 0.4037799793167124
+    },
+    "completed": 47,
+    "errors": 3,
+    "topic_scores": {
+      "Finance & Business": 0.4181155686995612,
+      "Science & Technology": 0.43152184936009863,
+      "Software Development": 0.36864977228754714,
+      "Education & Jobs": 0.43117872458108447,
+      "Health": 0.35807695094957037,
+      "Literature": 0.4015462690998973,
+      "History": 0.44608312897712565,
+      "Hardware": 0.2661654135338346,
+      "Industrial": 0.3676496116802394,
+      "Art & Design": 0.4090142402518324,
+      "Games": 0.4015902942864169,
+      "Entertainment": 0.31772998373395983,
+      "Crime & Law": 0.42005178831526135,
+      "Software": 0.44099776143268304,
+      "Sports & Fitness": 0.4220243444163058,
+      "Religion": 0.4248424115080006,
+      "Transportation": 0.4327342256214149,
+      "Home & Hobbies": 0.4320422261895521,
+      "Food & Dining": 0.4346325778370324,
+      "Travel": 0.4298548167161306,
+      "Fashion & Beauty": 0.4552380952380952,
+      "Social Life": 0.4370981823954282
+    },
+    "avg_search_latency_ms": 150244.085106383
+  },
+  "raw_results_file": "results/race/20260301_universal/fixed_max_quality/raw_results.jsonl"
+}

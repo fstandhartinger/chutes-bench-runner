@@ -1,5 +1,7 @@
 # Chutes Bench Runner
 
+> **PRODUCTION SERVICE**: This is a revenue-generating product. It uses a **dedicated Sandy server** at `88.99.58.39` (bench\_runner\_sandy, port 7331, 256GB RAM, 12 cores, max 150 sandboxes) exclusively for bench-runner sandboxes. Do NOT deploy general Sandy changes to this server. Changes to Sandy on shared servers have repeatedly broken bench-runner throughput (see incident 2026-03-13). The queue health monitor (`bench-queue-monitor.service`) on new\_sandy sends Telegram alerts if the queue backs up.
+
 Chutes Bench Runner is a web app + API for running reproducible benchmark suites against
 models hosted on Chutes. It provides a modern UI, API-triggered runs, detailed per-item
 results, and verifiable signed exports for sharing results.
@@ -112,6 +114,7 @@ frontend (Next.js)
 ```
 
 Production note: benchmark workers run on a dedicated Sandy host (internal) for stability and cost. The Render worker service stays disabled.
+Operations note: worker autoscaling is guarded by memory, disk, and CPU high/emergency thresholds; keep `old_sandy` on conservative caps and use `new_sandy` for burst throughput.
 
 ## Local development
 

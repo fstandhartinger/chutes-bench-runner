@@ -1,0 +1,59 @@
+{
+  "case": {
+    "name": "fixed_max_quality",
+    "search_api_url": "https://search.chutes.ai/api/v1/research",
+    "mode": "max",
+    "optimization_mode": "quality"
+  },
+  "judge_model": "moonshotai/Kimi-K2.5-TEE",
+  "total_items": 50,
+  "sampled_items": 50,
+  "elapsed_seconds": 8097.538755893707,
+  "metrics": {
+    "race_score": 0.4074981918115934,
+    "overall_score": 0.4074981918115934,
+    "score_override": 0.4074981918115934,
+    "comprehensiveness_avg": 0.3692092889549776,
+    "insight_avg": 0.41038688751657915,
+    "instruction_following_avg": 0.4004497090793103,
+    "readability_avg": 0.44131390206142723,
+    "comprehensiveness": 0.3692092889549776,
+    "insight": 0.41038688751657915,
+    "instruction_following": 0.4004497090793103,
+    "readability": 0.44131390206142723,
+    "evaluation_summary": {
+      "comprehensiveness": 0.3692092889549776,
+      "insight": 0.41038688751657915,
+      "instruction_following": 0.4004497090793103,
+      "readability": 0.44131390206142723,
+      "overall_score": 0.4074981918115934
+    },
+    "completed": 49,
+    "errors": 1,
+    "topic_scores": {
+      "Finance & Business": 0.4094382480155502,
+      "Science & Technology": 0.41945910954349813,
+      "Software Development": 0.3959483780882466,
+      "Education & Jobs": 0.4324231358854184,
+      "Health": 0.3852749327062692,
+      "Literature": 0.4234958301790579,
+      "History": 0.4252399909644946,
+      "Hardware": 0.27085869649200106,
+      "Industrial": 0.38419820621759204,
+      "Art & Design": 0.4221573958857071,
+      "Games": 0.41043450169601037,
+      "Crime & Law": 0.41767131979695427,
+      "Entertainment": 0.3390527882342642,
+      "Software": 0.4158596602635339,
+      "Transportation": 0.453456561922366,
+      "Home & Hobbies": 0.43964663772751505,
+      "Travel": 0.443922305764411,
+      "Religion": 0.45588008035852257,
+      "Food & Dining": 0.3860031887219938,
+      "Fashion & Beauty": 0.4290312691600245,
+      "Social Life": 0.45227806837995604
+    },
+    "avg_search_latency_ms": 154124.20408163266
+  },
+  "raw_results_file": "results/race/20260301_improved/fixed_max_quality/raw_results.jsonl"
+}

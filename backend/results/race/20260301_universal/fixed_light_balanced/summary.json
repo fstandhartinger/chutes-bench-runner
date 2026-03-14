@@ -1,0 +1,59 @@
+{
+  "case": {
+    "name": "fixed_light_balanced",
+    "search_api_url": "https://search.chutes.ai/api/v1/research",
+    "mode": "light",
+    "optimization_mode": "balanced"
+  },
+  "judge_model": "moonshotai/Kimi-K2.5-TEE",
+  "total_items": 50,
+  "sampled_items": 50,
+  "elapsed_seconds": 6728.35638999939,
+  "metrics": {
+    "race_score": 0.38303484438485563,
+    "overall_score": 0.38303484438485563,
+    "score_override": 0.38303484438485563,
+    "comprehensiveness_avg": 0.3399793234472713,
+    "insight_avg": 0.3760848147033208,
+    "instruction_following_avg": 0.37832550185760566,
+    "readability_avg": 0.4271253289783388,
+    "comprehensiveness": 0.3399793234472713,
+    "insight": 0.3760848147033208,
+    "instruction_following": 0.37832550185760566,
+    "readability": 0.4271253289783388,
+    "evaluation_summary": {
+      "comprehensiveness": 0.3399793234472713,
+      "insight": 0.3760848147033208,
+      "instruction_following": 0.37832550185760566,
+      "readability": 0.4271253289783388,
+      "overall_score": 0.38303484438485563
+    },
+    "completed": 46,
+    "errors": 4,
+    "topic_scores": {
+      "Finance & Business": 0.39619320545345926,
+      "Science & Technology": 0.4009879088610995,
+      "Software Development": 0.37144021030771307,
+      "Education & Jobs": 0.38661741791828363,
+      "Health": 0.3625642337124515,
+      "Literature": 0.38386645696262534,
+      "History": 0.35894723588195676,
+      "Hardware": 0.29723528621043205,
+      "Industrial": 0.3585128293796057,
+      "Art & Design": 0.3731123152276556,
+      "Games": 0.2806274660764123,
+      "Sports & Fitness": 0.42964294085475424,
+      "Software": 0.40660508460720995,
+      "Crime & Law": 0.38623687664041995,
+      "Home & Hobbies": 0.4116022099447514,
+      "Religion": 0.4736923076923077,
+      "Transportation": 0.40505075513741023,
+      "Travel": 0.34259954921111946,
+      "Fashion & Beauty": 0.4284271844660194,
+      "Social Life": 0.4121669980119284,
+      "Food & Dining": 0.41937049923132935
+    },
+    "avg_search_latency_ms": 149350.52173913043
+  },
+  "raw_results_file": "results/race/20260301_universal/fixed_light_balanced/raw_results.jsonl"
+}

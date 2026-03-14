@@ -1,0 +1,47 @@
+{
+  "case": {
+    "name": "fixed_light_balanced",
+    "search_api_url": "https://search.chutes.ai/api/v1/research",
+    "mode": "light",
+    "optimization_mode": "balanced"
+  },
+  "judge_model": "moonshotai/Kimi-K2.5-TEE",
+  "total_items": 50,
+  "sampled_items": 20,
+  "elapsed_seconds": 2969.9064841270447,
+  "metrics": {
+    "race_score": 0.3521242580355396,
+    "overall_score": 0.3521242580355396,
+    "score_override": 0.3521242580355396,
+    "comprehensiveness_avg": 0.29824980501126236,
+    "insight_avg": 0.3430373345711,
+    "instruction_following_avg": 0.3271326613579581,
+    "readability_avg": 0.41943768779870994,
+    "comprehensiveness": 0.29824980501126236,
+    "insight": 0.3430373345711,
+    "instruction_following": 0.3271326613579581,
+    "readability": 0.41943768779870994,
+    "evaluation_summary": {
+      "comprehensiveness": 0.29824980501126236,
+      "insight": 0.3430373345711,
+      "instruction_following": 0.3271326613579581,
+      "readability": 0.41943768779870994,
+      "overall_score": 0.3521242580355396
+    },
+    "completed": 15,
+    "errors": 5,
+    "topic_scores": {
+      "Food & Dining": 0.37023454157782515,
+      "Finance & Business": 0.36371304687083567,
+      "Home & Hobbies": 0.35214042629410713,
+      "Science & Technology": 0.3528565661425246,
+      "Education & Jobs": 0.3342646077688648,
+      "Hardware": 0.358695652173913,
+      "Health": 0.31000400288574803,
+      "Software Development": 0.35871867278503355,
+      "Art & Design": 0.39297203662459784
+    },
+    "avg_search_latency_ms": 146927.73333333334
+  },
+  "raw_results_file": "results/race/20260302_general_improve_quick20/fixed_light_balanced/raw_results.jsonl"
+}

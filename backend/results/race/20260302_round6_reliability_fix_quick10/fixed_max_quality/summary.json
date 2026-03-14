@@ -1,0 +1,44 @@
+{
+  "case": {
+    "name": "fixed_max_quality",
+    "search_api_url": "https://search.chutes.ai/api/v1/research",
+    "mode": "max",
+    "optimization_mode": "quality"
+  },
+  "judge_model": "moonshotai/Kimi-K2.5-TEE",
+  "total_items": 50,
+  "sampled_items": 10,
+  "elapsed_seconds": 3806.7999749183655,
+  "metrics": {
+    "race_score": 0.3799158824722976,
+    "overall_score": 0.3799158824722976,
+    "score_override": 0.3799158824722976,
+    "comprehensiveness_avg": 0.3328042471720944,
+    "insight_avg": 0.39911427966747554,
+    "instruction_following_avg": 0.3267427065034089,
+    "readability_avg": 0.4421838327809297,
+    "comprehensiveness": 0.3328042471720944,
+    "insight": 0.39911427966747554,
+    "instruction_following": 0.3267427065034089,
+    "readability": 0.4421838327809297,
+    "evaluation_summary": {
+      "comprehensiveness": 0.3328042471720944,
+      "insight": 0.39911427966747554,
+      "instruction_following": 0.3267427065034089,
+      "readability": 0.4421838327809297,
+      "overall_score": 0.3799158824722976
+    },
+    "completed": 9,
+    "errors": 1,
+    "topic_scores": {
+      "Finance & Business": 0.3828339405896644,
+      "Hardware": 0.37636945895836843,
+      "Science & Technology": 0.31228585413607435,
+      "Literature": 0.4019431743958197,
+      "Art & Design": 0.44232130219391363,
+      "Software Development": 0.35498739020784414
+    },
+    "avg_search_latency_ms": 153706.66666666666
+  },
+  "raw_results_file": "results/race/20260302_round6_reliability_fix_quick10/fixed_max_quality/raw_results.jsonl"
+}

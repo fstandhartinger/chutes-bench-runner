@@ -1,0 +1,26 @@
+[
+  {
+    "case": "fixed_light_balanced",
+    "comprehensiveness": 0.3002664305767808,
+    "insight": 0.3476673314230683,
+    "instruction_following": 0.3011278644166521,
+    "readability": 0.41366143293754043,
+    "overall_score": 0.3461545238741403,
+    "elapsed_seconds": 3967.78808093071,
+    "sampled_items": 10,
+    "raw_results_file": "results/race/20260302_round8_mode_timeout_quick10/fixed_light_balanced/raw_results.jsonl",
+    "summary_file": "results/race/20260302_round8_mode_timeout_quick10/fixed_light_balanced/summary.json"
+  },
+  {
+    "case": "fixed_max_quality",
+    "comprehensiveness": 0.3693788430952229,
+    "insight": 0.41723980006164263,
+    "instruction_following": 0.3760879677897782,
+    "readability": 0.4502472564221341,
+    "overall_score": 0.40588775002656324,
+    "elapsed_seconds": 4043.1786029338837,
+    "sampled_items": 10,
+    "raw_results_file": "results/race/20260302_round8_mode_timeout_quick10/fixed_max_quality/raw_results.jsonl",
+    "summary_file": "results/race/20260302_round8_mode_timeout_quick10/fixed_max_quality/summary.json"
+  }
+]

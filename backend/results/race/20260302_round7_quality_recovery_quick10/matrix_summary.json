@@ -1,0 +1,26 @@
+[
+  {
+    "case": "fixed_light_balanced",
+    "comprehensiveness": 0.25605546216364367,
+    "insight": 0.3120534296625747,
+    "instruction_following": 0.27296693934783023,
+    "readability": 0.40231182548077254,
+    "overall_score": 0.3178034873675545,
+    "elapsed_seconds": 4021.7241423130035,
+    "sampled_items": 10,
+    "raw_results_file": "results/race/20260302_round7_quality_recovery_quick10/fixed_light_balanced/raw_results.jsonl",
+    "summary_file": "results/race/20260302_round7_quality_recovery_quick10/fixed_light_balanced/summary.json"
+  },
+  {
+    "case": "fixed_max_quality",
+    "comprehensiveness": 0.35605128481825804,
+    "insight": 0.4013729451247149,
+    "instruction_following": 0.3474142209186234,
+    "readability": 0.43873034126493476,
+    "overall_score": 0.38920077082969146,
+    "elapsed_seconds": 12480.046838998795,
+    "sampled_items": 10,
+    "raw_results_file": "results/race/20260302_round7_quality_recovery_quick10/fixed_max_quality/raw_results.jsonl",
+    "summary_file": "results/race/20260302_round7_quality_recovery_quick10/fixed_max_quality/summary.json"
+  }
+]

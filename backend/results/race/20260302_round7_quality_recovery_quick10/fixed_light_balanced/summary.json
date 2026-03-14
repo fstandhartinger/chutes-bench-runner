@@ -1,0 +1,45 @@
+{
+  "case": {
+    "name": "fixed_light_balanced",
+    "search_api_url": "https://search.chutes.ai/api/v1/research",
+    "mode": "light",
+    "optimization_mode": "balanced"
+  },
+  "judge_model": "moonshotai/Kimi-K2.5-TEE",
+  "total_items": 50,
+  "sampled_items": 10,
+  "elapsed_seconds": 4021.7241423130035,
+  "metrics": {
+    "race_score": 0.3178034873675545,
+    "overall_score": 0.3178034873675545,
+    "score_override": 0.3178034873675545,
+    "comprehensiveness_avg": 0.25605546216364367,
+    "insight_avg": 0.3120534296625747,
+    "instruction_following_avg": 0.27296693934783023,
+    "readability_avg": 0.40231182548077254,
+    "comprehensiveness": 0.25605546216364367,
+    "insight": 0.3120534296625747,
+    "instruction_following": 0.27296693934783023,
+    "readability": 0.40231182548077254,
+    "evaluation_summary": {
+      "comprehensiveness": 0.25605546216364367,
+      "insight": 0.3120534296625747,
+      "instruction_following": 0.27296693934783023,
+      "readability": 0.40231182548077254,
+      "overall_score": 0.3178034873675545
+    },
+    "completed": 9,
+    "errors": 1,
+    "topic_scores": {
+      "Science & Technology": 0.3506104011095953,
+      "Finance & Business": 0.2743321244809479,
+      "Literature": 0.25236873272799054,
+      "Fashion & Beauty": 0.4057377049180328,
+      "Hardware": 0.14285714285714285,
+      "Industrial": 0.410268270120259,
+      "Transportation": 0.3991144845034788
+    },
+    "avg_search_latency_ms": 139343.0
+  },
+  "raw_results_file": "results/race/20260302_round7_quality_recovery_quick10/fixed_light_balanced/raw_results.jsonl"
+}

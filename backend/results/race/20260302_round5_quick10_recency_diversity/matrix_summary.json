@@ -1,0 +1,26 @@
+[
+  {
+    "case": "fixed_light_balanced",
+    "comprehensiveness": 0.2784105814090348,
+    "insight": 0.3165208321754932,
+    "instruction_following": 0.289335954164735,
+    "readability": 0.39709262426971853,
+    "overall_score": 0.3259214806659264,
+    "elapsed_seconds": 3485.7128286361694,
+    "sampled_items": 10,
+    "raw_results_file": "results/race/20260302_round5_quick10_recency_diversity/fixed_light_balanced/raw_results.jsonl",
+    "summary_file": "results/race/20260302_round5_quick10_recency_diversity/fixed_light_balanced/summary.json"
+  },
+  {
+    "case": "fixed_max_quality",
+    "comprehensiveness": 0.33800225366735137,
+    "insight": 0.398089387336222,
+    "instruction_following": 0.3263542331183661,
+    "readability": 0.44546673750576166,
+    "overall_score": 0.38228655562098723,
+    "elapsed_seconds": 2904.30024266243,
+    "sampled_items": 10,
+    "raw_results_file": "results/race/20260302_round5_quick10_recency_diversity/fixed_max_quality/raw_results.jsonl",
+    "summary_file": "results/race/20260302_round5_quick10_recency_diversity/fixed_max_quality/summary.json"
+  }
+]

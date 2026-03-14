@@ -1,0 +1,60 @@
+{
+  "case": {
+    "name": "fixed_light_balanced",
+    "search_api_url": "https://search.chutes.ai/api/v1/research",
+    "mode": "light",
+    "optimization_mode": "balanced"
+  },
+  "judge_model": "moonshotai/Kimi-K2.5-TEE",
+  "total_items": 50,
+  "sampled_items": 50,
+  "elapsed_seconds": 6259.471953630447,
+  "metrics": {
+    "race_score": 0.39635719935369523,
+    "overall_score": 0.39635719935369523,
+    "score_override": 0.39635719935369523,
+    "comprehensiveness_avg": 0.3548468390418261,
+    "insight_avg": 0.3958992547141437,
+    "instruction_following_avg": 0.3951039892451319,
+    "readability_avg": 0.43125827710070386,
+    "comprehensiveness": 0.3548468390418261,
+    "insight": 0.3958992547141437,
+    "instruction_following": 0.3951039892451319,
+    "readability": 0.43125827710070386,
+    "evaluation_summary": {
+      "comprehensiveness": 0.3548468390418261,
+      "insight": 0.3958992547141437,
+      "instruction_following": 0.3951039892451319,
+      "readability": 0.43125827710070386,
+      "overall_score": 0.39635719935369523
+    },
+    "completed": 45,
+    "errors": 5,
+    "topic_scores": {
+      "Finance & Business": 0.41305079154104934,
+      "Science & Technology": 0.4226165369134949,
+      "Software Development": 0.37138480655136685,
+      "Education & Jobs": 0.4004330447346012,
+      "Health": 0.3691234481581895,
+      "History": 0.3780810234541578,
+      "Literature": 0.4826918782103774,
+      "Hardware": 0.3565805588859172,
+      "Industrial": 0.3896027045815536,
+      "Art & Design": 0.42099834799855096,
+      "Games": 0.3155316944522935,
+      "Entertainment": 0.2897196261682243,
+      "Crime & Law": 0.3816445533677005,
+      "Sports & Fitness": 0.4164126423872934,
+      "Transportation": 0.43236220472440945,
+      "Software": 0.3440725118908732,
+      "Home & Hobbies": 0.4289242167001081,
+      "Religion": 0.3857130351046135,
+      "Travel": 0.4064359339646359,
+      "Food & Dining": 0.4243654014482374,
+      "Fashion & Beauty": 0.4354135338345864,
+      "Social Life": 0.4120570264765784
+    },
+    "avg_search_latency_ms": 145724.26666666666
+  },
+  "raw_results_file": "results/race/20260301_improved/fixed_light_balanced/raw_results.jsonl"
+}

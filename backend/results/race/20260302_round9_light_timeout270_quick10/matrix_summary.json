@@ -1,0 +1,14 @@
+[
+  {
+    "case": "fixed_light_balanced",
+    "comprehensiveness": 0.2515609856340547,
+    "insight": 0.3104607597705984,
+    "instruction_following": 0.2703326833431138,
+    "readability": 0.39803864941970624,
+    "overall_score": 0.3164360941703565,
+    "elapsed_seconds": 2840.7301466464996,
+    "sampled_items": 10,
+    "raw_results_file": "results/race/20260302_round9_light_timeout270_quick10/fixed_light_balanced/raw_results.jsonl",
+    "summary_file": "results/race/20260302_round9_light_timeout270_quick10/fixed_light_balanced/summary.json"
+  }
+]

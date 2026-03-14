@@ -9,8 +9,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "016_add_run_retry_columns"
-down_revision: Union[str, None] = "015_add_item_results_created_at_index"
+revision: str = "016_run_retry_cols"
+down_revision: Union[str, None] = "015_item_created_idx"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

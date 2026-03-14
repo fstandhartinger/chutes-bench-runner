@@ -1,0 +1,21 @@
+[Unit]
+Description=Bench Runner Queue Health Monitor (Telegram Alerts)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/chutes-bench-runner/scripts/queue_health_monitor.py
+Restart=always
+RestartSec=10
+Environment=BENCH_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
+Environment=TG_BOT_TOKEN=8264160091:AAHJVlv2MYbaU4plbpmBLnKn6Wi-vG52nGM
+Environment=TG_CHAT_ID=7367548582
+Environment=QUEUE_DEPTH_THRESHOLD=50
+Environment=QUEUE_AGE_THRESHOLD_HOURS=4
+Environment=CHECK_INTERVAL_SECONDS=300
+Environment=ALERT_COOLDOWN_SECONDS=1800
+Environment=LOG_PATH=/var/log/bench-queue-monitor.log
+
+[Install]
+WantedBy=multi-user.target

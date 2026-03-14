@@ -1,0 +1,26 @@
+[
+  {
+    "case": "fixed_light_balanced",
+    "comprehensiveness": 0.3399793234472713,
+    "insight": 0.3760848147033208,
+    "instruction_following": 0.37832550185760566,
+    "readability": 0.4271253289783388,
+    "overall_score": 0.38303484438485563,
+    "elapsed_seconds": 6728.35638999939,
+    "sampled_items": 50,
+    "raw_results_file": "results/race/20260301_universal/fixed_light_balanced/raw_results.jsonl",
+    "summary_file": "results/race/20260301_universal/fixed_light_balanced/summary.json"
+  },
+  {
+    "case": "fixed_max_quality",
+    "comprehensiveness": 0.3671714906901093,
+    "insight": 0.4048934532710116,
+    "instruction_following": 0.3966733713594046,
+    "readability": 0.4379620762629776,
+    "overall_score": 0.4037799793167124,
+    "elapsed_seconds": 6985.998507261276,
+    "sampled_items": 50,
+    "raw_results_file": "results/race/20260301_universal/fixed_max_quality/raw_results.jsonl",
+    "summary_file": "results/race/20260301_universal/fixed_max_quality/summary.json"
+  }
+]

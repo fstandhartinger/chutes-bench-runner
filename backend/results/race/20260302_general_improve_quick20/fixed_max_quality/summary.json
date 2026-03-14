@@ -1,0 +1,49 @@
+{
+  "case": {
+    "name": "fixed_max_quality",
+    "search_api_url": "https://search.chutes.ai/api/v1/research",
+    "mode": "max",
+    "optimization_mode": "quality"
+  },
+  "judge_model": "moonshotai/Kimi-K2.5-TEE",
+  "total_items": 50,
+  "sampled_items": 20,
+  "elapsed_seconds": 3048.9990298748016,
+  "metrics": {
+    "race_score": 0.3877837015175014,
+    "overall_score": 0.3877837015175014,
+    "score_override": 0.3877837015175014,
+    "comprehensiveness_avg": 0.3548726006600004,
+    "insight_avg": 0.39610401755733404,
+    "instruction_following_avg": 0.34761286987129386,
+    "readability_avg": 0.4385464456194031,
+    "comprehensiveness": 0.3548726006600004,
+    "insight": 0.39610401755733404,
+    "instruction_following": 0.34761286987129386,
+    "readability": 0.4385464456194031,
+    "evaluation_summary": {
+      "comprehensiveness": 0.3548726006600004,
+      "insight": 0.39610401755733404,
+      "instruction_following": 0.34761286987129386,
+      "readability": 0.4385464456194031,
+      "overall_score": 0.3877837015175014
+    },
+    "completed": 19,
+    "errors": 1,
+    "topic_scores": {
+      "Education & Jobs": 0.38699410801389944,
+      "Software": 0.44955684007707125,
+      "Literature": 0.36355971600195114,
+      "Art & Design": 0.45582567447376215,
+      "Sports & Fitness": 0.3959726072069134,
+      "Finance & Business": 0.3438069581714174,
+      "Science & Technology": 0.33900333618564765,
+      "Travel": 0.42914912932243954,
+      "Industrial": 0.39858333333333335,
+      "Software Development": 0.44097961667173713,
+      "Health": 0.4090516693939961
+    },
+    "avg_search_latency_ms": 171440.0
+  },
+  "raw_results_file": "results/race/20260302_general_improve_quick20/fixed_max_quality/raw_results.jsonl"
+}

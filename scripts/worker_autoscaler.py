@@ -140,6 +140,29 @@ def get_memory_stats() -> tuple[Optional[float], Optional[float]]:
         return None, None
 
 
+def get_disk_usage_percent(path: str) -> Optional[float]:
+    """Return disk usage percent for the given path."""
+    try:
+        usage = shutil.disk_usage(path)
+        if usage.total <= 0:
+            return None
+        return (usage.used / usage.total) * 100
+    except Exception:
+        return None
+
+
+def get_cpu_load_percent() -> Optional[float]:
+    """Return 1-minute load as a percentage of CPU core count."""
+    try:
+        load_1m = os.getloadavg()[0]
+        cores = os.cpu_count() or 1
+        if cores <= 0:
+            cores = 1
+        return (load_1m / cores) * 100
+    except Exception:
+        return None
+
+
 def fetch_runs_total(base_url: str, status: str, timeout: int, logger: logging.Logger) -> Optional[int]:
     url = f"{base_url}/api/runs?status={status}&limit=200"
     try:
@@ -447,23 +470,19 @@ def compute_target_workers(
     min_workers: int,
     worker_max_concurrent: int,
 ) -> int:
-    """Compute target worker count based on queue depth.
+    """Compute target worker count from observed backlog.
 
-    IMPORTANT: We only scale based on QUEUED jobs, not running ones.
-    Running jobs are already claimed by existing workers and don't need
-    additional capacity. Counting running jobs in the backlog was causing
-    a bug where workers never scaled down even with an empty queue.
-
-    The scale-down logic:
-    - When queue is empty (queued=0), scale down to min_workers
-    - Workers processing running jobs will finish and become available
-    - If runs are stuck in "running" state, the stale run check will requeue them
+    We must consider both queued and running jobs because reducing compose scale
+    stops worker containers, which can interrupt active runs and leave them stuck
+    in "running" until stale requeue recovers them.
     """
-    # Only count queued jobs for scaling - running jobs are already being handled
-    if queued <= 0:
-        return min_workers
     per_worker = max(worker_max_concurrent, 1)
-    desired = math.ceil(queued / per_worker)
+    queued_backlog = max(queued, 0)
+    running_backlog = max(running, 0)
+    backlog = queued_backlog + running_backlog
+    if backlog <= 0:
+        return min_workers
+    desired = math.ceil(backlog / per_worker)
     return max(min_workers, min(max_workers, desired))
 
 
@@ -488,6 +507,10 @@ def main() -> int:
     memory_high = _float_env("MEMORY_HIGH_WATERMARK", 85.0)
     memory_emergency = _float_env("MEMORY_EMERGENCY_WATERMARK", 92.0)
     memory_scale_down = _int_env("MEMORY_SCALE_DOWN_STEP", 2)
+    disk_check_path = _str_env("DISK_CHECK_PATH", "/")
+    disk_high = _float_env("DISK_HIGH_WATERMARK", 88.0)
+    disk_emergency = _float_env("DISK_EMERGENCY_WATERMARK", 93.0)
+    cpu_high = _float_env("CPU_HIGH_WATERMARK", 90.0)
     extra_project = _str_env("EXTRA_PROJECT", "chutes-bench-runner-extra")
     base_project = _str_env("BASE_PROJECT", "chutes-bench-runner")
     dry_run = _int_env("DRY_RUN", 0) == 1
@@ -548,32 +571,50 @@ def main() -> int:
             current_base, current_extra = get_worker_counts(base_project, extra_project, logger, timeout=compose_timeout)
             current_total = current_base + current_extra
             mem_pct, mem_avail = get_memory_stats()
-            if mem_pct is not None:
-                logger.info(
-                    "Resource guard memory=%.1f%% available_gb=%.1f current_workers=%s",
-                    mem_pct,
-                    mem_avail if mem_avail is not None else -1,
-                    current_total,
+            disk_pct = get_disk_usage_percent(disk_check_path)
+            cpu_load_pct = get_cpu_load_percent()
+            logger.info(
+                "Resource guard memory=%.1f%% available_gb=%.1f disk=%.1f%% cpu_load=%.1f%% current_workers=%s",
+                mem_pct if mem_pct is not None else -1,
+                mem_avail if mem_avail is not None else -1,
+                disk_pct if disk_pct is not None else -1,
+                cpu_load_pct if cpu_load_pct is not None else -1,
+                current_total,
+            )
+
+            emergency_reasons: list[str] = []
+            if mem_pct is not None and mem_pct >= memory_emergency:
+                emergency_reasons.append(f"memory {mem_pct:.1f}% >= {memory_emergency:.1f}%")
+            if disk_pct is not None and disk_pct >= disk_emergency:
+                emergency_reasons.append(f"disk {disk_pct:.1f}% >= {disk_emergency:.1f}%")
+
+            if emergency_reasons:
+                target = max(min_workers, current_total - max(memory_scale_down, 1))
+                logger.warning(
+                    "Emergency guard triggered (%s), reducing target to %s",
+                    "; ".join(emergency_reasons),
+                    target,
                 )
-                if mem_pct >= memory_emergency:
-                    target = max(min_workers, current_total - max(memory_scale_down, 1))
+            else:
+                high_reasons: list[str] = []
+                if mem_pct is not None and mem_pct >= memory_high:
+                    high_reasons.append(f"memory {mem_pct:.1f}% >= {memory_high:.1f}%")
+                if disk_pct is not None and disk_pct >= disk_high:
+                    high_reasons.append(f"disk {disk_pct:.1f}% >= {disk_high:.1f}%")
+                if cpu_load_pct is not None and cpu_load_pct >= cpu_high:
+                    high_reasons.append(f"cpu_load {cpu_load_pct:.1f}% >= {cpu_high:.1f}%")
+
+                if high_reasons and target > current_total:
                     logger.warning(
-                        "Memory emergency %.1f%% >= %.1f%%, reducing target to %s",
-                        mem_pct,
-                        memory_emergency,
-                        target,
-                    )
-                elif mem_pct >= memory_high and target > current_total:
-                    logger.warning(
-                        "Memory high %.1f%% >= %.1f%%, freezing scale-up at %s",
-                        mem_pct,
-                        memory_high,
+                        "Resource high (%s), freezing scale-up at %s",
+                        "; ".join(high_reasons),
                         current_total,
                     )
                     target = current_total
-                target = max(min_workers, target)
-                base_workers = min(base_max, target)
-                extra_workers = max(0, target - base_max)
+
+            target = max(min_workers, min(max_workers, target))
+            base_workers = min(base_max, target)
+            extra_workers = max(0, target - base_max)
             logger.info(
                 "Queue status running=%s queued=%s target_workers=%s",
                 running,

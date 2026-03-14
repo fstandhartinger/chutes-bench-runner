@@ -487,8 +487,13 @@ class DeepResearchBenchAdapter(BenchmarkAdapter):
         return True
 
     def get_item_concurrency(self) -> Optional[int]:
-        """Limit concurrency to avoid overloading the search API."""
-        return 3
+        """Limit concurrency to avoid overloading search/judge providers."""
+        raw = os.getenv("DEEPRESEARCH_BENCH_ITEM_CONCURRENCY", "1").strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 1
+        return max(1, min(value, 3))
 
     def get_item_timeout_seconds(self) -> Optional[int]:
         """Deep research can be slow; allow up to 6 minutes per item."""

@@ -8,7 +8,7 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "015_add_item_results_created_at_index"
+revision: str = "015_item_created_idx"
 down_revision: Union[str, None] = "014_add_deepresearch_bench"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
