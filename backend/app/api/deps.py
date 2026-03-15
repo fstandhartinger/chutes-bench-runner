@@ -1,4 +1,5 @@
 """API dependencies."""
+import hmac
 from typing import Annotated, Optional
 
 from fastapi import Depends, Header, HTTPException, status
@@ -26,8 +27,8 @@ async def verify_admin_secret(
     settings = get_settings()
     if not settings.admin_secret:
         return  # No admin secret configured, allow access
-    
-    if x_admin_secret != settings.admin_secret:
+
+    if not x_admin_secret or not hmac.compare_digest(x_admin_secret, settings.admin_secret):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid admin secret",

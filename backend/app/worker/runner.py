@@ -589,7 +589,7 @@ class BenchmarkWorker:
         async with async_session_maker() as db:
             inactive_result = await db.execute(
                 select(BenchmarkRun.id, BenchmarkRun.status)
-                .where(BenchmarkRun.status != RunStatus.RUNNING.value)
+                .where(BenchmarkRun.status.in_([RunStatus.QUEUED.value, RunStatus.RUNNING.value]))
             )
             inactive_runs = list(inactive_result.all())
             if inactive_runs:

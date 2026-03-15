@@ -27,6 +27,11 @@ class SandyService:
             "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
             "Content-Type": "application/json"
         }
+        # Shared httpx client with connection pooling (avoids per-request TCP/TLS overhead)
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(90.0, connect=10.0),
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
 
     async def create_sandbox(
         self,
@@ -62,11 +67,9 @@ class SandyService:
             payload["enableDockerSocket"] = True
         if (enable_docker_socket or requires_agent) and self.docker_upstream:
             payload["upstream"] = self.docker_upstream
-        timeout = httpx.Timeout(90.0, connect=10.0)
         for attempt in range(1, 4):
-            async with httpx.AsyncClient(timeout=timeout) as client:
                 try:
-                    response = await client.post(
+                    response = await self._client.post(
                         f"{self.base_url}/api/sandboxes",
                         headers=self.headers,
                         json=payload,
@@ -116,8 +119,8 @@ class SandyService:
         last_error: Optional[str] = None
         self.last_error = None
         max_attempts = 4
+        req_timeout = httpx.Timeout(timeout_seconds, connect=10.0)
         for attempt in range(1, max_attempts + 1):
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=10.0)) as client:
                 try:
                     payload: dict[str, Any] = {"command": command}
                     if cwd:
@@ -126,10 +129,11 @@ class SandyService:
                         payload["env"] = env
                     if timeout_ms is not None:
                         payload["timeoutMs"] = timeout_ms
-                    response = await client.post(
+                    response = await self._client.post(
                         f"{self.base_url}/api/sandboxes/{sandbox_id}/exec",
                         headers=self.headers,
                         json=payload,
+                        timeout=req_timeout,
                     )
                     response.raise_for_status()
                     data = response.json()
@@ -189,10 +193,10 @@ class SandyService:
         self.last_error = None
         max_attempts = 5
         for attempt in range(1, max_attempts + 1):
-            async with httpx.AsyncClient(timeout=30.0) as client:
                 try:
-                    response = await client.post(
+                    response = await self._client.post(
                         f"{self.base_url}/api/sandboxes/{sandbox_id}/files/write",
+                        timeout=30.0,
                         headers=self.headers,
                         json={"path": path, "content": content},
                     )
@@ -224,10 +228,10 @@ class SandyService:
         delay_seconds = 1
         last_error: Optional[str] = None
         for attempt in range(1, 3):
-            async with httpx.AsyncClient(timeout=30.0) as client:
                 try:
-                    response = await client.post(
+                    response = await self._client.post(
                         f"{self.base_url}/api/sandboxes/{sandbox_id}/terminate",
+                        timeout=30.0,
                         headers=self.headers,
                     )
                     if response.status_code == 404:
@@ -258,13 +262,13 @@ class SandyService:
             self.last_error = "Sandy API key is not configured"
             return None
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/api/resources",
-                    headers=self.headers,
-                )
-                response.raise_for_status()
-                return response.json()
+            response = await self._client.get(
+                f"{self.base_url}/api/resources",
+                headers=self.headers,
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            return response.json()
         except Exception as exc:
             self.last_error = str(exc) or exc.__class__.__name__
             return None
@@ -275,14 +279,14 @@ class SandyService:
             self.last_error = "Sandy API key is not configured"
             return None
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/api/metrics/timeseries",
-                    headers=self.headers,
-                    params={"hours": hours},
-                )
-                response.raise_for_status()
-                return response.json()
+            response = await self._client.get(
+                f"{self.base_url}/api/metrics/timeseries",
+                headers=self.headers,
+                params={"hours": hours},
+                timeout=15.0,
+            )
+            response.raise_for_status()
+            return response.json()
         except Exception as exc:
             self.last_error = str(exc) or exc.__class__.__name__
             return None
@@ -293,17 +297,17 @@ class SandyService:
             self.last_error = "Sandy API key is not configured"
             return None
         try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                params: Dict[str, Any] = {}
-                if sandbox_ids:
-                    params["ids"] = ",".join(sandbox_ids)
-                response = await client.get(
-                    f"{self.base_url}/api/sandboxes/stats",
-                    headers=self.headers,
-                    params=params,
-                )
-                response.raise_for_status()
-                return response.json()
+            params: Dict[str, Any] = {}
+            if sandbox_ids:
+                params["ids"] = ",".join(sandbox_ids)
+            response = await self._client.get(
+                f"{self.base_url}/api/sandboxes/stats",
+                headers=self.headers,
+                params=params,
+                timeout=20.0,
+            )
+            response.raise_for_status()
+            return response.json()
         except Exception as exc:
             self.last_error = str(exc) or exc.__class__.__name__
             return None
@@ -314,17 +318,17 @@ class SandyService:
             self.last_error = "Sandy API key is not configured"
             return None
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/api/sandboxes/{sandbox_id}",
-                    headers=self.headers,
-                )
-                if response.status_code == 404:
-                    self.last_error = "Sandbox not found"
-                    return False
-                response.raise_for_status()
-                self.last_error = None
-                return True
+            response = await self._client.get(
+                f"{self.base_url}/api/sandboxes/{sandbox_id}",
+                headers=self.headers,
+                timeout=10.0,
+            )
+            if response.status_code == 404:
+                self.last_error = "Sandbox not found"
+                return False
+            response.raise_for_status()
+            self.last_error = None
+            return True
         except Exception as exc:
             self.last_error = str(exc) or exc.__class__.__name__
             return None
