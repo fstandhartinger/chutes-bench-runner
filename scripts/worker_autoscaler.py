@@ -343,6 +343,11 @@ def _write_text(path: str, content: str) -> bool:
 
 
 def get_git_head(repo_path: str, logger: logging.Logger, timeout: int) -> Optional[str]:
+    # Skip git operations entirely if the repo path is not a git repository
+    git_dir = os.path.join(repo_path, ".git")
+    if not os.path.exists(git_dir):
+        return None
+
     try:
         result = subprocess.run(
             # systemd services sometimes run without HOME set, so global git config

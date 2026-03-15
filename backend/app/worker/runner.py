@@ -590,6 +590,7 @@ class BenchmarkWorker:
             inactive_result = await db.execute(
                 select(BenchmarkRun.id, BenchmarkRun.status)
                 .where(BenchmarkRun.status.in_([RunStatus.QUEUED.value, RunStatus.RUNNING.value]))
+                .where(BenchmarkRun.updated_at > datetime.utcnow() - timedelta(hours=24))
             )
             inactive_runs = list(inactive_result.all())
             if inactive_runs:
@@ -1211,9 +1212,6 @@ class BenchmarkWorker:
                     "total": len(items_to_evaluate),
                 },
             )
-
-            if pending_item_ids:
-                await self._preload_adapter(run.id, adapter)
 
             if not pending_item_ids:
                 accuracy = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
