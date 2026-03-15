@@ -361,7 +361,7 @@ def get_git_head(repo_path: str, logger: logging.Logger, timeout: int) -> Option
         return None
 
     if result.returncode != 0:
-        logger.warning("git rev-parse failed: %s", (result.stderr or "").strip())
+        logger.debug("git rev-parse failed: %s", (result.stderr or "").strip())
         return None
 
     head = (result.stdout or "").strip()
