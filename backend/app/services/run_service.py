@@ -276,6 +276,7 @@ async def requeue_run(db: AsyncSession, run_id: str) -> bool:
             completed_at=None,
             started_at=None,
             canceled_at=None,
+            retry_count=0,
             updated_at=now,
         )
     )
