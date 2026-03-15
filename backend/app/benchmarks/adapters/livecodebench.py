@@ -11,7 +11,7 @@ from app.services.sandy_service import SandyService
 
 logger = get_logger(__name__)
 
-LIVECODEBENCH_TOTAL_ITEMS = 164
+LIVECODEBENCH_TOTAL_ITEMS = 400
 LIVECODEBENCH_LOG_CHAR_LIMIT = 8000
 
 

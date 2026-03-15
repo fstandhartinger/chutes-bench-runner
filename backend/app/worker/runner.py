@@ -250,19 +250,28 @@ class BenchmarkWorker:
         sampled_items: Optional[int] = None,
         sampled_item_ids: Optional[list[str]] = None,
     ) -> None:
-        async with async_session_maker() as db:
-            await update_benchmark_status(
-                db,
-                run_benchmark_id,
-                status,
-                metrics=metrics,
-                score=score,
-                error_message=error_message,
-                completed_items=completed_items,
-                total_items=total_items,
-                sampled_items=sampled_items,
-                sampled_item_ids=sampled_item_ids,
-            )
+        for attempt in range(3):
+            try:
+                async with async_session_maker() as db:
+                    await update_benchmark_status(
+                        db,
+                        run_benchmark_id,
+                        status,
+                        metrics=metrics,
+                        score=score,
+                        error_message=error_message,
+                        completed_items=completed_items,
+                        total_items=total_items,
+                        sampled_items=sampled_items,
+                        sampled_item_ids=sampled_item_ids,
+                    )
+                return
+            except Exception as exc:
+                if "deadlock" in str(exc).lower() and attempt < 2:
+                    logger.warning("Deadlock on benchmark status update, retrying", attempt=attempt + 1)
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                raise
 
     async def _safe_add_run_event(
         self,
@@ -915,7 +924,7 @@ class BenchmarkWorker:
         if completed_benchmarks == 0 and failed_benchmarks > 0:
             # Collect all benchmark error messages to decide retryability
             all_errors: list[str] = []
-            async with self._db_session() as db:
+            async with async_session_maker() as db:
                 result = await db.execute(
                     select(BenchmarkRunBenchmark).where(BenchmarkRunBenchmark.run_id == run.id)
                 )
@@ -952,7 +961,7 @@ class BenchmarkWorker:
                 )
                 await asyncio.sleep(backoff)
                 # Reset run and benchmark statuses to QUEUED/PENDING
-                async with self._db_session() as db:
+                async with async_session_maker() as db:
                     await db.execute(
                         update(BenchmarkRun)
                         .where(BenchmarkRun.id == run.id)
@@ -1098,6 +1107,10 @@ class BenchmarkWorker:
                 BenchmarkRunStatus.RUNNING,
                 completed_items=rb.completed_items,
             )
+            # Preload adapter data (e.g. HF dataset download) with heartbeat
+            # refresh BEFORE get_items_for_evaluation, since some adapters
+            # (e.g. livecodebench) trigger preload() inside get_total_items().
+            await self._preload_adapter(run.id, adapter)
             # Get items and apply subset
             seed_base = run.subset_seed or run.id
             seed = f"{seed_base}:{rb.benchmark_name}"
