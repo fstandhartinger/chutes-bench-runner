@@ -68,26 +68,26 @@ class SandyService:
         if (enable_docker_socket or requires_agent) and self.docker_upstream:
             payload["upstream"] = self.docker_upstream
         for attempt in range(1, 4):
-                try:
-                    response = await self._client.post(
-                        f"{self.base_url}/api/sandboxes",
-                        headers=self.headers,
-                        json=payload,
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    sandbox_id = data.get("sandboxId")
-                    if sandbox_id:
-                        self.last_error = None
-                        return sandbox_id
-                    last_error = "Missing sandboxId in response"
-                except httpx.HTTPStatusError as e:
-                    detail = e.response.text or e.response.reason_phrase or str(e)
-                    last_error = f"HTTP {e.response.status_code}: {detail}".strip()
-                except Exception as e:
-                    last_error = str(e) or e.__class__.__name__
-                if last_error and len(last_error) > 500:
-                    last_error = last_error[:500].rstrip() + "…"
+            try:
+                response = await self._client.post(
+                    f"{self.base_url}/api/sandboxes",
+                    headers=self.headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+                sandbox_id = data.get("sandboxId")
+                if sandbox_id:
+                    self.last_error = None
+                    return sandbox_id
+                last_error = "Missing sandboxId in response"
+            except httpx.HTTPStatusError as e:
+                detail = e.response.text or e.response.reason_phrase or str(e)
+                last_error = f"HTTP {e.response.status_code}: {detail}".strip()
+            except Exception as e:
+                last_error = str(e) or e.__class__.__name__
+            if last_error and len(last_error) > 500:
+                last_error = last_error[:500].rstrip() + "…"
 
             if attempt < 3:
                 logger.warning(
@@ -121,59 +121,59 @@ class SandyService:
         max_attempts = 4
         req_timeout = httpx.Timeout(timeout_seconds, connect=10.0)
         for attempt in range(1, max_attempts + 1):
-                try:
-                    payload: dict[str, Any] = {"command": command}
-                    if cwd:
-                        payload["cwd"] = cwd
-                    if env:
-                        payload["env"] = env
-                    if timeout_ms is not None:
-                        payload["timeoutMs"] = timeout_ms
-                    response = await self._client.post(
-                        f"{self.base_url}/api/sandboxes/{sandbox_id}/exec",
-                        headers=self.headers,
-                        json=payload,
-                        timeout=req_timeout,
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    stdout = data.get("stdout", "")
-                    stderr = data.get("stderr", "")
-                    exit_code = data.get("exitCode", 0)
-                    if exit_code != 0 and self._is_agent_warmup_error(stderr):
-                        last_error = stderr or "Sandbox agent not ready"
-                        if attempt < max_attempts:
-                            logger.warning(
-                                "Sandbox agent not ready; retrying exec",
-                                attempt=attempt,
-                                error=last_error,
-                            )
-                            await asyncio.sleep(delay_seconds)
-                            delay_seconds = min(delay_seconds * 2, 15)
-                            continue
-                    self.last_error = None
-                    return {
-                        "success": True,
-                        "stdout": stdout,
-                        "stderr": stderr,
-                        "exit_code": exit_code,
-                    }
-                except httpx.HTTPStatusError as e:
-                    error_detail = e.response.text or str(e)
-                    last_error = error_detail
-                    logger.error(
-                        f"Failed to execute command in sandbox {sandbox_id}",
-                        status_code=e.response.status_code,
-                        error=error_detail,
-                    )
-                    if e.response.status_code not in {408, 429, 500, 502, 503, 504}:
-                        break
-                except Exception as e:
-                    last_error = str(e) or e.__class__.__name__
-                    logger.error(
-                        f"Failed to execute command in sandbox {sandbox_id}",
-                        error=last_error,
-                    )
+            try:
+                payload: dict[str, Any] = {"command": command}
+                if cwd:
+                    payload["cwd"] = cwd
+                if env:
+                    payload["env"] = env
+                if timeout_ms is not None:
+                    payload["timeoutMs"] = timeout_ms
+                response = await self._client.post(
+                    f"{self.base_url}/api/sandboxes/{sandbox_id}/exec",
+                    headers=self.headers,
+                    json=payload,
+                    timeout=req_timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+                stdout = data.get("stdout", "")
+                stderr = data.get("stderr", "")
+                exit_code = data.get("exitCode", 0)
+                if exit_code != 0 and self._is_agent_warmup_error(stderr):
+                    last_error = stderr or "Sandbox agent not ready"
+                    if attempt < max_attempts:
+                        logger.warning(
+                            "Sandbox agent not ready; retrying exec",
+                            attempt=attempt,
+                            error=last_error,
+                        )
+                        await asyncio.sleep(delay_seconds)
+                        delay_seconds = min(delay_seconds * 2, 15)
+                        continue
+                self.last_error = None
+                return {
+                    "success": True,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "exit_code": exit_code,
+                }
+            except httpx.HTTPStatusError as e:
+                error_detail = e.response.text or str(e)
+                last_error = error_detail
+                logger.error(
+                    f"Failed to execute command in sandbox {sandbox_id}",
+                    status_code=e.response.status_code,
+                    error=error_detail,
+                )
+                if e.response.status_code not in {408, 429, 500, 502, 503, 504}:
+                    break
+            except Exception as e:
+                last_error = str(e) or e.__class__.__name__
+                logger.error(
+                    f"Failed to execute command in sandbox {sandbox_id}",
+                    error=last_error,
+                )
             if attempt < max_attempts:
                 logger.warning(
                     "Retrying sandbox exec",
@@ -193,23 +193,23 @@ class SandyService:
         self.last_error = None
         max_attempts = 5
         for attempt in range(1, max_attempts + 1):
-                try:
-                    response = await self._client.post(
-                        f"{self.base_url}/api/sandboxes/{sandbox_id}/files/write",
-                        timeout=30.0,
-                        headers=self.headers,
-                        json={"path": path, "content": content},
-                    )
-                    response.raise_for_status()
-                    self.last_error = None
-                    return True
-                except httpx.HTTPStatusError as e:
-                    detail = e.response.text or e.response.reason_phrase or str(e)
-                    last_error = f"HTTP {e.response.status_code}: {detail}".strip()
-                    if e.response.status_code not in {408, 429, 500, 502, 503, 504}:
-                        break
-                except Exception as e:
-                    last_error = str(e) or e.__class__.__name__
+            try:
+                response = await self._client.post(
+                    f"{self.base_url}/api/sandboxes/{sandbox_id}/files/write",
+                    timeout=30.0,
+                    headers=self.headers,
+                    json={"path": path, "content": content},
+                )
+                response.raise_for_status()
+                self.last_error = None
+                return True
+            except httpx.HTTPStatusError as e:
+                detail = e.response.text or e.response.reason_phrase or str(e)
+                last_error = f"HTTP {e.response.status_code}: {detail}".strip()
+                if e.response.status_code not in {408, 429, 500, 502, 503, 504}:
+                    break
+            except Exception as e:
+                last_error = str(e) or e.__class__.__name__
             if attempt < max_attempts:
                 logger.warning(
                     "Retrying sandbox file write",
@@ -228,23 +228,23 @@ class SandyService:
         delay_seconds = 1
         last_error: Optional[str] = None
         for attempt in range(1, 3):
-                try:
-                    response = await self._client.post(
-                        f"{self.base_url}/api/sandboxes/{sandbox_id}/terminate",
-                        timeout=30.0,
-                        headers=self.headers,
-                    )
-                    if response.status_code == 404:
-                        return True
-                    response.raise_for_status()
+            try:
+                response = await self._client.post(
+                    f"{self.base_url}/api/sandboxes/{sandbox_id}/terminate",
+                    timeout=30.0,
+                    headers=self.headers,
+                )
+                if response.status_code == 404:
                     return True
-                except httpx.HTTPStatusError as e:
-                    detail = e.response.text or e.response.reason_phrase or str(e)
-                    last_error = f"HTTP {e.response.status_code}: {detail}".strip()
-                    if e.response.status_code not in {408, 429, 500, 502, 503, 504}:
-                        break
-                except Exception as e:
-                    last_error = str(e) or e.__class__.__name__
+                response.raise_for_status()
+                return True
+            except httpx.HTTPStatusError as e:
+                detail = e.response.text or e.response.reason_phrase or str(e)
+                last_error = f"HTTP {e.response.status_code}: {detail}".strip()
+                if e.response.status_code not in {408, 429, 500, 502, 503, 504}:
+                    break
+            except Exception as e:
+                last_error = str(e) or e.__class__.__name__
             if attempt < 2:
                 logger.warning(
                     "Retrying sandbox termination",
