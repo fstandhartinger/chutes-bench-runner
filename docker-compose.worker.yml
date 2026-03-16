@@ -10,6 +10,8 @@ services:
     mem_limit: ${WORKER_CONTAINER_MEM_LIMIT:-8g}
     memswap_limit: ${WORKER_CONTAINER_MEMSWAP_LIMIT:-8g}
     pids_limit: ${WORKER_CONTAINER_PIDS_LIMIT:-768}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - /var/lib/sandy/cache:/var/lib/sandy/cache
       - /var/lib/sandy/cache/chutes-bench-data:/var/lib/sandy/cache/chutes-bench-data

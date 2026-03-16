@@ -1,6 +1,6 @@
 # Chutes Bench Runner
 
-> **PRODUCTION SERVICE**: This is a revenue-generating product. ALL bench-runner components are consolidated on a **dedicated server** at `88.99.58.39` (bench\_runner\_sandy): Sandy sandbox service (port 7331, 256GB RAM, 12 cores, max 200 sandboxes), 36 autoscaled workers (`SANDY_BASE_URL=http://localhost:7331`), the autoscaler systemd service, and the queue health monitor (Telegram alerts). Do NOT deploy general Sandy changes to this server. new\_sandy and old\_sandy no longer run any bench-runner workers, autoscaler, or queue monitor.
+> **PRODUCTION SERVICE**: This is a revenue-generating product. ALL bench-runner components are consolidated on a **dedicated server** at `88.99.58.39` (bench\_runner\_sandy): Sandy sandbox service (port 7331, 256GB RAM, 12 cores, max 200 sandboxes), 36 autoscaled workers (`SANDY_BASE_URL=http://host.docker.internal:7331` inside worker containers), the autoscaler systemd service, and the queue health monitor (Telegram alerts). Do NOT deploy general Sandy changes to this server. new\_sandy and old\_sandy no longer run any bench-runner workers, autoscaler, or queue monitor.
 
 Chutes Bench Runner is a web app + API for running reproducible benchmark suites against
 models hosted on Chutes. It provides a modern UI, API-triggered runs, detailed per-item
@@ -113,7 +113,7 @@ frontend (Next.js)
             -> Sandy sandbox (code/CLI benchmarks)
 ```
 
-Production note: all bench-runner components (workers, autoscaler, queue monitor, Sandy sandbox service) are consolidated on the dedicated bench-runner-sandy server (88.99.58.39). Workers use `SANDY_BASE_URL=http://localhost:7331` since they are co-located with Sandy. The Render worker service stays disabled. new_sandy and old_sandy run Sandy for other apps only.
+Production note: all bench-runner components (workers, autoscaler, queue monitor, Sandy sandbox service) are consolidated on the dedicated bench-runner-sandy server (88.99.58.39). Worker containers must use `SANDY_BASE_URL=http://host.docker.internal:7331` plus a Docker host-gateway mapping; `localhost` points at the container itself and breaks sandboxed benchmarks. The Render worker service stays disabled. new_sandy and old_sandy run Sandy for other apps only.
 
 ## Local development
 

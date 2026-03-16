@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
@@ -43,6 +44,7 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 PROGRESS_PERSIST_INTERVAL = 5
+
 
 def _is_retryable_item_error(error: Optional[str]) -> bool:
     if not error:
@@ -170,6 +172,18 @@ def _compute_run_stale_seconds(
     return base_seconds
 
 
+def _is_retryable_db_write_error(exc: Exception) -> bool:
+    if isinstance(exc, DBAPIError) and getattr(exc, "connection_invalidated", False):
+        return True
+    message = str(exc).lower()
+    return (
+        "deadlock" in message
+        or "connection was closed in the middle of operation" in message
+        or "connectiondoesnotexisterror" in message
+        or "authentication timed out" in message
+    )
+
+
 async def _try_transition_stale_run(
     db: AsyncSession,
     run_id: str,
@@ -251,11 +265,30 @@ class BenchmarkWorker:
         self.hostname = socket.gethostname()
 
     async def _is_run_canceled(self, run_id: str) -> bool:
-        async with async_session_maker() as db:
-            result = await db.execute(
-                select(BenchmarkRun.canceled_at).where(BenchmarkRun.id == run_id)
-            )
-            return result.scalar_one_or_none() is not None
+        for attempt in range(3):
+            try:
+                async with async_session_maker() as db:
+                    result = await db.execute(
+                        select(BenchmarkRun.canceled_at).where(BenchmarkRun.id == run_id)
+                    )
+                    return result.scalar_one_or_none() is not None
+            except Exception as exc:
+                if _is_retryable_db_write_error(exc) and attempt < 2:
+                    logger.warning(
+                        "Transient DB error while checking cancellation, retrying",
+                        run_id=run_id,
+                        attempt=attempt + 1,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(0.25 * (attempt + 1))
+                    continue
+                logger.warning(
+                    "Failed to check cancellation state; assuming run is active",
+                    run_id=run_id,
+                    error=str(exc),
+                )
+                return False
+        return False
 
     async def _safe_update_run_status(
         self,
@@ -325,6 +358,80 @@ class BenchmarkWorker:
                 message=message,
                 data=data,
             )
+
+    async def _persist_item_result_progress(
+        self,
+        run_id: str,
+        run_benchmark_id: str,
+        result: ItemResult,
+        benchmark_name: str,
+        current_completed: int,
+        total_items: int,
+        current_correct: int,
+        should_persist_progress: bool,
+    ) -> None:
+        for attempt in range(3):
+            try:
+                async with async_session_maker() as item_db:
+                    await save_item_result(
+                        item_db, run_benchmark_id,
+                        item_id=result.item_id,
+                        item_hash=result.item_hash,
+                        prompt=result.prompt,
+                        response=result.response,
+                        expected=result.expected,
+                        is_correct=result.is_correct,
+                        score=result.score,
+                        judge_output=result.judge_output,
+                        latency_ms=result.latency_ms,
+                        input_tokens=result.input_tokens,
+                        output_tokens=result.output_tokens,
+                        error=result.error,
+                        test_code=result.test_code,
+                        item_metadata=result.metadata,
+                    )
+
+                    if should_persist_progress:
+                        await update_benchmark_status(
+                            item_db,
+                            run_benchmark_id,
+                            BenchmarkRunStatus.RUNNING,
+                            completed_items=current_completed,
+                        )
+                break
+            except Exception as exc:
+                if _is_retryable_db_write_error(exc) and attempt < 2:
+                    logger.warning(
+                        "Transient DB error while persisting item progress, retrying",
+                        run_id=run_id,
+                        benchmark=benchmark_name,
+                        attempt=attempt + 1,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                raise
+
+        if should_persist_progress:
+            try:
+                await self._safe_add_run_event(
+                    run_id,
+                    "benchmark_progress",
+                    benchmark_name=benchmark_name,
+                    message=f"Progress: {current_completed}/{total_items}",
+                    data={
+                        "completed": current_completed,
+                        "total": total_items,
+                        "current_accuracy": current_correct / current_completed if current_completed else 0,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to persist benchmark progress event",
+                    run_id=run_id,
+                    benchmark=benchmark_name,
+                    error=str(exc),
+                )
 
     async def _fail_run_for_model_access(
         self,
@@ -1419,48 +1526,20 @@ class BenchmarkWorker:
                         abort_event.set()
                     self.last_progress_at[run.id] = datetime.utcnow()
 
-                async with async_session_maker() as item_db:
-                    await save_item_result(
-                        item_db, rb.id,
-                        item_id=result.item_id,
-                        item_hash=result.item_hash,
-                        prompt=result.prompt,
-                        response=result.response,
-                        expected=result.expected,
-                        is_correct=result.is_correct,
-                        score=result.score,
-                        judge_output=result.judge_output,
-                        latency_ms=result.latency_ms,
-                        input_tokens=result.input_tokens,
-                        output_tokens=result.output_tokens,
-                        error=result.error,
-                        test_code=result.test_code,
-                        item_metadata=result.metadata,
-                    )
-
-                    should_persist_progress = (
-                        current_completed == len(items_to_evaluate)
-                        or current_completed % PROGRESS_PERSIST_INTERVAL == 0
-                    )
-                    if should_persist_progress:
-                        await update_benchmark_status(
-                            item_db,
-                            rb.id,
-                            BenchmarkRunStatus.RUNNING,
-                            completed_items=current_completed,
-                        )
-
-                    if should_persist_progress:
-                        await add_run_event(
-                            item_db, run.id, "benchmark_progress",
-                            benchmark_name=rb.benchmark_name,
-                            message=f"Progress: {current_completed}/{len(items_to_evaluate)}",
-                            data={
-                                "completed": current_completed,
-                                "total": len(items_to_evaluate),
-                                "current_accuracy": current_correct / current_completed if current_completed else 0,
-                            }
-                        )
+                should_persist_progress = (
+                    current_completed == len(items_to_evaluate)
+                    or current_completed % PROGRESS_PERSIST_INTERVAL == 0
+                )
+                await self._persist_item_result_progress(
+                    run.id,
+                    rb.id,
+                    result,
+                    rb.benchmark_name,
+                    current_completed,
+                    len(items_to_evaluate),
+                    current_correct,
+                    should_persist_progress,
+                )
 
             if max_concurrency > 1 and len(pending_item_ids) > 1:
                 semaphore = asyncio.Semaphore(max_concurrency)

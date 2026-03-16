@@ -1,14 +1,17 @@
 from datetime import datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.benchmarks.base import ItemResult
 from app.models.benchmark import Benchmark
 from app.models.model import Model
 from app.models.run import BenchmarkRun, BenchmarkRunBenchmark, BenchmarkRunStatus, RunStatus
 from app.worker.runner import (
     BenchmarkWorker,
     _compute_run_stale_seconds,
+    _is_retryable_db_write_error,
     _try_transition_stale_run,
 )
 
@@ -19,6 +22,12 @@ def test_compute_run_stale_seconds_extends_for_started_work() -> None:
 
 def test_compute_run_stale_seconds_keeps_base_without_started_work() -> None:
     assert _compute_run_stale_seconds(900, 1800, False) == 900
+
+
+def test_is_retryable_db_write_error_detects_deadlocks() -> None:
+    assert _is_retryable_db_write_error(RuntimeError("deadlock detected")) is True
+    assert _is_retryable_db_write_error(RuntimeError("connection was closed in the middle of operation")) is True
+    assert _is_retryable_db_write_error(RuntimeError("other failure")) is False
 
 
 @pytest.mark.asyncio
@@ -146,3 +155,59 @@ async def test_requeue_stale_runs_respects_timeout_before_sampling(test_session,
     assert refreshed_run is not None
     assert refreshed_run.status == RunStatus.RUNNING.value
     assert refreshed_run.retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_persist_item_result_progress_retries_deadlock(test_session, monkeypatch) -> None:
+    worker = BenchmarkWorker()
+    test_session_maker = async_sessionmaker(
+        test_session.bind,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    monkeypatch.setattr("app.worker.runner.async_session_maker", test_session_maker)
+    monkeypatch.setattr("app.worker.runner.save_item_result", AsyncMock())
+
+    update_mock = AsyncMock(side_effect=[RuntimeError("deadlock detected"), None])
+    monkeypatch.setattr("app.worker.runner.update_benchmark_status", update_mock)
+    add_event_mock = AsyncMock()
+    monkeypatch.setattr(worker, "_safe_add_run_event", add_event_mock)
+
+    await worker._persist_item_result_progress(
+        run_id="run-1",
+        run_benchmark_id="rb-1",
+        result=ItemResult(item_id="item-1", is_correct=True, score=1.0, metadata={}),
+        benchmark_name="livecodebench",
+        current_completed=5,
+        total_items=10,
+        current_correct=4,
+        should_persist_progress=True,
+    )
+
+    assert update_mock.await_count == 2
+    assert add_event_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_is_run_canceled_fails_open_on_transient_db_error(monkeypatch) -> None:
+    worker = BenchmarkWorker()
+
+    class BrokenSessionFactory:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            self.calls += 1
+            raise RuntimeError("connection was closed in the middle of operation")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    broken_factory = BrokenSessionFactory()
+    monkeypatch.setattr("app.worker.runner.async_session_maker", broken_factory)
+
+    assert await worker._is_run_canceled("run-1") is False
+    assert broken_factory.calls == 3

@@ -213,7 +213,7 @@ This server is exclusively for chutes-bench-runner. Do NOT deploy general Sandy 
 
 ### Autoscaler (bench-runner-sandy)
 
-All bench-runner workers and the autoscaler run on the dedicated bench-runner-sandy server (88.99.58.39). Workers use `SANDY_BASE_URL=http://localhost:7331` since Sandy and workers are co-located on the same machine. new_sandy and old_sandy no longer run any bench-runner workers, autoscaler, or queue monitor.
+All bench-runner workers and the autoscaler run on the dedicated bench-runner-sandy server (88.99.58.39). Worker containers must use `SANDY_BASE_URL=http://host.docker.internal:7331` with a Docker host-gateway mapping; `localhost` targets the container and breaks Sandy access. new_sandy and old_sandy no longer run any bench-runner workers, autoscaler, or queue monitor.
 
 The autoscaler scales from **running + queued** backlog (not queued-only), so it avoids
 killing active workers while long runs are in flight.
