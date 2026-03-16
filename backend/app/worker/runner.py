@@ -42,6 +42,8 @@ from app.services.worker_service import record_worker_heartbeat
 logger = get_logger(__name__)
 settings = get_settings()
 
+PROGRESS_PERSIST_INTERVAL = 5
+
 def _is_retryable_item_error(error: Optional[str]) -> bool:
     if not error:
         return False
@@ -156,6 +158,39 @@ def _apply_error_score_defaults(result: ItemResult) -> ItemResult:
     if result.error and result.score is None:
         result.score = 0.0
     return result
+
+
+def _compute_run_stale_seconds(
+    base_seconds: int,
+    max_timeout: int,
+    has_started_work: bool,
+) -> int:
+    if has_started_work and max_timeout:
+        return max(base_seconds, max_timeout)
+    return base_seconds
+
+
+async def _try_transition_stale_run(
+    db: AsyncSession,
+    run_id: str,
+    expected_updated_at: Optional[datetime],
+    values: dict[str, Any],
+) -> bool:
+    conditions = [
+        BenchmarkRun.id == run_id,
+        BenchmarkRun.status == RunStatus.RUNNING.value,
+    ]
+    if expected_updated_at is None:
+        conditions.append(BenchmarkRun.updated_at.is_(None))
+    else:
+        conditions.append(BenchmarkRun.updated_at == expected_updated_at)
+    result = await db.execute(
+        update(BenchmarkRun)
+        .where(*conditions)
+        .values(**values)
+        .returning(BenchmarkRun.id)
+    )
+    return result.scalar_one_or_none() is not None
 
 
 def _load_direct_adapter(
@@ -719,6 +754,9 @@ class BenchmarkWorker:
                     else:
                         last_update_candidates.append(run.created_at)
 
+                has_started_work = any(
+                    started_at is not None for started_at, _, _ in benchmark_entries
+                )
                 has_sampled_items = any(
                     (sampled_items or 0) > 0 for _, sampled_items, _ in benchmark_entries
                 )
@@ -732,9 +770,11 @@ class BenchmarkWorker:
                                 timeouts.append(timeout)
                     if timeouts:
                         max_timeout = max(max_timeout, max(timeouts))
-                run_stale_seconds = stale_after_seconds
-                if has_sampled_items and max_timeout:
-                    run_stale_seconds = max(run_stale_seconds, max_timeout)
+                run_stale_seconds = _compute_run_stale_seconds(
+                    stale_after_seconds,
+                    max_timeout,
+                    has_started_work or has_sampled_items,
+                )
                 cutoff = now - timedelta(seconds=run_stale_seconds)
                 last_update = max(last_update_candidates) if last_update_candidates else None
                 if last_update and last_update >= cutoff:
@@ -762,6 +802,22 @@ class BenchmarkWorker:
                         retry_count=retry_count,
                         max_retries=max_retries,
                     )
+                    claimed = await _try_transition_stale_run(
+                        db,
+                        run.id,
+                        run.updated_at,
+                        {
+                            "status": RunStatus.FAILED.value,
+                            "error_message": (
+                                f"All benchmarks failed (stale requeue retries exhausted: {retry_count}/{max_retries})"
+                            ),
+                            "completed_at": now,
+                            "updated_at": now,
+                        },
+                    )
+                    if not claimed:
+                        await db.rollback()
+                        continue
                     await db.execute(
                         update(BenchmarkRunBenchmark)
                         .where(BenchmarkRunBenchmark.run_id == run.id)
@@ -773,16 +829,6 @@ class BenchmarkWorker:
                         .values(
                             status=BenchmarkRunStatus.FAILED.value,
                             error_message="Run stalled and retries exhausted",
-                            completed_at=now,
-                            updated_at=now,
-                        )
-                    )
-                    await db.execute(
-                        update(BenchmarkRun)
-                        .where(BenchmarkRun.id == run.id)
-                        .values(
-                            status=RunStatus.FAILED.value,
-                            error_message=f"All benchmarks failed (stale requeue retries exhausted: {retry_count}/{max_retries})",
                             completed_at=now,
                             updated_at=now,
                         )
@@ -802,6 +848,22 @@ class BenchmarkWorker:
                         retry=new_retry,
                         max_retries=max_retries,
                     )
+                    claimed = await _try_transition_stale_run(
+                        db,
+                        run.id,
+                        run.updated_at,
+                        {
+                            "status": RunStatus.QUEUED.value,
+                            "retry_count": new_retry,
+                            "error_message": None,
+                            "started_at": None,
+                            "completed_at": None,
+                            "updated_at": now,
+                        },
+                    )
+                    if not claimed:
+                        await db.rollback()
+                        continue
                     await db.execute(
                         update(BenchmarkRunBenchmark)
                         .where(BenchmarkRunBenchmark.run_id == run.id)
@@ -812,18 +874,6 @@ class BenchmarkWorker:
                         )
                         .values(
                             status=BenchmarkRunStatus.PENDING.value,
-                            error_message=None,
-                            started_at=None,
-                            completed_at=None,
-                            updated_at=now,
-                        )
-                    )
-                    await db.execute(
-                        update(BenchmarkRun)
-                        .where(BenchmarkRun.id == run.id)
-                        .values(
-                            status=RunStatus.QUEUED.value,
-                            retry_count=new_retry,
                             error_message=None,
                             started_at=None,
                             completed_at=None,
@@ -1388,12 +1438,19 @@ class BenchmarkWorker:
                         item_metadata=result.metadata,
                     )
 
-                    await update_benchmark_status(
-                        item_db, rb.id, BenchmarkRunStatus.RUNNING,
-                        completed_items=current_completed,
+                    should_persist_progress = (
+                        current_completed == len(items_to_evaluate)
+                        or current_completed % PROGRESS_PERSIST_INTERVAL == 0
                     )
+                    if should_persist_progress:
+                        await update_benchmark_status(
+                            item_db,
+                            rb.id,
+                            BenchmarkRunStatus.RUNNING,
+                            completed_items=current_completed,
+                        )
 
-                    if current_completed % 5 == 0 or current_completed == len(items_to_evaluate):
+                    if should_persist_progress:
                         await add_run_event(
                             item_db, run.id, "benchmark_progress",
                             benchmark_name=rb.benchmark_name,
