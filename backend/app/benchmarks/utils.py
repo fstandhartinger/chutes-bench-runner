@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 import uuid
 from pathlib import Path
@@ -75,14 +76,18 @@ async def download_hf_file_async(
     cache_subdir: Optional[str] = None,
 ) -> Path:
     """Async wrapper for download_hf_file to avoid blocking the event loop."""
-    return await asyncio.to_thread(
-        download_hf_file,
-        repo_id,
-        filename,
-        repo_type=repo_type,
-        token=token,
-        cache_subdir=cache_subdir,
-    )
+    loop = asyncio.get_running_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return await loop.run_in_executor(
+            pool,
+            lambda: download_hf_file(
+                repo_id,
+                filename,
+                repo_type=repo_type,
+                token=token,
+                cache_subdir=cache_subdir,
+            ),
+        )
 
 
 def download_hf_snapshot(
@@ -150,14 +155,18 @@ async def download_http_file_async(
     timeout_seconds: int = 120,
 ) -> Path:
     """Async wrapper for download_http_file to avoid blocking the event loop."""
-    return await asyncio.to_thread(
-        download_http_file,
-        url,
-        cache_subdir=cache_subdir,
-        filename=filename,
-        headers=headers,
-        timeout_seconds=timeout_seconds,
-    )
+    loop = asyncio.get_running_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return await loop.run_in_executor(
+            pool,
+            lambda: download_http_file(
+                url,
+                cache_subdir=cache_subdir,
+                filename=filename,
+                headers=headers,
+                timeout_seconds=timeout_seconds,
+            ),
+        )
 
 
 async def load_dataset_with_retry(
@@ -167,7 +176,11 @@ async def load_dataset_with_retry(
     timeout_seconds: float = 600.0,
     **kwargs: Any,
 ) -> Any:
-    """Load a Hugging Face dataset with retries."""
+    """Load a Hugging Face dataset with retries.
+
+    Uses a dedicated ThreadPoolExecutor to avoid contention with the
+    default asyncio executor, which can stall when many tasks compete.
+    """
     from datasets import load_dataset
 
     cache_root = get_bench_data_dir() / "hf"
@@ -180,10 +193,12 @@ async def load_dataset_with_retry(
     while attempt < max_attempts:
         attempt += 1
         try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(load_dataset, *args, **kwargs),
-                timeout=timeout_seconds,
-            )
+            loop = asyncio.get_running_loop()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return await asyncio.wait_for(
+                    loop.run_in_executor(pool, lambda: load_dataset(*args, **kwargs)),
+                    timeout=timeout_seconds,
+                )
         except Exception as exc:
             last_error = exc
             dataset_name = args[0] if args else "unknown"
