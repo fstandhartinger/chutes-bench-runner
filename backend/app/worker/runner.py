@@ -376,14 +376,25 @@ class BenchmarkWorker:
             try:
                 now = time.monotonic()
                 if now - self._last_stale_check >= settings.worker_stale_check_interval:
-                    await self.requeue_stale_runs()
+                    try:
+                        await asyncio.wait_for(self.requeue_stale_runs(), timeout=30)
+                    except asyncio.TimeoutError:
+                        logger.warning("Stale check timed out (DB pool exhaustion?)")
                     self._last_stale_check = now
                 if now - self._last_heartbeat >= settings.worker_heartbeat_seconds:
-                    await self.touch_active_runs()
-                    await self.touch_worker_heartbeat()
+                    try:
+                        await asyncio.wait_for(self.touch_active_runs(), timeout=15)
+                    except asyncio.TimeoutError:
+                        logger.warning("Heartbeat timed out (DB pool exhaustion?)")
+                    try:
+                        await asyncio.wait_for(self.touch_worker_heartbeat(), timeout=15)
+                    except asyncio.TimeoutError:
+                        pass
                     self._last_heartbeat = now
                 await self.reap_completed_runs()
-                await self.launch_runs()
+                await asyncio.wait_for(self.launch_runs(), timeout=30)
+            except asyncio.TimeoutError:
+                logger.warning("Worker loop operation timed out")
             except Exception:
                 logger.exception("Worker error")
 

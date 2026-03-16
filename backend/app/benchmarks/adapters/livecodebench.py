@@ -114,20 +114,25 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
         return total_items, subset
 
     async def preload(self) -> None:
-        """Load the LiveCodeBench dataset into memory."""
+        """Load the LiveCodeBench dataset into memory.
+
+        Uses synchronous load_dataset directly (no background thread) because
+        the cached dataset loads in ~3s and threading causes hangs in the
+        worker's event loop due to thread/import-lock contention.
+        """
         if self._items:
             return
         import os
+        from datasets import load_dataset
 
         hf_token = os.environ.get("HF_TOKEN")
         cache_dir = get_bench_data_dir()
         logger.info("Loading LiveCodeBench dataset")
-        dataset = await load_dataset_with_retry(
+        dataset = load_dataset(
             "livecodebench/code_generation",
             split="test",
             token=hf_token,
             cache_dir=str(cache_dir),
-            timeout_seconds=1800.0,
         )
         items: list[dict[str, Any]] = []
         for idx, raw_item in enumerate(dataset):
