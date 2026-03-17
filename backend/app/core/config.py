@@ -17,6 +17,10 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str
+    db_pool_size: Optional[int] = None
+    db_max_overflow: Optional[int] = None
+    db_pool_timeout_seconds: int = 30
+    db_pool_recycle_seconds: int = 600
 
     # Chutes API
     chutes_api_key: str
@@ -168,6 +172,20 @@ class Settings(BaseSettings):
         if "asyncpg" in url:
             return url.replace("postgresql+asyncpg://", "postgresql://", 1)
         return url
+
+    @property
+    def effective_db_pool_size(self) -> int:
+        """Leave enough pooled connections for run tasks and worker housekeeping."""
+        if self.db_pool_size is not None and self.db_pool_size > 0:
+            return self.db_pool_size
+        return max(self.worker_max_concurrent + 2, 5)
+
+    @property
+    def effective_db_max_overflow(self) -> int:
+        """Allow short bursts above the base pool without forcing timeouts."""
+        if self.db_max_overflow is not None and self.db_max_overflow >= 0:
+            return self.db_max_overflow
+        return max(self.worker_max_concurrent, 3)
 
 
 @lru_cache
