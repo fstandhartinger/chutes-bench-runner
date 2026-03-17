@@ -1051,6 +1051,10 @@ class BenchmarkWorker:
                         message = f"Chutes credentials are not authorized for {run.model_slug}"
                         await self._fail_run_for_model_access(run, run_benchmarks, message)
                         return
+                    elif status_code == 402:
+                        message = f"Chutes model {run.model_slug} is unavailable because the creator has zero balance"
+                        await self._fail_run_for_model_access(run, run_benchmarks, message)
+                        return
                     elif status_code == 404:
                         message = f"Model {run.model_slug} not found on Chutes"
                         await self._fail_run_for_model_access(run, run_benchmarks, message)
