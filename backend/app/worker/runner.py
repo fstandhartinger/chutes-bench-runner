@@ -65,6 +65,12 @@ def _is_retryable_item_error(error: Optional[str]) -> bool:
         return True
     if "sandbox expired" in message or "sandbox terminated" in message:
         return True
+    if "all connection attempts failed" in message:
+        return True
+    if "failed to establish a new connection" in message:
+        return True
+    if "connection refused" in message:
+        return True
     if "sandbox" in message and "preempt" in message:
         return True
     if "http 404" in message and ("sandbox" in message or "sandy" in message):
@@ -107,6 +113,12 @@ def _is_fatal_item_error(error: Optional[str]) -> bool:
     if "all upstreams failed to create sandbox" in message:
         return True
     if "sandy api key is not configured" in message:
+        return True
+    if "all connection attempts failed" in message:
+        return True
+    if "failed to establish a new connection" in message:
+        return True
+    if "connection refused" in message:
         return True
     if "model not found" in message or "no such model" in message or "http 404" in message:
         if "sandbox" in message or "sandy" in message:

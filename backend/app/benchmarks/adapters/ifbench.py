@@ -136,12 +136,14 @@ class IFBenchAdapter(BenchmarkAdapter):
                 kwargs=kwargs_list,
             )
             prompt_to_response = {prompt: response_text}
-            output = evaluation_lib.test_instruction_following_strict(inp, prompt_to_response)
+            strict_output = evaluation_lib.test_instruction_following_strict(inp, prompt_to_response)
+            loose_output = evaluation_lib.test_instruction_following_loose(inp, prompt_to_response)
 
             item_metadata = {
                 **metadata,
                 "instruction_id_list": instruction_ids,
-                "follow_instruction_list": output.follow_instruction_list,
+                "strict_follow_instruction_list": strict_output.follow_instruction_list,
+                "loose_follow_instruction_list": loose_output.follow_instruction_list,
             }
             return ItemResult(
                 item_id=item_id,
@@ -149,14 +151,16 @@ class IFBenchAdapter(BenchmarkAdapter):
                 prompt=prompt,
                 response=response_text.strip(),
                 expected="follow_all_instructions",
-                is_correct=output.follow_all_instructions,
-                score=1.0 if output.follow_all_instructions else 0.0,
+                is_correct=strict_output.follow_all_instructions,
+                score=1.0 if strict_output.follow_all_instructions else 0.0,
                 latency_ms=latency_ms,
                 input_tokens=metadata.get("usage", {}).get("prompt_tokens"),
                 output_tokens=metadata.get("usage", {}).get("completion_tokens"),
                 judge_output={
-                    "follow_all_instructions": output.follow_all_instructions,
-                    "follow_instruction_list": output.follow_instruction_list,
+                    "strict_follow_all_instructions": strict_output.follow_all_instructions,
+                    "strict_follow_instruction_list": strict_output.follow_instruction_list,
+                    "loose_follow_all_instructions": loose_output.follow_all_instructions,
+                    "loose_follow_instruction_list": loose_output.follow_instruction_list,
                 },
                 metadata=item_metadata,
             )
@@ -174,3 +178,53 @@ class IFBenchAdapter(BenchmarkAdapter):
                 error=str(e),
                 metadata=item_metadata,
             )
+
+    async def postprocess(self, results: list[ItemResult]) -> dict[str, Any]:
+        strict_prompt_total = 0
+        strict_prompt_correct = 0
+        loose_prompt_total = 0
+        loose_prompt_correct = 0
+        strict_instruction_total = 0
+        strict_instruction_correct = 0
+        loose_instruction_total = 0
+        loose_instruction_correct = 0
+
+        for result in results:
+            if result.error:
+                continue
+            judge_output = result.judge_output or {}
+            strict_list = list(judge_output.get("strict_follow_instruction_list") or [])
+            loose_list = list(judge_output.get("loose_follow_instruction_list") or [])
+            strict_prompt = judge_output.get("strict_follow_all_instructions")
+            loose_prompt = judge_output.get("loose_follow_all_instructions")
+
+            if isinstance(strict_prompt, bool):
+                strict_prompt_total += 1
+                if strict_prompt:
+                    strict_prompt_correct += 1
+            if isinstance(loose_prompt, bool):
+                loose_prompt_total += 1
+                if loose_prompt:
+                    loose_prompt_correct += 1
+
+            strict_instruction_total += len(strict_list)
+            strict_instruction_correct += sum(1 for followed in strict_list if followed)
+            loose_instruction_total += len(loose_list)
+            loose_instruction_correct += sum(1 for followed in loose_list if followed)
+
+        return {
+            "strict_prompt_accuracy": (
+                strict_prompt_correct / strict_prompt_total if strict_prompt_total else 0.0
+            ),
+            "strict_instruction_accuracy": (
+                strict_instruction_correct / strict_instruction_total
+                if strict_instruction_total
+                else 0.0
+            ),
+            "loose_prompt_accuracy": (
+                loose_prompt_correct / loose_prompt_total if loose_prompt_total else 0.0
+            ),
+            "loose_instruction_accuracy": (
+                loose_instruction_correct / loose_instruction_total if loose_instruction_total else 0.0
+            ),
+        }

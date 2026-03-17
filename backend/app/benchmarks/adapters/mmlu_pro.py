@@ -84,6 +84,7 @@ class MMLUProAdapter(BenchmarkAdapter):
                             "question": item["question"],
                             "options": item["options"],
                             "answer": item["answer"],
+                            "cot_content": item.get("cot_content", ""),
                             "category": category,
                         }
                     )
@@ -129,11 +130,13 @@ class MMLUProAdapter(BenchmarkAdapter):
         if few_shot:
             blocks: list[str] = []
             for example in few_shot[:5]:
+                cot_content = str(example.get("cot_content") or "").strip()
+                answer_content = cot_content or f"Answer: {str(example['answer']).strip().upper()[:1]}"
                 blocks.append(
-                    "Question: {question}\nOptions:\n{options}\nAnswer: {answer}".format(
+                    "Question: {question}\nOptions:\n{options}\n{answer}".format(
                         question=example["question"],
                         options=_format_options(example["options"]),
-                        answer=str(example["answer"]).strip().upper()[:1],
+                        answer=answer_content,
                     )
                 )
             few_shot_prompt = "\n\n".join(blocks) + "\n\n"

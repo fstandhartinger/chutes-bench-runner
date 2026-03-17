@@ -122,7 +122,7 @@ class GPQADiamondAdapter(BenchmarkAdapter):
         prompt = (
             f"What is the correct answer to this question: {item['question']}\n\n"
             f"Choices:\n{options_str}\n\n"
-            "Format your response as follows: \"The correct answer is (insert answer here)\""
+            "Respond with exactly one line in the format: Answer: X"
         )
 
         try:
@@ -130,7 +130,10 @@ class GPQADiamondAdapter(BenchmarkAdapter):
             response_text, metadata = await self.client.get_completion_text(
                 self.model_slug,
                 prompt,
-                system_prompt="You are a very intelligent assistant, who follows instructions directly.",
+                system_prompt=(
+                    "You are a very intelligent assistant who follows instructions directly. "
+                    "Return exactly one line in the format 'Answer: X'."
+                ),
                 max_tokens=4096,
                 min_output_tokens=0,
                 temperature=0.0,

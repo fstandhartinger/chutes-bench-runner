@@ -33,15 +33,8 @@ class AIME2025Adapter(BenchmarkAdapter):
     def supports_parallel_items(self) -> bool:
         return True
 
-    def _get_run_temperatures(self) -> list[float]:
-        temps = [0.0, 0.3, 0.6]
-        run_count = 8
-        schedule: list[float] = []
-        idx = 0
-        while len(schedule) < run_count:
-            schedule.append(temps[idx % len(temps)])
-            idx += 1
-        return schedule
+    def get_item_timeout_seconds(self) -> Optional[int]:
+        return 300
 
     async def get_total_items(self) -> int:
         if not self._items:
@@ -107,79 +100,46 @@ class AIME2025Adapter(BenchmarkAdapter):
             "'ANSWER: <integer>' with no extra text."
         )
         try:
-            temperatures = self._get_run_temperatures()
-            run_results: list[dict[str, Any]] = []
-            correct_count = 0
-            last_response = ""
-            total_latency_ms = 0
-            total_prompt_tokens = 0
-            total_completion_tokens = 0
-
             # Clean expected answer - ensure it's not None
             expected = str(item.get("answer", "")).strip()
             if expected.startswith("\\boxed{"):
                 expected = expected[7:-1]
             expected = re.sub(r"[^\d]", "", expected)
+            start_time = time.time()
+            response_text, metadata = await self.client.get_completion_text(
+                self.model_slug,
+                prompt,
+                system_prompt=system_prompt,
+                max_tokens=64,
+                min_output_tokens=0,
+                temperature=0.0,
+            )
+            latency_ms = int((time.time() - start_time) * 1000)
+            usage = metadata.get("usage", {}) if isinstance(metadata, dict) else {}
 
-            for run_index, temp in enumerate(temperatures, start=1):
-                start_time = time.time()
-                response_text, metadata = await self.client.get_completion_text(
-                    self.model_slug,
-                    prompt,
-                    system_prompt=system_prompt,
-                    max_tokens=16384,
-                    temperature=temp,
-                )
-                latency_ms = int((time.time() - start_time) * 1000)
-                total_latency_ms += latency_ms
-                usage = metadata.get("usage", {}) if isinstance(metadata, dict) else {}
-                try:
-                    total_prompt_tokens += int(usage.get("prompt_tokens") or 0)
-                    total_completion_tokens += int(usage.get("completion_tokens") or 0)
-                except (TypeError, ValueError):
-                    pass
+            model_answer = ""
+            response_str = str(response_text or "")
+            answer_matches = re.findall(r"ANSWER:\s*(\d+)", response_str, re.IGNORECASE)
+            if answer_matches:
+                model_answer = answer_matches[-1]
 
-                model_answer = ""
-                response_str = str(response_text or "")
-                answer_matches = re.findall(r"ANSWER:\s*(\d+)", response_str, re.IGNORECASE)
-                if answer_matches:
-                    model_answer = answer_matches[-1]
+            if not model_answer:
+                boxed_match = re.search(r"\\boxed\{(\d+)\}", response_str)
+                if boxed_match:
+                    model_answer = boxed_match.group(1)
 
-                if not model_answer:
-                    boxed_match = re.search(r"\\boxed\{(\d+)\}", response_str)
-                    if boxed_match:
-                        model_answer = boxed_match.group(1)
+            if not model_answer:
+                clean_text = re.sub(r"(?i)<think>.*?</think>", "", response_str, flags=re.DOTALL).strip()
+                numbers = re.findall(r"\b\d+\b", clean_text)
+                if numbers:
+                    model_answer = numbers[-1]
 
-                if not model_answer:
-                    clean_text = re.sub(r"(?i)<think>.*?</think>", "", response_str, flags=re.DOTALL).strip()
-                    numbers = re.findall(r"\b\d+\b", clean_text)
-                    if numbers:
-                        model_answer = numbers[-1]
+            try:
+                is_correct = int(model_answer) == int(expected)
+            except (ValueError, TypeError):
+                is_correct = model_answer == expected
 
-                try:
-                    run_correct = int(model_answer) == int(expected)
-                except (ValueError, TypeError):
-                    run_correct = model_answer == expected
-
-                if run_correct:
-                    correct_count += 1
-
-                run_results.append(
-                    {
-                        "run": run_index,
-                        "temperature": temp,
-                        "answer": model_answer or None,
-                        "correct": run_correct,
-                        "finish_reason": metadata.get("finish_reason"),
-                        "usage": usage,
-                        "error": metadata.get("response_error"),
-                    }
-                )
-                last_response = response_text or ""
-
-            avg_latency_ms = int(total_latency_ms / len(temperatures)) if temperatures else 0
-            score = correct_count / len(temperatures) if temperatures else 0.0
-            is_correct = correct_count >= (len(temperatures) / 2) if temperatures else False
+            score = 1.0 if is_correct else 0.0
 
             error = None
             if score == 0.0:
@@ -188,22 +148,21 @@ class AIME2025Adapter(BenchmarkAdapter):
             item_metadata = {
                 "level": item.get("level"),
                 "system_prompt": system_prompt,
-                "parsed_answers": [run["answer"] for run in run_results],
-                "runs": run_results,
-                "run_count": len(temperatures),
-                "correct_count": correct_count,
+                "parsed_answer": model_answer or None,
+                "finish_reason": metadata.get("finish_reason"),
+                "usage": usage,
             }
             return ItemResult(
                 item_id=item_id,
                 item_hash=self.compute_item_hash(item["problem"]),
                 prompt=prompt,
-                response=last_response.strip(),
+                response=response_str.strip(),
                 expected=expected,
                 is_correct=is_correct,
                 score=score,
-                latency_ms=avg_latency_ms,
-                input_tokens=total_prompt_tokens,
-                output_tokens=total_completion_tokens,
+                latency_ms=latency_ms,
+                input_tokens=usage.get("prompt_tokens"),
+                output_tokens=usage.get("completion_tokens"),
                 error=error,
                 metadata=item_metadata,
             )
@@ -233,7 +192,7 @@ class AIME2025Adapter(BenchmarkAdapter):
         else:
             mean_score = 0.0
         return {
-            "aime_runs": 8,
-            "aime_temperatures": self._get_run_temperatures(),
+            "aime_runs": 1,
+            "aime_temperatures": [0.0],
             "score_override": mean_score,
         }

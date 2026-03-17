@@ -19,3 +19,9 @@ def test_disabled_chute_is_fatal_and_not_retryable() -> None:
     error = 'HTTP 503 from Chutes: {"detail":"This chute is currently disabled."}'
     assert _is_fatal_item_error(error) is True
     assert _is_retryable_item_error(error) is False
+
+
+def test_sandy_connection_failures_are_fatal_and_retryable() -> None:
+    error = "All connection attempts failed"
+    assert _is_fatal_item_error(error) is True
+    assert _is_retryable_item_error(error) is True
