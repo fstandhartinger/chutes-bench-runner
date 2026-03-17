@@ -302,7 +302,7 @@ separate worker pool with filtering enabled:
 - **Terminal-Bench**: Added few-shot examples and command-line heuristics to find the command if no markdown is used.
 - **Tau-Bench**: Added few-shot examples and regex keyword matching for action names.
 - **GPQA**: Added case-insensitive think tag handling and standalone letter matching (e.g., "C." or "C").
-- **IFEval**: Implemented custom internal checker for 10+ instruction types (punctuation, case, length, JSON, quotes, keywords).
+- **IFBench**: Uses AllenAI's official IFBench instruction registry and evaluation logic against `allenai/IFBench_test`.
 - **Transparency**: Added `test_code` to `ItemResult` so users can see exactly what validation code was run in the sandbox.
 - **Error Resilience**: Fixed `NoneType` attribute errors by ensuring `ChutesClient` always returns a string and adding null checks in adapters.
 
@@ -359,7 +359,7 @@ Each benchmark adapter in `backend/app/benchmarks/adapters/` uses official datas
 | `mmlu_pro` | TIGER-Lab/MMLU-Pro | Public dataset |
 | `gpqa_diamond` | Idavidrein/gpqa (GATED) | Requires HF access |
 | `aime_2025` | AI-MO/aimo-validation-aime (fallbacks: lighteval/MATH, hendrycks/competition_math) | Public fallbacks |
-| `ifbench` | google/IFEval | Official IFEval scoring |
+| `ifbench` | allenai/IFBench_test | Official AllenAI IFBench scoring (5-repeat loose prompt accuracy) |
 | `hle` | cais/hle (GATED) | Requires HF access |
 | `livecodebench` | livecodebench/code_generation | Runs public + private tests in Sandy |
 | `scicode` | SciCode1/SciCode + Srimadh/Scicode-test-data-h5 | Official stepwise prompts + HDF5 tests |
@@ -376,7 +376,7 @@ Each benchmark adapter in `backend/app/benchmarks/adapters/` uses official datas
 ### Benchmark Scoring Notes
 
 - **Code benchmarks** (livecodebench, scicode, aa_lcr, swe_bench_pro, terminal_bench_hard): Use the **Sandy Sandbox** on the Hetzner Server for execution.
-- **IFBench**: Uses the official IFEval checker.
+- **IFBench**: Uses the official AllenAI IFBench checker and reports loose prompt accuracy.
 - **Terminal-Bench**: Uses Sandy agent execution to drive the task container, then runs the official tests.
 - **SWE-Bench Pro**: Runs a Sandy agent against a sandboxed repo checkout, derives a patch, then executes the official harness.
 

@@ -35,7 +35,7 @@ results, and verifiable signed exports for sharing results.
 | GPQA Diamond | Idavidrein/gpqa (gated) | Multiple-choice letter parsing |
 | Humanity's Last Exam (HLE) | cais/hle (gated) | LLM judge (official HLE judge prompt, multimodal) |
 | AIME 2025 | AI-MO/aimo-validation-aime | Numeric answer extraction |
-| IFBench | google/IFEval | Official IFEval instruction checks |
+| IFBench | allenai/IFBench_test | Official AllenAI IFBench checks, scored as 5-repeat loose prompt accuracy |
 | AA-LCR | ArtificialAnalysis/AA-LCR | LLM-judge consistency check |
 | AA-Omniscience | ArtificialAnalysis/AA-Omniscience-Public | LLM judge using official rubric |
 | GDPval-AA | openai/gdpval | LLM judge against reference docs |
