@@ -1396,6 +1396,14 @@ class BenchmarkWorker:
             if not pending_item_ids:
                 accuracy = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
                 additional_metrics = await adapter.postprocess(existing_results) if needs_postprocess else {}
+                accuracy_override_present = "accuracy_override" in additional_metrics
+                accuracy_override = additional_metrics.pop("accuracy_override", None)
+                if accuracy_override_present:
+                    accuracy = float(accuracy_override or 0.0)
+                correct_override_present = "correct_count_override" in additional_metrics
+                correct_override = additional_metrics.pop("correct_count_override", None)
+                if correct_override_present:
+                    correct = float(correct_override or 0.0)
                 score_override_present = "score_override" in additional_metrics
                 score_override = additional_metrics.pop("score_override", None)
                 score = score_override if score_override_present else accuracy
@@ -1612,6 +1620,14 @@ class BenchmarkWorker:
             all_results = existing_results + new_results if needs_postprocess else []
             accuracy = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
             additional_metrics = await adapter.postprocess(all_results) if needs_postprocess else {}
+            accuracy_override_present = "accuracy_override" in additional_metrics
+            accuracy_override = additional_metrics.pop("accuracy_override", None)
+            if accuracy_override_present:
+                accuracy = float(accuracy_override or 0.0)
+            correct_override_present = "correct_count_override" in additional_metrics
+            correct_override = additional_metrics.pop("correct_count_override", None)
+            if correct_override_present:
+                correct = float(correct_override or 0.0)
             score_override_present = "score_override" in additional_metrics
             score_override = additional_metrics.pop("score_override", None)
             score = score_override if score_override_present else accuracy

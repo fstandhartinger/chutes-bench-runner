@@ -293,5 +293,7 @@ class IFBenchAdapter(BenchmarkAdapter):
                 if loose_instruction_total
                 else 0.0
             ),
+            "accuracy_override": loose_prompt_accuracy,
+            "correct_count_override": loose_prompt_total,
             "score_override": loose_prompt_accuracy,
         }

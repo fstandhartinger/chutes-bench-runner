@@ -159,6 +159,8 @@ async def test_ifbench_postprocess_uses_repeat_averaged_loose_prompt_accuracy() 
     assert metrics["strict_prompt_accuracy"] == pytest.approx(0.4)
     assert metrics["loose_instruction_accuracy"] == pytest.approx(0.75)
     assert metrics["strict_instruction_accuracy"] == pytest.approx(0.6)
+    assert metrics["accuracy_override"] == pytest.approx(0.6)
+    assert metrics["correct_count_override"] == pytest.approx(1.2)
     assert metrics["score_override"] == pytest.approx(0.6)
 
 
