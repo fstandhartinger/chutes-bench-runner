@@ -804,15 +804,22 @@ class BenchmarkWorker:
                     await db.commit()
 
             result = await db.execute(
-                select(BenchmarkRun)
-                .options(noload(BenchmarkRun.model))
+                select(
+                    BenchmarkRun.id,
+                    BenchmarkRun.updated_at,
+                    BenchmarkRun.started_at,
+                    BenchmarkRun.created_at,
+                    BenchmarkRun.model_slug,
+                    BenchmarkRun.retry_count,
+                    BenchmarkRun.max_retries,
+                )
                 .where(BenchmarkRun.status == RunStatus.RUNNING.value)
             )
-            running_runs = list(result.scalars().all())
+            running_runs = list(result.all())
             if not running_runs:
                 return
 
-            run_ids = [run.id for run in running_runs]
+            run_ids = [run_id for run_id, *_ in running_runs]
             benchmark_result = await db.execute(
                 select(
                     BenchmarkRunBenchmark.run_id,
@@ -852,26 +859,34 @@ class BenchmarkWorker:
                 .group_by(BenchmarkRunBenchmark.run_id)
             )
             last_item_by_run = {run_id: created_at for run_id, created_at in item_result.all()}
-            for run in running_runs:
-                benchmark_entries = benchmarks_by_run.get(run.id, [])
-                last_item_at = last_item_by_run.get(run.id)
+            for (
+                run_id,
+                run_updated_at,
+                run_started_at,
+                run_created_at,
+                run_model_slug,
+                run_retry_count,
+                run_max_retries,
+            ) in running_runs:
+                benchmark_entries = benchmarks_by_run.get(run_id, [])
+                last_item_at = last_item_by_run.get(run_id)
                 last_update_candidates: list[datetime] = []
                 if last_item_at:
                     last_update_candidates.append(last_item_at)
-                if run.updated_at:
-                    last_update_candidates.append(run.updated_at)
+                if run_updated_at:
+                    last_update_candidates.append(run_updated_at)
                 if not last_item_at:
                     started_candidates: list[datetime] = [
                         started_at
                         for started_at, _, _ in benchmark_entries
                         if started_at
                     ]
-                    if run.started_at:
-                        started_candidates.append(run.started_at)
+                    if run_started_at:
+                        started_candidates.append(run_started_at)
                     if started_candidates:
                         last_update_candidates.append(max(started_candidates))
                     else:
-                        last_update_candidates.append(run.created_at)
+                        last_update_candidates.append(run_created_at)
 
                 has_started_work = any(
                     started_at is not None for started_at, _, _ in benchmark_entries
@@ -884,7 +899,7 @@ class BenchmarkWorker:
                     timeouts: list[int] = []
                     for _, _, benchmark_name in benchmark_entries:
                         if benchmark_name:
-                            timeout = self._get_benchmark_timeout(benchmark_name, run.model_slug)
+                            timeout = self._get_benchmark_timeout(benchmark_name, run_model_slug)
                             if timeout:
                                 timeouts.append(timeout)
                     if timeouts:
@@ -899,32 +914,32 @@ class BenchmarkWorker:
                 if last_update and last_update >= cutoff:
                     continue
 
-                if run.id in self.current_run_ids:
-                    last_progress = self.last_progress_at.get(run.id)
+                if run_id in self.current_run_ids:
+                    last_progress = self.last_progress_at.get(run_id)
                     if last_progress and last_progress >= cutoff:
                         continue
-                    task = self.run_tasks.pop(run.id, None)
+                    task = self.run_tasks.pop(run_id, None)
                     if task:
                         task.cancel()
                         await asyncio.gather(task, return_exceptions=True)
-                    self.current_run_ids.discard(run.id)
-                    self.last_progress_at.pop(run.id, None)
-                retry_count = getattr(run, "retry_count", 0) or 0
-                max_retries = getattr(run, "max_retries", 3) or 3
+                    self.current_run_ids.discard(run_id)
+                    self.last_progress_at.pop(run_id, None)
+                retry_count = run_retry_count or 0
+                max_retries = run_max_retries or 3
                 new_retry = retry_count + 1
 
                 if new_retry > max_retries:
                     # Exhausted retries — fail permanently instead of infinite requeue loop
                     logger.error(
                         "Failing stale run (retries exhausted)",
-                        run_id=run.id,
+                        run_id=run_id,
                         retry_count=retry_count,
                         max_retries=max_retries,
                     )
                     claimed = await _try_transition_stale_run(
                         db,
-                        run.id,
-                        run.updated_at,
+                        run_id,
+                        run_updated_at,
                         {
                             "status": RunStatus.FAILED.value,
                             "error_message": (
@@ -939,7 +954,7 @@ class BenchmarkWorker:
                         continue
                     await db.execute(
                         update(BenchmarkRunBenchmark)
-                        .where(BenchmarkRunBenchmark.run_id == run.id)
+                        .where(BenchmarkRunBenchmark.run_id == run_id)
                         .where(
                             BenchmarkRunBenchmark.status.in_(
                                 [BenchmarkRunStatus.RUNNING.value, BenchmarkRunStatus.PENDING.value]
@@ -955,22 +970,22 @@ class BenchmarkWorker:
                     await db.commit()
                     await add_run_event(
                         db,
-                        run.id,
+                        run_id,
                         "run_failed",
                         message=f"Run failed: stale requeue retries exhausted ({retry_count}/{max_retries})",
                     )
                 else:
                     logger.warning(
                         "Requeuing stale run",
-                        run_id=run.id,
-                        updated_at=run.updated_at,
+                        run_id=run_id,
+                        updated_at=run_updated_at,
                         retry=new_retry,
                         max_retries=max_retries,
                     )
                     claimed = await _try_transition_stale_run(
                         db,
-                        run.id,
-                        run.updated_at,
+                        run_id,
+                        run_updated_at,
                         {
                             "status": RunStatus.QUEUED.value,
                             "retry_count": new_retry,
@@ -985,7 +1000,7 @@ class BenchmarkWorker:
                         continue
                     await db.execute(
                         update(BenchmarkRunBenchmark)
-                        .where(BenchmarkRunBenchmark.run_id == run.id)
+                        .where(BenchmarkRunBenchmark.run_id == run_id)
                         .where(
                             BenchmarkRunBenchmark.status.in_(
                                 [BenchmarkRunStatus.RUNNING.value]
@@ -1002,7 +1017,7 @@ class BenchmarkWorker:
                     await db.commit()
                     await add_run_event(
                         db,
-                        run.id,
+                        run_id,
                         "run_requeued",
                         message=f"Stale run requeued (attempt {new_retry}/{max_retries})",
                     )

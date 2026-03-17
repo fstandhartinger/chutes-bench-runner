@@ -158,6 +158,72 @@ async def test_requeue_stale_runs_respects_timeout_before_sampling(test_session,
 
 
 @pytest.mark.asyncio
+async def test_requeue_stale_runs_handles_commit_across_multiple_runs(test_session, monkeypatch) -> None:
+    model = Model(
+        slug="test-model",
+        name="Test Model",
+        provider="chutes",
+        is_active=True,
+    )
+    benchmark = Benchmark(
+        name="livecodebench",
+        display_name="LiveCodeBench",
+        adapter_class="LiveCodeBenchAdapter",
+        is_enabled=True,
+        supports_subset=True,
+    )
+    test_session.add_all([model, benchmark])
+    await test_session.flush()
+
+    started_at = datetime.utcnow() - timedelta(minutes=40)
+    run_ids: list[str] = []
+    for _ in range(2):
+        run = BenchmarkRun(
+            model_id=model.id,
+            model_slug=model.slug,
+            provider="chutes",
+            subset_pct=100,
+            status=RunStatus.RUNNING.value,
+            updated_at=started_at,
+            started_at=started_at,
+            retry_count=0,
+            max_retries=3,
+        )
+        test_session.add(run)
+        await test_session.flush()
+        run_ids.append(str(run.id))
+        test_session.add(
+            BenchmarkRunBenchmark(
+                run_id=run.id,
+                benchmark_id=benchmark.id,
+                benchmark_name=benchmark.name,
+                status=BenchmarkRunStatus.RUNNING.value,
+                started_at=started_at,
+                sampled_items=1,
+            )
+        )
+    await test_session.commit()
+
+    worker = BenchmarkWorker()
+    monkeypatch.setattr(worker, "_get_benchmark_timeout", lambda *_args: 60)
+    test_session_maker = async_sessionmaker(
+        test_session.bind,
+        class_=AsyncSession,
+        expire_on_commit=True,
+    )
+    monkeypatch.setattr("app.worker.runner.async_session_maker", test_session_maker)
+
+    await worker.requeue_stale_runs()
+
+    async with test_session_maker() as verify_session:
+        for run_id in run_ids:
+            refreshed_run = await verify_session.get(BenchmarkRun, run_id)
+            assert refreshed_run is not None
+            assert refreshed_run.status == RunStatus.QUEUED.value
+            assert refreshed_run.retry_count == 1
+
+
+@pytest.mark.asyncio
 async def test_persist_item_result_progress_retries_deadlock(test_session, monkeypatch) -> None:
     worker = BenchmarkWorker()
     test_session_maker = async_sessionmaker(
