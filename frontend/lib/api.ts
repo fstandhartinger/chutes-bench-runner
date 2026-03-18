@@ -304,6 +304,8 @@ export interface TokenUsageWindow {
 export interface TokenUsageStats {
   last_24h: TokenUsageWindow;
   last_7d: TokenUsageWindow;
+  last_30d: TokenUsageWindow;
+  all_time: TokenUsageWindow;
 }
 
 export interface SandyMetricsPoint {

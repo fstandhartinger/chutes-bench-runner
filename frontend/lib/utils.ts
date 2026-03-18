@@ -36,6 +36,13 @@ export function formatDurationSeconds(seconds: number | null | undefined): strin
   return formatDuration(Math.max(0, Math.round(seconds * 1000)));
 }
 
+export function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(2)}B`;
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  return String(tokens);
+}
+
 export function formatPercent(value: number | undefined | null): string {
   if (value === undefined || value === null) return "-";
   return `${(value * 100).toFixed(1)}%`;

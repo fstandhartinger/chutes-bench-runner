@@ -326,6 +326,8 @@ class TokenUsageStats(APIModel):
     """Token usage summary windows."""
     last_24h: TokenUsageWindow
     last_7d: TokenUsageWindow
+    last_30d: TokenUsageWindow
+    all_time: TokenUsageWindow
 
 
 class SandyMetricsPoint(APIModel):

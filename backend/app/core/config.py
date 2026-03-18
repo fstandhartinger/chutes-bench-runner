@@ -72,7 +72,7 @@ class Settings(BaseSettings):
 
     # Ops dashboard
     ops_token_stats_cache_seconds: int = 300
-    ops_token_stats_timeout_seconds: float = 2.0
+    ops_token_stats_timeout_seconds: float = 10.0
 
     # Admin
     admin_secret: Optional[str] = None

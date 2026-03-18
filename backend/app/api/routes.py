@@ -99,60 +99,30 @@ async def _build_token_stats(db: SessionDep) -> TokenUsageStats:
     now = datetime.utcnow()
     cutoff_24h = now - timedelta(hours=24)
     cutoff_7d = now - timedelta(days=7)
+    cutoff_30d = now - timedelta(days=30)
+
+    def _window_sum(cutoff: datetime, col):
+        return func.coalesce(
+            func.sum(case((BenchmarkItemResult.created_at >= cutoff, func.coalesce(col, 0)), else_=0)),
+            0,
+        )
 
     token_result = await db.execute(
         select(
-            func.coalesce(
-                func.sum(
-                    case(
-                        (
-                            BenchmarkItemResult.created_at >= cutoff_24h,
-                            func.coalesce(BenchmarkItemResult.input_tokens, 0),
-                        ),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("input_24h"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (
-                            BenchmarkItemResult.created_at >= cutoff_24h,
-                            func.coalesce(BenchmarkItemResult.output_tokens, 0),
-                        ),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("output_24h"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (
-                            BenchmarkItemResult.created_at >= cutoff_7d,
-                            func.coalesce(BenchmarkItemResult.input_tokens, 0),
-                        ),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("input_7d"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (
-                            BenchmarkItemResult.created_at >= cutoff_7d,
-                            func.coalesce(BenchmarkItemResult.output_tokens, 0),
-                        ),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("output_7d"),
+            _window_sum(cutoff_24h, BenchmarkItemResult.input_tokens).label("input_24h"),
+            _window_sum(cutoff_24h, BenchmarkItemResult.output_tokens).label("output_24h"),
+            _window_sum(cutoff_7d, BenchmarkItemResult.input_tokens).label("input_7d"),
+            _window_sum(cutoff_7d, BenchmarkItemResult.output_tokens).label("output_7d"),
+            _window_sum(cutoff_30d, BenchmarkItemResult.input_tokens).label("input_30d"),
+            _window_sum(cutoff_30d, BenchmarkItemResult.output_tokens).label("output_30d"),
+            func.coalesce(func.sum(func.coalesce(BenchmarkItemResult.input_tokens, 0)), 0).label("input_all"),
+            func.coalesce(func.sum(func.coalesce(BenchmarkItemResult.output_tokens, 0)), 0).label("output_all"),
+        ).where(
+            (BenchmarkItemResult.input_tokens.is_not(None)) | (BenchmarkItemResult.output_tokens.is_not(None))
         )
     )
-    input_24h, output_24h, input_7d, output_7d = token_result.one()
+    row = token_result.one()
+    input_24h, output_24h, input_7d, output_7d, input_30d, output_30d, input_all, output_all = row
     return TokenUsageStats(
         last_24h=TokenUsageWindow(
             window_hours=24,
@@ -163,6 +133,16 @@ async def _build_token_stats(db: SessionDep) -> TokenUsageStats:
             window_hours=24 * 7,
             input_tokens=int(input_7d or 0),
             output_tokens=int(output_7d or 0),
+        ),
+        last_30d=TokenUsageWindow(
+            window_hours=24 * 30,
+            input_tokens=int(input_30d or 0),
+            output_tokens=int(output_30d or 0),
+        ),
+        all_time=TokenUsageWindow(
+            window_hours=0,
+            input_tokens=int(input_all or 0),
+            output_tokens=int(output_all or 0),
         ),
     )
 

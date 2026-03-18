@@ -13,7 +13,7 @@ import {
   type SandyResourcesResponse,
   type SandySandboxStats,
 } from "@/lib/api";
-import { formatDate, formatDurationSeconds, formatPercent, parseDateValue } from "@/lib/utils";
+import { formatDate, formatDurationSeconds, formatPercent, formatTokenCount, parseDateValue } from "@/lib/utils";
 import { Loader2, Activity, Server, ListChecks } from "lucide-react";
 
 type LineSeries = {
@@ -595,20 +595,21 @@ export default function OpsPage() {
             <CardTitle>Token Usage</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 text-sm text-ink-300">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-ink-400">Last 24h</span>
-              <span>
-                In {overview.token_stats ? (overview.token_stats.last_24h.input_tokens / 1_000_000).toFixed(2) : "-"}M · Out{" "}
-                {overview.token_stats ? (overview.token_stats.last_24h.output_tokens / 1_000_000).toFixed(2) : "-"}M
-              </span>
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-ink-400">Last 7d</span>
-              <span>
-                In {overview.token_stats ? (overview.token_stats.last_7d.input_tokens / 1_000_000).toFixed(2) : "-"}M · Out{" "}
-                {overview.token_stats ? (overview.token_stats.last_7d.output_tokens / 1_000_000).toFixed(2) : "-"}M
-              </span>
-            </div>
+            {(
+              [
+                ["Last 24h", overview.token_stats?.last_24h],
+                ["Last 7d", overview.token_stats?.last_7d],
+                ["Last 30d", overview.token_stats?.last_30d],
+                ["All Time", overview.token_stats?.all_time],
+              ] as [string, { input_tokens: number; output_tokens: number } | undefined][]
+            ).map(([label, w]) => (
+              <div key={label} className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-ink-400">{label}</span>
+                <span>
+                  In {w ? formatTokenCount(w.input_tokens) : "-"} · Out {w ? formatTokenCount(w.output_tokens) : "-"}
+                </span>
+              </div>
+            ))}
           </CardContent>
         </Card>
         <Card>
