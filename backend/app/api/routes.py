@@ -94,56 +94,30 @@ _token_stats_cache: dict[str, Any] = {"value": None, "expires_at": None}
 _token_stats_lock = asyncio.Lock()
 
 
-async def _build_token_stats(db: SessionDep) -> TokenUsageStats:
-    """Build token usage windows in a single aggregate query."""
-    now = datetime.utcnow()
-    cutoff_24h = now - timedelta(hours=24)
-    cutoff_7d = now - timedelta(days=7)
-    cutoff_30d = now - timedelta(days=30)
-
-    def _window_sum(cutoff: datetime, col):
-        return func.coalesce(
-            func.sum(case((BenchmarkItemResult.created_at >= cutoff, func.coalesce(col, 0)), else_=0)),
-            0,
-        )
-
-    token_result = await db.execute(
-        select(
-            _window_sum(cutoff_24h, BenchmarkItemResult.input_tokens).label("input_24h"),
-            _window_sum(cutoff_24h, BenchmarkItemResult.output_tokens).label("output_24h"),
-            _window_sum(cutoff_7d, BenchmarkItemResult.input_tokens).label("input_7d"),
-            _window_sum(cutoff_7d, BenchmarkItemResult.output_tokens).label("output_7d"),
-            _window_sum(cutoff_30d, BenchmarkItemResult.input_tokens).label("input_30d"),
-            _window_sum(cutoff_30d, BenchmarkItemResult.output_tokens).label("output_30d"),
-            func.coalesce(func.sum(func.coalesce(BenchmarkItemResult.input_tokens, 0)), 0).label("input_all"),
-            func.coalesce(func.sum(func.coalesce(BenchmarkItemResult.output_tokens, 0)), 0).label("output_all"),
-        ).where(
-            (BenchmarkItemResult.input_tokens.is_not(None)) | (BenchmarkItemResult.output_tokens.is_not(None))
-        )
+async def _sum_tokens_since(db: SessionDep, cutoff: datetime | None) -> tuple[int, int]:
+    """Sum input/output tokens since cutoff (or all time if None). Uses created_at index."""
+    q = select(
+        func.coalesce(func.sum(BenchmarkItemResult.input_tokens), 0),
+        func.coalesce(func.sum(BenchmarkItemResult.output_tokens), 0),
     )
-    row = token_result.one()
-    input_24h, output_24h, input_7d, output_7d, input_30d, output_30d, input_all, output_all = row
+    if cutoff is not None:
+        q = q.where(BenchmarkItemResult.created_at >= cutoff)
+    row = (await db.execute(q)).one()
+    return int(row[0] or 0), int(row[1] or 0)
+
+
+async def _build_token_stats(db: SessionDep) -> TokenUsageStats:
+    """Build token usage windows with separate indexed queries per window."""
+    now = datetime.utcnow()
+    in_24h, out_24h = await _sum_tokens_since(db, now - timedelta(hours=24))
+    in_7d, out_7d = await _sum_tokens_since(db, now - timedelta(days=7))
+    in_30d, out_30d = await _sum_tokens_since(db, now - timedelta(days=30))
+    in_all, out_all = await _sum_tokens_since(db, None)
     return TokenUsageStats(
-        last_24h=TokenUsageWindow(
-            window_hours=24,
-            input_tokens=int(input_24h or 0),
-            output_tokens=int(output_24h or 0),
-        ),
-        last_7d=TokenUsageWindow(
-            window_hours=24 * 7,
-            input_tokens=int(input_7d or 0),
-            output_tokens=int(output_7d or 0),
-        ),
-        last_30d=TokenUsageWindow(
-            window_hours=24 * 30,
-            input_tokens=int(input_30d or 0),
-            output_tokens=int(output_30d or 0),
-        ),
-        all_time=TokenUsageWindow(
-            window_hours=0,
-            input_tokens=int(input_all or 0),
-            output_tokens=int(output_all or 0),
-        ),
+        last_24h=TokenUsageWindow(window_hours=24, input_tokens=in_24h, output_tokens=out_24h),
+        last_7d=TokenUsageWindow(window_hours=24 * 7, input_tokens=in_7d, output_tokens=out_7d),
+        last_30d=TokenUsageWindow(window_hours=24 * 30, input_tokens=in_30d, output_tokens=out_30d),
+        all_time=TokenUsageWindow(window_hours=0, input_tokens=in_all, output_tokens=out_all),
     )
 
 
