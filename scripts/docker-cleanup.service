@@ -1,0 +1,8 @@
+[Unit]
+Description=Docker image and build cache cleanup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/chutes-bench-runner/scripts/docker_cleanup.sh
