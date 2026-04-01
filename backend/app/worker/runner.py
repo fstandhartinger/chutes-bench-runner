@@ -410,6 +410,9 @@ class BenchmarkWorker:
                             BenchmarkRunStatus.RUNNING,
                             completed_items=current_completed,
                         )
+                    else:
+                        # Save the item row even when we are between progress checkpoints.
+                        await item_db.commit()
                 break
             except Exception as exc:
                 if _is_retryable_db_write_error(exc) and attempt < 2:

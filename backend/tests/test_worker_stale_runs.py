@@ -2,12 +2,19 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.benchmarks.base import ItemResult
 from app.models.benchmark import Benchmark
 from app.models.model import Model
-from app.models.run import BenchmarkRun, BenchmarkRunBenchmark, BenchmarkRunStatus, RunStatus
+from app.models.run import (
+    BenchmarkItemResult,
+    BenchmarkRun,
+    BenchmarkRunBenchmark,
+    BenchmarkRunStatus,
+    RunStatus,
+)
 from app.worker.runner import (
     BenchmarkWorker,
     _compute_run_stale_seconds,
@@ -324,6 +331,79 @@ async def test_persist_item_result_progress_retries_deadlock(test_session, monke
 
     assert update_mock.await_count == 2
     assert add_event_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_item_result_progress_commits_non_checkpoint_items(
+    test_session,
+    monkeypatch,
+) -> None:
+    model = Model(
+        slug="test-model",
+        name="Test Model",
+        provider="chutes",
+        is_active=True,
+    )
+    benchmark = Benchmark(
+        name="livecodebench",
+        display_name="LiveCodeBench",
+        adapter_class="LiveCodeBenchAdapter",
+        is_enabled=True,
+        supports_subset=True,
+    )
+    test_session.add_all([model, benchmark])
+    await test_session.flush()
+
+    run = BenchmarkRun(
+        model_id=model.id,
+        model_slug=model.slug,
+        provider="chutes",
+        subset_pct=1,
+        status=RunStatus.RUNNING.value,
+    )
+    test_session.add(run)
+    await test_session.flush()
+
+    run_benchmark = BenchmarkRunBenchmark(
+        run_id=run.id,
+        benchmark_id=benchmark.id,
+        benchmark_name=benchmark.name,
+        status=BenchmarkRunStatus.RUNNING.value,
+        sampled_items=4,
+    )
+    test_session.add(run_benchmark)
+    await test_session.commit()
+
+    worker = BenchmarkWorker()
+    test_session_maker = async_sessionmaker(
+        test_session.bind,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    monkeypatch.setattr("app.worker.runner.async_session_maker", test_session_maker)
+    add_event_mock = AsyncMock()
+    monkeypatch.setattr(worker, "_safe_add_run_event", add_event_mock)
+
+    await worker._persist_item_result_progress(
+        run_id=str(run.id),
+        run_benchmark_id=str(run_benchmark.id),
+        result=ItemResult(item_id="item-1", is_correct=False, score=0.0, metadata={}),
+        benchmark_name="livecodebench",
+        current_completed=1,
+        total_items=4,
+        current_correct=0,
+        should_persist_progress=False,
+    )
+
+    async with test_session_maker() as verify_session:
+        result = await verify_session.execute(
+            select(BenchmarkItemResult).where(BenchmarkItemResult.run_benchmark_id == run_benchmark.id)
+        )
+        saved_results = list(result.scalars().all())
+
+    assert len(saved_results) == 1
+    assert saved_results[0].item_id == "item-1"
+    add_event_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
