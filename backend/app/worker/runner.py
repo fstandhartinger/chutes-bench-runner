@@ -1219,6 +1219,44 @@ class BenchmarkWorker:
 
         overall_score = total_score / completed_benchmarks if completed_benchmarks > 0 else None
 
+        if failed_benchmarks > 0:
+            all_errors: list[str] = []
+            async with async_session_maker() as db:
+                result = await db.execute(
+                    select(BenchmarkRunBenchmark).where(BenchmarkRunBenchmark.run_id == run.id)
+                )
+                for rb_row in result.scalars():
+                    if rb_row.status != BenchmarkRunStatus.SUCCEEDED.value and rb_row.error_message:
+                        all_errors.append(f"{rb_row.benchmark_name}: {rb_row.error_message}")
+            combined_error = " | ".join(all_errors) if all_errors else f"{failed_benchmarks} benchmark(s) failed"
+
+            await self._safe_update_run_status(
+                run.id,
+                RunStatus.FAILED,
+                error_message=combined_error[:2000],
+                overall_score=overall_score,
+            )
+            await self._safe_add_run_event(
+                run.id,
+                "run_failed",
+                message=(
+                    f"Run failed: {failed_benchmarks} benchmark(s) failed after "
+                    f"{completed_benchmarks} succeeded"
+                ),
+                data={
+                    "overall_score": overall_score,
+                    "completed_benchmarks": completed_benchmarks,
+                    "failed_benchmarks": failed_benchmarks,
+                },
+            )
+            logger.error(
+                "Run failed with partial benchmark failures",
+                run_id=run.id,
+                completed=completed_benchmarks,
+                failed=failed_benchmarks,
+            )
+            return
+
         await self._safe_update_run_status(
             run.id,
             RunStatus.SUCCEEDED,

@@ -251,7 +251,17 @@ async def cancel_run(db: AsyncSession, run_id: str) -> bool:
 async def requeue_run(db: AsyncSession, run_id: str) -> bool:
     """Requeue a failed or canceled run so remaining benchmarks resume."""
     run = await get_run(db, run_id)
-    if not run or run.status not in (RunStatus.FAILED.value, RunStatus.CANCELED.value):
+    if not run:
+        return False
+
+    has_unfinished_benchmarks = any(
+        benchmark.status != BenchmarkRunStatus.SUCCEEDED.value
+        for benchmark in run.benchmarks
+    )
+    can_requeue = run.status in (RunStatus.FAILED.value, RunStatus.CANCELED.value) or (
+        run.status == RunStatus.SUCCEEDED.value and has_unfinished_benchmarks
+    )
+    if not can_requeue:
         return False
 
     now = datetime.utcnow()
