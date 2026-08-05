@@ -2,6 +2,7 @@
 import asyncio
 import os
 import socket
+import sys
 import time
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -39,7 +40,7 @@ from app.services.run_service import (
     update_run_status,
 )
 from app.services.worker_service import record_worker_heartbeat
-from app.worker.watchdog import LoopWatchdog
+from app.worker.watchdog import WATCHDOG_EXIT_CODE, LoopWatchdog
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -605,13 +606,29 @@ class BenchmarkWorker:
                 logger.exception("Worker error")
 
             if self._abandoned_ops:
-                # Abandoned tasks hold pool slots. If they pile up the pool is
-                # unusable and a restart is the only real cure -- let the
-                # watchdog notice we are no longer making progress.
+                # Abandoned tasks still hold their DB pool slots. The watchdog
+                # cannot catch this on its own: the loop keeps ticking happily
+                # while every DB op times out, so the worker would become a
+                # zombie that is "alive" but does no work. Trip out explicitly
+                # once too many have piled up and let the restart policy give us
+                # a clean pool.
                 logger.warning(
                     "Abandoned worker ops still pending",
                     count=len(self._abandoned_ops),
                 )
+                if len(self._abandoned_ops) >= settings.worker_max_abandoned_ops:
+                    logger.error(
+                        "Too many abandoned worker ops; exiting for a clean restart",
+                        count=len(self._abandoned_ops),
+                        limit=settings.worker_max_abandoned_ops,
+                    )
+                    sys.stderr.write(
+                        f"FATAL: {len(self._abandoned_ops)} abandoned DB ops are holding "
+                        f"pool slots (limit {settings.worker_max_abandoned_ops}). "
+                        f"Exiting so the container restart policy can recover.\n"
+                    )
+                    sys.stderr.flush()
+                    os._exit(WATCHDOG_EXIT_CODE)
 
             await asyncio.sleep(settings.worker_poll_interval)
 

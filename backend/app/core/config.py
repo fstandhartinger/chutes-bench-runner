@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     worker_watchdog_timeout_seconds: int = 600
     worker_watchdog_check_interval_seconds: int = 15
     worker_watchdog_heartbeat_file: str = "/tmp/worker-watchdog-heartbeat"
+    # Abandoned (timed-out, uncancellable) DB ops each hold a pool slot. Once this
+    # many have accumulated the pool is effectively dead, so exit for a clean restart.
+    worker_max_abandoned_ops: int = 5
     worker_only_auth_mode: Optional[str] = None
     worker_only_api_key: Optional[str] = None
 
