@@ -13,16 +13,18 @@
 
 **Note**: Benchmark execution is now on the dedicated Sandy server (Hetzner). The Render worker has been removed; do not reintroduce it to avoid duplicate workers.
 
-### Database (Neon.tech)
+### Database (Hetzner self-hosted Postgres)
 
-- **Project**: `chutes-bench-runner` (internal)
-- **Database**: `neondb`
-- **Important**: Connection string uses `sslmode=require`, but asyncpg requires `ssl=require`. The backend's `config.py` converts this automatically.
+- **Project**: `chutes-bench-runner` (primary runtime database)
+- **Database**: `chutes_bench_runner`
+- **Host**: `94.130.222.43:5432` (`own_postgres`)
+- **Important**: The backend uses `asyncpg`, so production connects directly to Postgres on `5432` instead of PgBouncer transaction pooling on `6432`. The connection string still uses `sslmode=require`, and `config.py` converts this automatically for asyncpg.
 
 ### MCP Tools Available
 
 - **Render MCP**: `mcp_Render_MCP_*` - List services, deploys, logs, metrics
-- **Neon MCP**: `mcp_neon_*` - Query database, run migrations, manage projects
+- **Hetzner Postgres MCP**: `mcp__hetzner_postgres__*` - Query the primary production database
+- **Neon MCP**: `mcp_neon_*` - Rollback-only fallback while Neon remains online
 - **Browser MCP**: `mcp_cursor-ide-browser_*` - Test frontend, take screenshots
 
 ## Environment Variables
@@ -30,7 +32,7 @@
 ### Backend (API & Worker)
 
 ```
-DATABASE_URL=postgresql://neondb_owner:<password>@ep-sweet-pond-aepk3yhf-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require
+DATABASE_URL=postgresql://bench_runner:<password>@94.130.222.43:5432/chutes_bench_runner?sslmode=require
 CHUTES_API_KEY=<system API key>
 CHUTES_CLIENT_ID=<IDP client ID>
 CHUTES_CLIENT_SECRET=<IDP client secret>
@@ -53,7 +55,7 @@ GDPVAL_JUDGE_MODEL=<optional override>
 
 **API Key Location**: System-wide `$CHUTES_API_KEY` environment variable. Use `echo $CHUTES_API_KEY` to access.
 
-**Sandy host**: Bench-runner uses a **dedicated Sandy server** at `88.99.58.39` (bench\_runner\_sandy, port 7331). This server is exclusively for chutes-bench-runner and must not be shared with other Sandy workloads. Set `SANDY_BASE_URL=http://88.99.58.39:7331`.
+**Sandy host**: As of 2026-05-10, bench-runner workers run on `own_postgres` (94.130.222.43), co-located with the production Sandy stack on port 7331. From inside worker containers use `SANDY_BASE_URL=http://host.docker.internal:7331` (with the docker host-gateway mapping in `docker-compose.worker.yml`). The previous dedicated `bench_runner_sandy` server (88.99.58.39) is decommissioned and being cancelled at Hetzner.
 
 If `/api/ops/sandy/resources` returns 502, the Sandy controller/worker stack likely crashed on the Sandy host:
 ```
@@ -125,7 +127,7 @@ NEXT_PUBLIC_BACKEND_URL=https://chutes-bench-runner-api-v2.onrender.com
 ## Lessons Learned / Common Pitfalls
 
 ### 1. asyncpg SSL Parameter
-**Problem**: Neon URLs use `sslmode=require`, but asyncpg only accepts `ssl=require`
+**Problem**: Postgres URLs often use `sslmode=require`, but asyncpg only accepts `ssl=require`
 **Fix**: `config.py` replaces `sslmode=` with `ssl=` in the async database URL
 
 ### 2. CORS with Credentials
@@ -146,7 +148,7 @@ Benchmark workers run on a dedicated Sandy host (internal) to avoid Render OOMs 
 **Why**: Hetzner has plenty of CPU/RAM and is cheaper than multiple Render instances.
 
 **Requirements**:
-- `DATABASE_URL` (Neon connection string with sslmode=require)
+- `DATABASE_URL` (Hetzner Postgres connection string with `sslmode=require`)
 - `CHUTES_API_KEY`
 - `CHUTES_CLIENT_ID`
 - `CHUTES_CLIENT_SECRET` (needed to refresh IDP tokens)
@@ -198,22 +200,24 @@ Benchmark workers run on a dedicated Sandy host (internal) to avoid Render OOMs 
 - Use `app.worker.runner` (no health server) to avoid port conflicts.
 - On the dedicated bench-runner-sandy server (256 GB RAM, 12 cores), the autoscaler manages up to 36 workers. Monitor memory + load with `docker stats` before scaling beyond that.
 
-### Dedicated Sandy Server (bench-runner-sandy)
+### Bench-runner host (own_postgres, since 2026-05-10)
 
-Bench-runner sandboxes run on a dedicated Sandy instance:
-- **IP**: 88.99.58.39
-- **SSH**: `ssh -i ~/.ssh/hetzner-new-server root@88.99.58.39`
-- **Specs**: Intel Xeon E5-1650V3, 256GB DDR4 ECC RAM, 2x 4TB HDD (RAID-1), 12 cores, Ubuntu 24.04 LTS
-- **Sandy port**: 7331
-- **Max sandboxes**: 200
-- **MCP server_id**: `bench_runner_sandy`
-- **Cost**: ~69 EUR/month
+Bench-runner workers, autoscaler, and queue monitor run on `own_postgres` (94.130.222.43) co-located with the production Sandy stack and the shared Postgres host:
+- **IP**: 94.130.222.43
+- **SSH**: `ssh root@94.130.222.43` (via Unified Remote MCP `own_postgres`)
+- **Specs**: Intel i7-6700, 64 GB RAM, 2x 250 GB SATA SSD, 4C/8T, Ubuntu 24.04 LTS
+- **Sandy port**: 7331 (shared with the rest of the Sandy stack — workers point at `host.docker.internal:7331`)
+- **MCP server_id**: `own_postgres`
+- **Worker resource limits**: `WORKER_CONTAINER_MEM_LIMIT=8g`, `WORKER_CONTAINER_CPU_LIMIT=1.0` (right-sized for the 64 GB host shared with Postgres + Sandy + 12 production DBs)
+- **Autoscaler limits**: `MIN_WORKERS=1`, `MAX_WORKERS=3`, `BASE_MAX_WORKERS=3` (`/etc/systemd/system/chutes-bench-runner-autoscaler.service`). The previous dropin at `…/override.conf` from the pre-incident era is moved to `…/override.conf.bak-20260508` — do not restore without re-sizing for the host.
 
-This server is exclusively for chutes-bench-runner. Do NOT deploy general Sandy changes here. Update only after testing on production Sandy first.
+The previous dedicated server `bench_runner_sandy` (88.99.58.39, Xeon E5-1650v3, 256 GB RAM, 2x4 TB HDD, ~€69/month) ran the workers from 2026-03-14 to 2026-05-10. It is now stopped (services disabled, Sandy still up as a rollback option) and being cancelled at Hetzner.
 
-### Autoscaler (bench-runner-sandy)
+**Important — incident memory (2026-03-13)**: A previous co-location of bench-runner workers on own_postgres caused throughput degradation when bursty bench-runs competed with production Sandy workloads (OpenClaw user VMs, etc.). The current configuration mitigates that with hard worker caps (max 3) and per-worker mem_limit=8g. If cisterciansis triggers a large burst, watch `Resource guard` in autoscaler logs; the memory watermark guards should freeze scale-up before OOM, but other Sandy tenants may slow down.
 
-All bench-runner workers and the autoscaler run on the dedicated bench-runner-sandy server (88.99.58.39). Worker containers must use `SANDY_BASE_URL=http://host.docker.internal:7331` with a Docker host-gateway mapping; `localhost` targets the container and breaks Sandy access. new_sandy and old_sandy no longer run any bench-runner workers, autoscaler, or queue monitor.
+### Autoscaler (own_postgres)
+
+All bench-runner workers and the autoscaler run on `own_postgres`. Worker containers must use `SANDY_BASE_URL=http://host.docker.internal:7331` with a Docker host-gateway mapping; `localhost` targets the container and breaks Sandy access. The dedicated `bench_runner_sandy` and `new_sandy` profiles are no longer used.
 
 The autoscaler scales from **running + queued** backlog (not queued-only), so it avoids
 killing active workers while long runs are in flight.
@@ -243,7 +247,7 @@ tail -n 200 /var/log/chutes-bench-runner-autoscaler.log
 - `CPU_HIGH_WATERMARK` – freeze scale-up when host 1-minute load is too high.
 - `LOG_PATH`
 
-All bench-runner components (workers, autoscaler, queue monitor) now run on bench-runner-sandy (88.99.58.39). The old_sandy and new_sandy profiles are no longer used for bench-runner.
+All bench-runner components (workers, autoscaler, queue monitor) run on own_postgres (94.130.222.43) since 2026-05-10. The bench-runner-sandy profile is decommissioned; new_sandy is unused for bench-runner.
 
 ### Priority workers (internal API-key runs)
 

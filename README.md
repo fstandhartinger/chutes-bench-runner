@@ -14,6 +14,7 @@ results, and verifiable signed exports for sharing results.
 - **Worker**: Background worker that executes benchmarks and streams progress events.
 - **Sandy sandbox**: Isolated execution environment for code/CLI benchmarks.
 - **Postgres database**: Stores runs, benchmarks, item results, and exports.
+  Production now uses self-hosted Postgres 16 on Hetzner instead of Neon.
 
 ## Core features
 
@@ -113,7 +114,7 @@ frontend (Next.js)
             -> Sandy sandbox (code/CLI benchmarks)
 ```
 
-Production note: all bench-runner components (workers, autoscaler, queue monitor, Sandy sandbox service) are consolidated on the dedicated bench-runner-sandy server (88.99.58.39). Worker containers must use `SANDY_BASE_URL=http://host.docker.internal:7331` plus a Docker host-gateway mapping; `localhost` points at the container itself and breaks sandboxed benchmarks. The Render worker service stays disabled. new_sandy and old_sandy run Sandy for other apps only.
+Production note: all bench-runner components (workers, autoscaler, queue monitor, Sandy sandbox service) are consolidated on the dedicated bench-runner-sandy server (88.99.58.39). Worker containers must use `SANDY_BASE_URL=http://host.docker.internal:7331` plus a Docker host-gateway mapping; `localhost` points at the container itself and breaks sandboxed benchmarks. The Render worker service stays disabled. new_sandy and own_postgres run Sandy for other apps only.
 
 ## Local development
 
@@ -176,6 +177,12 @@ Required:
 - `DATABASE_URL`
 - `CHUTES_API_KEY`
 
+Production DSN example:
+
+```bash
+DATABASE_URL=postgresql://<user>:<password>@94.130.222.43:5432/chutes_bench_runner?sslmode=require
+```
+
 Optional but recommended:
 - `HF_TOKEN` (for gated datasets)
 - `SANDY_BASE_URL`, `SANDY_API_KEY` (sandboxed benchmarks)
@@ -209,6 +216,8 @@ The `render.yaml` blueprint deploys:
 - Worker service
 - Frontend service
 - Postgres database
+
+Operational note: production app traffic now targets the shared Hetzner Postgres host on `94.130.222.43:5432`. This service uses `asyncpg`, so it connects directly instead of going through PgBouncer transaction pooling. Neon remains available only as a temporary rollback path.
 
 ## Maintenance mode (deploy safety)
 

@@ -17,3 +17,16 @@ services:
       - /var/lib/sandy/cache/chutes-bench-data:/var/lib/sandy/cache/chutes-bench-data
     command: python -m app.worker.runner
     restart: unless-stopped
+    # Surfaces a wedged main loop in `docker ps` even if the in-process watchdog
+    # itself were to fail. The watchdog rewrites this file on every loop tick.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -f /tmp/worker-watchdog-heartbeat &&
+          test $(( $(date +%s) - $(cut -d' ' -f1 /tmp/worker-watchdog-heartbeat) ))
+          -lt ${WORKER_WATCHDOG_TIMEOUT_SECONDS:-600}
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s

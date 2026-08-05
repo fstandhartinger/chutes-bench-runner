@@ -16,6 +16,16 @@ engine = create_async_engine(
     max_overflow=settings.effective_db_max_overflow,
     pool_timeout=settings.db_pool_timeout_seconds,
     pool_recycle=settings.db_pool_recycle_seconds,
+    # Without these, an asyncpg connect/query can hang indefinitely when the peer
+    # disappears (container network rebuild, Postgres restart/recovery). That is
+    # the entry point of the 2026-07-21 worker deadlock: the hung connect was
+    # cancelled by a wait_for, and the cancellation could not land because
+    # SQLAlchemy tears the connection down inside an asyncio.shield().
+    # Bounding the driver means the hang usually never starts.
+    connect_args={
+        "timeout": settings.db_connect_timeout_seconds,
+        "command_timeout": settings.db_command_timeout_seconds,
+    },
 )
 
 async_session_maker = async_sessionmaker(

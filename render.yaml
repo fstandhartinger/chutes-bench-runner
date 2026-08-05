@@ -1,20 +1,38 @@
 # Render Infrastructure-as-Code
-# Deploy with: render deploy
+#
+# NOTE: this file documents the CURRENTLY DEPLOYED services. The services were
+# originally created through the dashboard, so treat this as a description of
+# reality that is kept in sync by hand.
+#
+# Corrections applied 2026-08-06:
+#   - service names are *-api-v2 / *-ui (were: *-api / *-frontend)
+#   - Postgres is NOT on Render. It is self-hosted on own_postgres
+#     (94.130.222.43:5432, db chutes_bench_runner, sslmode=require). The old
+#     `databases:` block described a free Render Postgres that does not exist;
+#     applying this file as-is would have provisioned the wrong stack.
+#   - healthCheckPath was /api/v1/health, which 404s. The router mounts
+#     prefix="/api", so the real route is /api/health.
+#   - SANDY_BASE_URL added: Render must reach Sandy over its public address.
+#     host.docker.internal only resolves inside the worker containers on
+#     own_postgres, which is why /api/ops/sandy/* returned
+#     "All connection attempts failed".
+#
+# The benchmark workers do NOT run on Render. They run as Docker containers on
+# own_postgres via docker-compose.worker.yml.
 
 services:
   # Backend API
   - type: web
-    name: chutes-bench-runner-api
+    name: chutes-bench-runner-api-v2
     runtime: python
     region: oregon
     plan: starter
     buildCommand: cd backend && pip install -r requirements.txt
     startCommand: cd backend && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
+      # Self-hosted Postgres on own_postgres — set in the dashboard, not synced.
       - key: DATABASE_URL
-        fromDatabase:
-          name: chutes-bench-runner-db
-          property: connectionString
+        sync: false
       - key: CHUTES_API_KEY
         sync: false
       - key: ADMIN_SECRET
@@ -23,13 +41,17 @@ services:
         sync: false
       - key: BENCH_SIGNING_PUBLIC_KEY
         sync: false
+      - key: SANDY_BASE_URL
+        value: http://94.130.222.43:7331
+      - key: SANDY_API_KEY
+        sync: false
       - key: PYTHON_VERSION
         value: "3.11.6"
-    healthCheckPath: /api/v1/health
+    healthCheckPath: /api/health
 
   # Frontend
   - type: web
-    name: chutes-bench-runner-frontend
+    name: chutes-bench-runner-ui
     runtime: node
     region: oregon
     plan: starter
@@ -43,10 +65,3 @@ services:
         value: "12"
       - key: NODE_VERSION
         value: "20"
-
-databases:
-  - name: chutes-bench-runner-db
-    databaseName: bench_runner
-    user: bench
-    region: oregon
-    plan: free

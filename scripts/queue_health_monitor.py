@@ -45,6 +45,10 @@ API_TIMEOUT = int(os.getenv("API_TIMEOUT_SECONDS", "15"))
 # Auto-cancel runs queued longer than this (hours) — prevents permanently stuck runs
 AUTO_CANCEL_AGE_HOURS = float(os.getenv("AUTO_CANCEL_AGE_HOURS", "48"))
 
+# Alert if the newest worker heartbeat is older than this. The worker writes one
+# every WORKER_HEARTBEAT_SECONDS (60s in prod), so 10 min is ~10 missed beats.
+WORKER_HEARTBEAT_STALE_SECONDS = float(os.getenv("WORKER_HEARTBEAT_STALE_SECONDS", "600"))
+
 LOG_PATH = os.getenv("LOG_PATH", "/var/log/bench-queue-monitor.log")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
@@ -80,6 +84,24 @@ def _api_get(path: str) -> dict | list | None:
             return json.loads(resp.read().decode("utf-8"))
     except (HTTPError, URLError, TimeoutError, OSError) as exc:
         logger.warning("API request failed %s: %s", url, exc)
+        return None
+
+
+def _api_get_admin(path: str) -> dict | list | None:
+    """GET an endpoint that requires the admin secret."""
+    url = f"{BACKEND_URL}{path}"
+    try:
+        req = Request(
+            url,
+            headers={
+                "User-Agent": "bench-queue-monitor/1.0",
+                "X-Admin-Secret": ADMIN_SECRET,
+            },
+        )
+        with urlopen(req, timeout=API_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        logger.warning("Admin API request failed %s: %s", url, exc)
         return None
 
 
@@ -152,6 +174,38 @@ def get_queue_stats() -> tuple[int, int, float | None, list, list]:
     return queued_count, running_count, oldest_age_hours, stale_run_ids, queued_runs
 
 
+def get_worker_health() -> tuple[int, float | None, list]:
+    """Return (live_worker_count, newest_heartbeat_age_seconds, workers).
+
+    ``/api/ops/overview`` already filters ``workers[]`` by heartbeat recency
+    (``get_active_workers`` uses ``last_seen >= cutoff``), so an EMPTY list means
+    no worker has checked in recently -- i.e. the data plane is dead even though
+    the container may still show as `Up` in ``docker ps``.
+
+    Returns (-1, None, []) if the API could not be reached (don't alert on that;
+    the API being down is a different, separately visible failure).
+    """
+    data = _api_get_admin("/api/ops/overview")
+    if not isinstance(data, dict):
+        return -1, None, []
+
+    workers = data.get("workers") or []
+    if not workers:
+        return 0, None, []
+
+    now = datetime.now(timezone.utc)
+    newest_age = None
+    for w in workers:
+        dt = _parse_iso(w.get("last_seen") or w.get("lastSeen"))
+        if dt is None:
+            continue
+        age = (now - dt).total_seconds()
+        if newest_age is None or age < newest_age:
+            newest_age = age
+
+    return len(workers), newest_age, workers
+
+
 def auto_cancel_stale_runs(stale_runs: list) -> int:
     """Cancel runs that have been queued too long. Returns count cancelled."""
     cancelled = 0
@@ -202,14 +256,15 @@ def main() -> int:
     configure_logging()
     logger.info(
         "Queue health monitor started (URGENT bot). backend=%s queue_threshold=%d "
-        "age_threshold=%.1fh auto_cancel_after=%.0fh interval=%ds",
+        "age_threshold=%.1fh auto_cancel_after=%.0fh heartbeat_stale=%.0fs interval=%ds",
         BACKEND_URL, QUEUE_DEPTH_THRESHOLD, QUEUE_AGE_THRESHOLD_HOURS,
-        AUTO_CANCEL_AGE_HOURS, CHECK_INTERVAL_SECONDS,
+        AUTO_CANCEL_AGE_HOURS, WORKER_HEARTBEAT_STALE_SECONDS, CHECK_INTERVAL_SECONDS,
     )
 
     last_depth_alert_at = 0.0
     last_age_alert_at = 0.0
     last_stuck_workers_alert_at = 0.0
+    last_worker_alert_at = 0.0
     consecutive_no_progress = 0
     last_running_count = -1
 
@@ -242,13 +297,46 @@ def main() -> int:
             # Use fresh age for alerting, full oldest for logging
             alert_age = fresh_oldest_age if fresh_oldest_age is not None else oldest_age
 
+            live_workers, hb_age, _worker_rows = get_worker_health()
+
             logger.info(
-                "Queue check: queued=%d running=%d oldest_age=%.1fh alert_age=%.1fh stale=%d",
+                "Queue check: queued=%d running=%d oldest_age=%.1fh alert_age=%.1fh "
+                "stale=%d live_workers=%s heartbeat_age=%s",
                 queued, running, oldest_age or 0, alert_age or 0, len(stale_runs),
+                live_workers if live_workers >= 0 else "?",
+                f"{hb_age:.0f}s" if hb_age is not None else "n/a",
             )
 
             now = time.time()
             alerts = []
+
+            # Check 0: worker liveness. This is the check that was missing when the
+            # worker silently deadlocked for 15 days (2026-07-21 -> 2026-08-05) with
+            # an empty queue -- every other check here requires a NON-EMPTY queue and
+            # therefore stayed quiet. See docs/bench_runner_incident_2026_08_06.md.
+            worker_alert = None
+            if live_workers == 0:
+                worker_alert = (
+                    f"*NO LIVE WORKERS*\n"
+                    f"`/api/ops/overview` reports *zero* workers with a recent heartbeat.\n"
+                    f"The data plane is down — every submitted run will sit in `queued` "
+                    f"forever.\n"
+                    f"Queued: {queued} | Running: {running}\n\n"
+                    f"Fix: `docker restart chutes-bench-runner-worker-1` on own_postgres, "
+                    f"then check `docker logs`."
+                )
+            elif hb_age is not None and hb_age > WORKER_HEARTBEAT_STALE_SECONDS:
+                worker_alert = (
+                    f"*STALE WORKER HEARTBEAT*\n"
+                    f"Newest worker heartbeat is *{hb_age / 60:.0f} min* old "
+                    f"(threshold: {WORKER_HEARTBEAT_STALE_SECONDS / 60:.0f} min).\n"
+                    f"Live workers: {live_workers} | Queued: {queued} | Running: {running}\n\n"
+                    f"A worker container can be `Up` in `docker ps` and still be wedged."
+                )
+
+            if worker_alert and (now - last_worker_alert_at) > ALERT_COOLDOWN_SECONDS:
+                alerts.append(worker_alert)
+                last_worker_alert_at = now
 
             # Check 1: Queue depth > threshold
             if queued > QUEUE_DEPTH_THRESHOLD and (now - last_depth_alert_at) > ALERT_COOLDOWN_SECONDS:

@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
@@ -251,6 +252,121 @@ def get_worker_counts(
             )
 
     return base_count, extra_count
+
+
+def restart_wedged_workers(
+    base_project: str,
+    extra_project: str,
+    backend_url: str,
+    admin_secret: str,
+    stale_seconds: float,
+    logger: logging.Logger,
+    timeout: int,
+    dry_run: bool,
+) -> int:
+    """Restart worker containers that are `Up` but no longer heartbeating.
+
+    `docker ps` is not a liveness check. On 2026-07-21 the worker container stayed
+    `Up` with RestartCount=0 for 15 days while its asyncio loop was deadlocked --
+    0.00% CPU, zero DB connections, no logs. The autoscaler happily reported
+    `current_workers=1` the entire time. See docs/bench_runner_incident_2026_08_06.md.
+
+    Truth comes from `worker_heartbeats` (exposed via /api/ops/overview, which
+    already filters by recency). If containers are running but no worker has
+    heartbeat recently, restart them.
+
+    Returns the number of containers restarted.
+    """
+    if not admin_secret:
+        return 0
+
+    names = list_worker_container_names(base_project, extra_project, logger, timeout)
+    if not names:
+        return 0
+
+    try:
+        req = Request(
+            f"{backend_url.rstrip('/')}/api/ops/overview",
+            headers={"X-Admin-Secret": admin_secret, "User-Agent": "bench-autoscaler/1.0"},
+        )
+        with urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - never let monitoring kill the autoscaler
+        logger.warning("Could not fetch worker health: %s", exc)
+        return 0
+
+    workers = payload.get("workers") or []
+    newest_age: Optional[float] = None
+    now = datetime.now(timezone.utc)
+    for w in workers:
+        raw = w.get("last_seen") or w.get("lastSeen")
+        if not isinstance(raw, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age = (now - dt).total_seconds()
+        if newest_age is None or age < newest_age:
+            newest_age = age
+
+    healthy = newest_age is not None and newest_age <= stale_seconds
+    if healthy:
+        return 0
+
+    age_desc = f"{newest_age:.0f}s" if newest_age is not None else "no heartbeat at all"
+    logger.error(
+        "WEDGED WORKERS: %d container(s) running but newest heartbeat is %s "
+        "(threshold %.0fs). Restarting: %s",
+        len(names), age_desc, stale_seconds, ", ".join(names),
+    )
+    if dry_run:
+        logger.info("Dry run: would restart %s", ", ".join(names))
+        return 0
+
+    restarted = 0
+    for name in names:
+        try:
+            result = subprocess.run(
+                ["docker", "restart", name],
+                capture_output=True, text=True, timeout=timeout,
+            )
+            if result.returncode == 0:
+                logger.info("Restarted wedged worker %s", name)
+                restarted += 1
+            else:
+                logger.warning(
+                    "Failed to restart %s: %s", name, (result.stderr or "").strip()
+                )
+        except subprocess.TimeoutExpired:
+            logger.warning("docker restart %s timed out", name)
+    return restarted
+
+
+def list_worker_container_names(
+    base_project: str,
+    extra_project: str,
+    logger: logging.Logger,
+    timeout: int,
+) -> list[str]:
+    """Names of running worker containers for both compose projects."""
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return []
+    if result.returncode != 0:
+        return []
+    prefixes = (f"{base_project}-worker-", f"{extra_project}-worker-")
+    return [
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.strip().startswith(prefixes)
+    ]
 
 
 def scale_base(
@@ -520,6 +636,9 @@ def main() -> int:
     base_project = _str_env("BASE_PROJECT", "chutes-bench-runner")
     dry_run = _int_env("DRY_RUN", 0) == 1
     timeout = _int_env("API_TIMEOUT_SECONDS", 10)
+    admin_secret = _str_env("ADMIN_SECRET", "")
+    heartbeat_stale_seconds = _float_env("WORKER_HEARTBEAT_STALE_SECONDS", 600.0)
+    restart_wedged = _int_env("RESTART_WEDGED_WORKERS", 1) == 1
     log_path = _str_env("LOG_PATH", "/var/log/chutes-bench-runner-autoscaler.log")
     log_level = _str_env("LOG_LEVEL", "INFO")
 
@@ -527,12 +646,15 @@ def main() -> int:
     compose_command = resolve_compose_command(logger)
     logger.info("Using compose command: %s", " ".join(compose_command))
     logger.info(
-        "Autoscaler started backend=%s min=%s max=%s base_max=%s extra_max=%s",
+        "Autoscaler started backend=%s min=%s max=%s base_max=%s extra_max=%s "
+        "restart_wedged=%s heartbeat_stale=%.0fs",
         backend_url,
         min_workers,
         max_workers,
         base_max,
         extra_max,
+        restart_wedged,
+        heartbeat_stale_seconds,
     )
 
     last_target: Optional[int] = None
@@ -545,6 +667,23 @@ def main() -> int:
             logger,
             timeout=compose_timeout,
         )
+        # `docker ps` says "Up"; heartbeats say whether the worker is ALIVE.
+        # See docs/bench_runner_incident_2026_08_06.md.
+        if restart_wedged and (current_base + current_extra) > 0:
+            try:
+                restart_wedged_workers(
+                    base_project=base_project,
+                    extra_project=extra_project,
+                    backend_url=backend_url,
+                    admin_secret=admin_secret,
+                    stale_seconds=heartbeat_stale_seconds,
+                    logger=logger,
+                    timeout=timeout,
+                    dry_run=dry_run,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Wedged-worker check failed: %s", exc)
+
         maybe_rebuild_and_recreate_workers(
             repo_path=repo_path,
             compose_file=compose_file,

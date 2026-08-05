@@ -39,6 +39,7 @@ from app.services.run_service import (
     update_run_status,
 )
 from app.services.worker_service import record_worker_heartbeat
+from app.worker.watchdog import LoopWatchdog
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -269,6 +270,10 @@ class BenchmarkWorker:
         self.client = get_chutes_client()
         self._last_stale_check = 0.0
         self._last_heartbeat = 0.0
+        # Tasks whose timeout expired and whose cancellation we refuse to await.
+        # Held so they are not garbage collected mid-flight (and so we can count them).
+        self._abandoned_ops: set[asyncio.Task] = set()
+        self.watchdog: Optional[LoopWatchdog] = None
         self.worker_id = (
             os.getenv("SANDY_SANDBOX_ID")
             or os.getenv("WORKER_INSTANCE_ID")
@@ -524,36 +529,89 @@ class BenchmarkWorker:
         self._benchmark_timeout_cache[benchmark_name] = timeout
         return timeout
 
+    async def run_guarded(self, coro, timeout: float, label: str) -> bool:
+        """Run a DB coroutine with a timeout that can never wedge the main loop.
+
+        This deliberately does NOT use ``asyncio.wait_for``. On timeout,
+        ``wait_for`` calls ``_cancel_and_wait()``, which awaits the cancelled
+        task's completion *with no timeout of its own*. If that task cannot be
+        cancelled -- which is exactly what happens when SQLAlchemy's
+        ``connectors/asyncio.py::terminate()`` runs
+        ``await_(asyncio.shield(self._terminate_graceful_close()))`` on a dead
+        asyncpg connection -- then ``wait_for`` blocks forever and takes the whole
+        single-task event loop with it. That is what killed this worker for 15
+        days on 2026-07-21 (see docs/bench_runner_incident_2026_08_06.md).
+
+        ``asyncio.wait`` returns as soon as the timeout expires and never awaits
+        cancellation, so we can request the cancel and then *abandon* the task.
+        An orphaned task leaks at worst one pool slot; a wedged loop kills the
+        whole worker silently.
+
+        Returns True if the coroutine completed within the timeout.
+        """
+        task = asyncio.ensure_future(coro)
+        done, pending = await asyncio.wait({task}, timeout=timeout)
+
+        if task in done:
+            self._abandoned_ops.discard(task)
+            try:
+                task.result()
+                return True
+            except asyncio.CancelledError:
+                logger.warning("Worker op canceled", op=label)
+                return False
+            except Exception:
+                logger.exception("Worker op failed", op=label)
+                return False
+
+        # Timed out. Ask for cancellation but do NOT await it.
+        task.cancel()
+        self._abandoned_ops.add(task)
+        task.add_done_callback(self._abandoned_ops.discard)
+        logger.warning(
+            "Worker op timed out and was abandoned",
+            op=label,
+            timeout=timeout,
+            abandoned_ops=len(self._abandoned_ops),
+        )
+        return False
+
     async def start(self) -> None:
         """Start the worker loop."""
         self.running = True
         logger.info("Worker started")
 
         while self.running:
+            if self.watchdog is not None:
+                self.watchdog.tick("loop")
             try:
                 now = time.monotonic()
                 if now - self._last_stale_check >= settings.worker_stale_check_interval:
-                    try:
-                        await asyncio.wait_for(self.requeue_stale_runs(), timeout=30)
-                    except asyncio.TimeoutError:
-                        logger.warning("Stale check timed out (DB pool exhaustion?)")
+                    await self.run_guarded(
+                        self.requeue_stale_runs(), timeout=30, label="requeue_stale_runs"
+                    )
                     self._last_stale_check = now
                 if now - self._last_heartbeat >= settings.worker_heartbeat_seconds:
-                    try:
-                        await asyncio.wait_for(self.touch_active_runs(), timeout=15)
-                    except asyncio.TimeoutError:
-                        logger.warning("Heartbeat timed out (DB pool exhaustion?)")
-                    try:
-                        await asyncio.wait_for(self.touch_worker_heartbeat(), timeout=15)
-                    except asyncio.TimeoutError:
-                        pass
+                    await self.run_guarded(
+                        self.touch_active_runs(), timeout=15, label="touch_active_runs"
+                    )
+                    await self.run_guarded(
+                        self.touch_worker_heartbeat(), timeout=15, label="touch_worker_heartbeat"
+                    )
                     self._last_heartbeat = now
                 await self.reap_completed_runs()
-                await asyncio.wait_for(self.launch_runs(), timeout=30)
-            except asyncio.TimeoutError:
-                logger.warning("Worker loop operation timed out")
+                await self.run_guarded(self.launch_runs(), timeout=30, label="launch_runs")
             except Exception:
                 logger.exception("Worker error")
+
+            if self._abandoned_ops:
+                # Abandoned tasks hold pool slots. If they pile up the pool is
+                # unusable and a restart is the only real cure -- let the
+                # watchdog notice we are no longer making progress.
+                logger.warning(
+                    "Abandoned worker ops still pending",
+                    count=len(self._abandoned_ops),
+                )
 
             await asyncio.sleep(settings.worker_poll_interval)
 
@@ -1759,10 +1817,24 @@ async def run_worker() -> None:
 
     worker = BenchmarkWorker()
 
+    watchdog = None
+    if settings.worker_watchdog_enabled:
+        watchdog = LoopWatchdog(
+            timeout_seconds=settings.worker_watchdog_timeout_seconds,
+            check_interval_seconds=settings.worker_watchdog_check_interval_seconds,
+            heartbeat_file=settings.worker_watchdog_heartbeat_file,
+            logger=logger,
+        )
+        worker.watchdog = watchdog
+        watchdog.start()
+
     try:
         await worker.start()
     except KeyboardInterrupt:
         await worker.stop()
+    finally:
+        if watchdog is not None:
+            watchdog.stop()
 
 
 if __name__ == "__main__":

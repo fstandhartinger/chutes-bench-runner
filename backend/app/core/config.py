@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     db_max_overflow: Optional[int] = None
     db_pool_timeout_seconds: int = 30
     db_pool_recycle_seconds: int = 600
+    # Driver-level (asyncpg) bounds so a connect/query can never hang forever.
+    db_connect_timeout_seconds: int = 15
+    db_command_timeout_seconds: int = 120
 
     # Chutes API
     chutes_api_key: str
@@ -88,6 +91,13 @@ class Settings(BaseSettings):
     worker_heartbeat_seconds: int = 60
     worker_exclusive_benchmarks: list[str] = []
     worker_disabled: bool = False
+    # Watchdog: hard-exits the worker if the main loop stops ticking, so the
+    # container restart policy can recover it. See app/worker/watchdog.py and
+    # docs/bench_runner_incident_2026_08_06.md.
+    worker_watchdog_enabled: bool = True
+    worker_watchdog_timeout_seconds: int = 600
+    worker_watchdog_check_interval_seconds: int = 15
+    worker_watchdog_heartbeat_file: str = "/tmp/worker-watchdog-heartbeat"
     worker_only_auth_mode: Optional[str] = None
     worker_only_api_key: Optional[str] = None
 
