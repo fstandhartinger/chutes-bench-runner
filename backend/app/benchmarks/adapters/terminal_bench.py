@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Optional
 
 import yaml
 
+from app.benchmarks.agent_usage import collect_agent_usage
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
 from app.benchmarks.utils import load_dataset_with_retry
@@ -20,56 +21,6 @@ from app.services.sandy_service import SandyService
 logger = get_logger(__name__)
 
 
-
-# Cumulative token usage for a Sandy-driven agent has to be read back out of
-# the sandbox: the tokens are spent by the CLI agent over a connection
-# bench-runner never sees, so the run row otherwise reports 0 in / 0 out / $0.
-# That makes token efficiency unmeasurable, and token efficiency is half of
-# what a harness comparison is for -- an arm that wins by spending 6x the
-# tokens has not obviously won.
-#
-# Both codex and chutescoder persist a rollout JSONL under
-# <config_home>/sessions/YYYY/MM/DD/ and emit `token_count` events carrying
-# TokenUsageInfo. The last one holds the session total, split into
-# input / cached_input / output / reasoning_output.
-AGENT_USAGE_PROBE = r"""
-import glob, json, os, sys
-PATTERNS = [
-    "/root/.chutescoder/sessions/*/*/*/rollout-*.jsonl",
-    "/root/.codex/sessions/*/*/*/rollout-*.jsonl",
-]
-files = []
-for pattern in PATTERNS:
-    files.extend(glob.glob(pattern))
-if not files:
-    print(json.dumps({"error": "no rollout found"}))
-    raise SystemExit
-path = max(files, key=os.path.getmtime)
-last, seen = None, 0
-for line in open(path, errors="replace"):
-    try:
-        obj = json.loads(line)
-    except Exception:
-        continue
-    payload = obj.get("payload") or {}
-    if payload.get("type") == "token_count":
-        seen += 1
-        if payload.get("info"):
-            last = payload["info"]
-if not last:
-    print(json.dumps({"error": "no token_count events", "events_seen": seen}))
-    raise SystemExit
-total = last.get("total_token_usage") or {}
-print(json.dumps({
-    "rollout": os.path.basename(path),
-    "token_count_events": seen,
-    "input_tokens": total.get("input_tokens"),
-    "cached_input_tokens": total.get("cached_input_tokens"),
-    "output_tokens": total.get("output_tokens"),
-    "reasoning_output_tokens": total.get("reasoning_output_tokens"),
-    "total_tokens": total.get("total_tokens"),
-}))
-"""
 
 def settings_allow_unsealed() -> bool:
     """Escape hatch for deliberately running Terminal-Bench with open egress.
@@ -241,7 +192,21 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 cwd=task_dir,
             )
         has_compose = compose_check.get("exit_code") == 0
-        image_name = f"tbench_{task_id}".lower()
+        # Every sandbox shares the HOST docker daemon (Sandy mounts the socket),
+        # so anything Terminal-Bench names has to be namespaced per sandbox or
+        # concurrent items -- and concurrent *runs*, e.g. arm B and arm C of a
+        # paired comparison -- collide on the same daemon:
+        #
+        #   Conflict. The container name "/tbench_stable-parallel-kmeans_client"
+        #   is already in use by container "0546b477..."
+        #   removal of container aa1114b2... is already in progress
+        #
+        # Worse than the crash: upstream's default image name is the literal
+        # string "client", so two items building at once silently overwrite each
+        # other's image and one can end up running the other's container. That
+        # fails quietly rather than loudly, which is the dangerous kind.
+        ns = f"s{sandbox_id[:12]}".lower()
+        image_name = f"tbench_{ns}_{task_id}".lower()
         container_name = f"{image_name}_container"
         cleanup_cmd = None
         cleanup_cwd = None
@@ -277,9 +242,9 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             logs_dir = f"{task_dir}/logs"
             await self.sandy.execute_command(sandbox_id, f"mkdir -p {logs_dir}")
             env = {
-                "T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME": "client",
-                "T_BENCH_TASK_DOCKER_NAME_PREFIX": f"tbench_{task_id}",
-                "T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME": f"tbench_{task_id}_client",
+                "T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME": f"client_{ns}",
+                "T_BENCH_TASK_DOCKER_NAME_PREFIX": f"tbench_{ns}_{task_id}",
+                "T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME": f"tbench_{ns}_{task_id}_client",
                 "T_BENCH_TASK_LOGS_PATH": logs_dir,
                 "T_BENCH_CONTAINER_LOGS_PATH": "/var/log/tbench",
                 "T_BENCH_TASK_AGENT_LOGS_PATH": logs_dir,
@@ -293,7 +258,15 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 f"{task_dir}/.env",
                 "\n".join(env_lines) + "\n",
             )
-            up_cmd = f"{compose_cmd} --env-file .env -f {compose_path} up --build -d"
+            # -p: the project name otherwise defaults to the working directory,
+            # which is "task" in every sandbox, so compose treats concurrent
+            # items as the same project and recreates/removes each other's
+            # containers.
+            compose_project = f"tb{ns}"
+            up_cmd = (
+                f"{compose_cmd} -p {compose_project} --env-file .env "
+                f"-f {compose_path} up --build -d"
+            )
             up_result = await self.sandy.execute_command(
                 sandbox_id,
                 up_cmd,
@@ -310,7 +283,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     "stderr": up_result.get("stderr"),
                 }
             container_name = env["T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME"]
-            cleanup_cmd = f"{compose_cmd} -f {compose_path} down"
+            cleanup_cmd = f"{compose_cmd} -p {compose_project} -f {compose_path} down"
             cleanup_cwd = task_dir
         else:
             build_result = await self.sandy.execute_command(
@@ -478,26 +451,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         }
 
     async def _collect_agent_usage(self, sandbox_id: str) -> dict:
-        """Read the agent's own cumulative token usage out of the sandbox.
-
-        Must run before the sandbox is terminated. Returns `{"error": ...}`
-        rather than an estimate when the rollout is missing or carries no
-        usage events -- an invented number here would be worse than a gap,
-        because it would silently become a token-efficiency claim.
-        """
-        try:
-            encoded = base64.b64encode(AGENT_USAGE_PROBE.encode()).decode("ascii")
-            result = await self.sandy.execute_command(
-                sandbox_id,
-                f"echo {encoded} | base64 -d > /tmp/_usage_probe.py "
-                "&& python3 /tmp/_usage_probe.py",
-            )
-            raw = ((result or {}).get("stdout") or "").strip()
-            if not raw:
-                return {"error": "usage probe produced no output"}
-            return json.loads(raw)
-        except Exception as exc:
-            return {"error": f"usage probe failed: {exc}"}
+        return await collect_agent_usage(self.sandy, sandbox_id)
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single Terminal-Bench item."""
