@@ -703,10 +703,24 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                                 "reference implementation.)"
                             ),
                             latency_ms=latency_ms,
+                            # Failed items cost real money. Without this the
+                            # arm that fails looks free: the first paired run
+                            # reported arm B at 0 tokens / $0.00 across three
+                            # items, which reads as "never ran" when in fact it
+                            # ran and spent -- a 1-item rerun of the same task
+                            # billed $0.18. Cost is part of the result, so an
+                            # unsuccessful item has to carry its usage too.
+                            input_tokens=agent_usage.get("input_tokens"),
+                            output_tokens=agent_usage.get("output_tokens"),
                             metadata={
                                 "task_id": item.get("task_id"),
                                 "agent": agent_name,
                                 "agent_summary": agent_summary,
+                                "agent_usage": agent_usage,
+                                "holdout": holdout,
+                                "seal": seal,
+                                "agent_timeout_sec": agent_timeout / 1000,
+                                "agent_timeout_multiplier": timeout_multiplier,
                             },
                         )
 
