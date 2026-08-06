@@ -159,6 +159,31 @@ class BenchmarkAdapter(ABC):
         async for item_id in self.enumerate_items():
             all_items.append(item_id)
         total_items = len(all_items)
+
+        # Explicit item selection, via
+        #   "config": {"<benchmark>": {"item_ids": ["3", "10", ...]}}
+        #
+        # Exists for item-paired A/B runs. Running all of arm B and then all of
+        # arm C means the two arms sample the shared model endpoint at
+        # different times, and that endpoint's latency varies a lot (measured:
+        # 55s mean against a 722s max). Over a 14-hour window part of any
+        # measured difference would just be "what time it was". Interleaving
+        # B and C item by item keeps both arms inside the same few minutes, so
+        # time-varying load hits them nearly equally and cancels in the paired
+        # difference -- the same reason the arms share a subset seed.
+        #
+        # Ordering follows the caller's list so a pair can be driven one item
+        # at a time. Unknown ids are dropped rather than invented.
+        requested = (
+            (getattr(self, "run_config", None) or {})
+            .get(self.get_name(), {})
+            .get("item_ids")
+        )
+        if requested:
+            known = set(all_items)
+            selected = [str(i) for i in requested if str(i) in known]
+            return total_items, selected
+
         return total_items, self.get_deterministic_subset(all_items, subset_pct, seed, subset_count)
 
     def get_deterministic_subset(
