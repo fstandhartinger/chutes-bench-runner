@@ -412,25 +412,38 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             f"docker exec {container_name} sh -c {shlex.quote(self._seal_script())}",
         )
 
+        # Two checks, because either alone can pass for the wrong reason.
+        #
+        #  HOSTS= counts the blackhole entries actually present in /etc/hosts.
+        #         This is the real check and it works everywhere.
+        #  FETCH= curls a known answer-key URL. Stronger evidence when it runs,
+        #         but the task containers are minimal and many have no curl --
+        #         and "curl: not found" is not a 200, so a naive
+        #         "anything but 200 means blocked" would read a missing curl as
+        #         a successful seal. Hence NOCURL, treated as no evidence
+        #         rather than as proof.
         probe = (
-            "curl -s -m 8 -o /dev/null -w '%{http_code}' "
+            "echo HOSTS=$(grep -c 'chutes-bench-runner: benchmark answer sources' /etc/hosts); "
+            "if command -v curl >/dev/null 2>&1; then "
+            "echo FETCH=$(curl -s -m 8 -o /dev/null -w '%{http_code}' "
             "https://raw.githubusercontent.com/harbor-framework/terminal-bench/main/README.md "
-            "|| echo BLOCKED"
+            "|| echo CURLFAIL); "
+            "else echo FETCH=NOCURL; fi"
         )
         sandbox_probe = await self.sandy.execute_command(sandbox_id, probe)
         container_probe = await self.sandy.execute_command(
             sandbox_id, f"docker exec {container_name} sh -c {shlex.quote(probe)}"
         )
 
-        def _blocked(result: dict) -> bool:
+        def _judge(result: dict) -> tuple[bool, str]:
             out = ((result or {}).get("stdout") or "").strip()
-            # A blackholed host gives a connection failure, not a 200.
-            return out != "200"
+            hosts_ok = "HOSTS=0" not in out and "HOSTS=" in out
+            fetched = "FETCH=200" in out
+            # Sealed iff the entries are there AND nothing actually fetched.
+            return (hosts_ok and not fetched), out
 
-        verdict["sandbox_stdout"] = ((sandbox_probe or {}).get("stdout") or "").strip()
-        verdict["container_stdout"] = ((container_probe or {}).get("stdout") or "").strip()
-        verdict["sandbox_blocked"] = _blocked(sandbox_probe)
-        verdict["container_blocked"] = _blocked(container_probe)
+        verdict["sandbox_blocked"], verdict["sandbox_stdout"] = _judge(sandbox_probe)
+        verdict["container_blocked"], verdict["container_stdout"] = _judge(container_probe)
         verdict["sealed"] = verdict["sandbox_blocked"] and verdict["container_blocked"]
         return verdict
 
