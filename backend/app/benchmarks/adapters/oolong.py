@@ -10,6 +10,7 @@ This adapter loads the dataset once (cached on disk) and fetches items on demand
 avoiding large in-memory caches for 100% runs.
 """
 import asyncio
+import ast
 import os
 import time
 from typing import Any, AsyncIterator, Optional
@@ -22,6 +23,38 @@ logger = get_logger(__name__)
 
 # Total items in the oolong-synth test split (from dataset info)
 OOLONG_SYNTH_TOTAL_ITEMS = 5200
+
+
+def _normalize_answer(value: Any) -> str:
+    """Ground-truth answers arrive from the dataset as lists.
+
+    `str([12])` is `"[12]"`, so an agent that correctly answers `12` was scored
+    wrong: exact match compared `"12" != "[12]"`, and the numeric path threw on
+    `float("[12]")` and returned 0.0. Every OOLONG number this harness has
+    produced was depressed by it, and for NUMERIC answers essentially floored.
+
+    Caught by the first `oolong_agentic` item: expected `[12]`, agent answered
+    `12`, scored 0.0.
+    """
+    if isinstance(value, (list, tuple)):
+        if not value:
+            # An empty ground truth is a dataset problem, not an answer of "".
+            # Keep it visible rather than turning it into something a blank
+            # response would match.
+            return "[]"
+        if len(value) == 1:
+            return str(value[0]).strip()
+        return ", ".join(str(v).strip() for v in value)
+    text = str(value).strip()
+    # Cached items may already be the str() of a list.
+    if len(text) >= 2 and text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return text
+        if isinstance(parsed, (list, tuple)):
+            return _normalize_answer(parsed)
+    return text
 
 
 def _compute_numeric_score(expected: str, predicted: str) -> float:
@@ -219,7 +252,7 @@ class OolongAdapter(BenchmarkAdapter):
                         "id": str(self._stream_index),
                         "context_window_text": raw_item["context_window_text"],
                         "question": raw_item["question"],
-                        "answer": str(raw_item["answer"]),
+                        "answer": _normalize_answer(raw_item["answer"]),
                         "answer_type": raw_item.get("answer_type", ""),
                         "task": raw_item.get("task", ""),
                         "task_group": raw_item.get("task_group", ""),
@@ -239,7 +272,7 @@ class OolongAdapter(BenchmarkAdapter):
                 "id": str(idx),
                 "context_window_text": item["context_window_text"],
                 "question": item["question"],
-                "answer": str(item["answer"]),
+                "answer": _normalize_answer(item["answer"]),
                 "answer_type": item.get("answer_type", ""),
                 "task": item.get("task", ""),
                 "task_group": item.get("task_group", ""),
