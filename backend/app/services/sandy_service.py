@@ -39,6 +39,7 @@ class SandyService:
         priority: int = 3,  # LOW priority for batch benchmark jobs
         preemptable: bool = True,  # Can be terminated under memory pressure
         requires_agent: bool = False,
+        timeout_minutes: Optional[int] = None,
     ) -> Optional[str]:
         """Create a new sandbox and return its ID.
 
@@ -63,6 +64,17 @@ class SandyService:
             "priority": priority,
             "preemptable": preemptable,
         }
+        # Sandy defaults to a 10-minute TTL and only extends it when someone
+        # POSTs /api/sandboxes/{id}/refresh -- which bench-runner never does.
+        # So a long benchmark item had its sandbox reaped out from under it at
+        # ~10 minutes regardless of the agent budget: the agent died mid-task,
+        # `test -f task/solution.sh` then failed *because the sandbox was gone*,
+        # and that was recorded as score 0.0. An infrastructure kill was
+        # arithmetically identical to a capability failure, and it was the
+        # modal outcome. Callers running long items must pass a TTL that
+        # exceeds their own budget.
+        if timeout_minutes is not None:
+            payload["timeoutMinutes"] = int(timeout_minutes)
         if enable_docker_socket:
             payload["enableDockerSocket"] = True
         if (enable_docker_socket or requires_agent) and self.docker_upstream:

@@ -174,11 +174,16 @@ class BenchmarkAdapter(ABC):
         #
         # Ordering follows the caller's list so a pair can be driven one item
         # at a time. Unknown ids are dropped rather than invented.
-        requested = (
-            (getattr(self, "run_config", None) or {})
-            .get(self.get_name(), {})
-            .get("item_ids")
-        )
+        # Accept both the adapter's real name and the family name. These
+        # diverged once already: the agent selector read the literal
+        # "terminal_bench" while this read get_name() == "terminal_bench_hard",
+        # so item_ids was silently dropped and the run sampled by hash instead
+        # -- launched with ["72"], ran item 24.
+        _cfg = getattr(self, "run_config", None) or {}
+        _merged: dict = {}
+        for key in (self.get_name(), self.get_name().rsplit("_", 1)[0]):
+            _merged.update(_cfg.get(key) or {})
+        requested = _merged.get("item_ids")
         if requested:
             known = set(all_items)
             selected = [str(i) for i in requested if str(i) in known]

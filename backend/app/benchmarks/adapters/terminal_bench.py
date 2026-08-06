@@ -22,6 +22,41 @@ logger = get_logger(__name__)
 
 
 
+def classify_agent_exit(agent_summary: dict, agent_timeout_sec: float) -> Optional[str]:
+    """Distinguish an infrastructure kill from a capability failure.
+
+    An agent that exits non-zero *well before* its budget did not run out of
+    time -- something killed it. The concrete case: Sandy reaped the sandbox at
+    its 10-minute TTL while the declared budget was 1200s, the agent died at
+    666s mid-sentence, `test -f task/solution.sh` then failed because the
+    sandbox was gone, and the item was recorded as score 0.0. That is
+    arithmetically identical to the agent trying and failing, and it was the
+    modal outcome -- 9 of 15 rows.
+
+    Scoring 0 for infrastructure is worse than erroring: it is a number, it
+    averages in, and it silently drags whichever arm was unlucky. So these are
+    returned as errors and excluded from scoring instead.
+
+    Returns a reason string when the exit looks like infrastructure, else None.
+    """
+    if not agent_summary:
+        return None
+    if agent_summary.get("exitCode") in (0, None):
+        return None
+    duration = agent_summary.get("duration")
+    if duration is None or not agent_timeout_sec:
+        return None
+    if duration < 0.9 * agent_timeout_sec:
+        return (
+            f"Infrastructure failure, not scored: agent exited "
+            f"{agent_summary.get('exitCode')} after {duration:.0f}s against a "
+            f"{agent_timeout_sec:.0f}s budget ({duration / agent_timeout_sec:.0%} "
+            f"of it). A non-zero exit well short of the budget means something "
+            f"killed the agent rather than the agent running out of time."
+        )
+    return None
+
+
 def settings_allow_unsealed() -> bool:
     """Escape hatch for deliberately running Terminal-Bench with open egress.
 
@@ -417,29 +452,79 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
     # never restored: we score what the agent wrote.
     HOLDOUT_ROOT = "/opt/tb-holdout"
 
+    # Globs, not three literal filenames. The first version listed
+    # solution.sh / tests / run-tests.sh and reported withheld: true while
+    # `evaluation_tests_hidden/` -- which it had never heard of -- sat in the
+    # task dir and the agent read it.
+    ANSWER_KEY_GLOBS = ("*solution*", "*test*", "*hidden*", "*answer*")
+
     async def _withhold_answer_key(self, sandbox_id: str, ns: str) -> dict:
-        """Move solution.sh and tests/ out of the agent's reach; verify it."""
+        """Remove the answer key from everywhere the agent can reach.
+
+        Must run BEFORE the task image is built. `_run_terminal_bench` uses the
+        task dir as the docker build context, so anything still present at
+        build time is baked into the image and reachable via `docker exec` --
+        which is exactly what the prompt tells the agent to use. Withholding
+        only from the sandbox filesystem left three live copies: inside the
+        container, in archive.tar, and in archive.b64.
+        """
         holdout = f"{self.HOLDOUT_ROOT}/{ns}"
+        globs = " ".join(f"'{g}'" for g in self.ANSWER_KEY_GLOBS)
         await self.sandy.execute_command(
             sandbox_id,
-            f"mkdir -p {holdout} && "
-            f"for p in solution.sh tests run-tests.sh; do "
-            f"  [ -e task/$p ] && mv task/$p {holdout}/ || true; "
-            f"done; true",
+            f"mkdir -p {holdout} && cd /workspace/task && "
+            f"for g in {globs}; do "
+            f"  for p in $g; do [ -e \"$p\" ] && mv \"$p\" {holdout}/ 2>/dev/null; done; "
+            f"done; "
+            # One `tar -x` would restore everything the move just removed.
+            f"rm -f /workspace/archive.tar /workspace/archive.b64; true",
         )
         probe = await self.sandy.execute_command(
             sandbox_id,
-            "echo SOL=$(test -e task/solution.sh && echo present || echo absent) "
-            "TESTS=$(test -e task/tests && echo present || echo absent) "
-            "HELD=$(ls {h} 2>/dev/null | tr '\n' ',')".format(h=holdout),
+            "cd /workspace/task && "
+            "echo LEFT=$(ls -A . 2>/dev/null | tr '\n' ',') "
+            "ARCHIVES=$(ls /workspace/archive.* 2>/dev/null | wc -l) "
+            f"HELD=$(ls -A {holdout} 2>/dev/null | tr '\n' ',')",
         )
         out = ((probe or {}).get("stdout") or "").strip()
-        verdict = {
+        left = ""
+        for token in out.split():
+            if token.startswith("LEFT="):
+                left = token[len("LEFT="):]
+        leaked = [
+            n for n in left.split(",")
+            if n and any(k in n.lower() for k in ("solution", "test", "hidden", "answer"))
+        ]
+        return {
             "holdout_dir": holdout,
             "probe": out,
-            "withheld": "SOL=absent" in out and "TESTS=absent" in out,
+            "leaked_in_workspace": leaked,
+            "archives_removed": "ARCHIVES=0" in out,
+            "withheld": not leaked and "ARCHIVES=0" in out,
         }
-        return verdict
+
+    async def _verify_container_clean(self, sandbox_id: str, container_name: str) -> dict:
+        """Assert the property from OUTSIDE: is the answer key in the container?
+
+        The previous check asserted what our own code did (`SOL=absent`), which
+        was a true statement about the sandbox filesystem and a false statement
+        about the world -- the agent was reading the tests out of the container
+        the whole time. This looks for the files where the agent can actually
+        get at them.
+        """
+        result = await self.sandy.execute_command(
+            sandbox_id,
+            f"docker exec {container_name} sh -c "
+            f"\"find / -xdev \\( -name 'solution.sh' -o -name 'test_outputs.py' "
+            f"-o -name 'evaluation_tests_hidden' -o -name 'run-tests.sh' \\) "
+            f"-not -path '*/proc/*' 2>/dev/null | head -20\"",
+        )
+        found = [
+            line.strip()
+            for line in ((result or {}).get("stdout") or "").splitlines()
+            if line.strip()
+        ]
+        return {"found_in_container": found, "clean": not found}
 
     async def _restore_tests(self, sandbox_id: str, ns: str) -> dict:
         """Put the tests back for scoring. Never the reference solution."""
@@ -566,8 +651,27 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             if not isinstance(archive, (bytes, bytearray)):
                 return ItemResult(item_id=item_id, error="Missing task archive bytes")
 
+            # Budget has to be known before the sandbox exists, because the
+            # sandbox TTL must outlive it (see below).
+            timeout_multiplier = float(
+                os.getenv("TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER") or "1.0"
+            )
+            base_agent_timeout_sec = item.get("max_agent_timeout_sec") or 180
+            agent_timeout = int(base_agent_timeout_sec * timeout_multiplier * 1000)
+            test_timeout = int((item.get("max_test_timeout_sec") or 300) * 1000)
+
+            # Sandy's default TTL is 10 minutes and bench-runner never calls
+            # /refresh, so the sandbox was being reaped mid-item no matter what
+            # the agent budget said. Give it the agent budget + the test budget
+            # + 15 minutes of slack for image build and teardown.
+            sandbox_ttl_min = int(
+                (agent_timeout + test_timeout) / 60000
+            ) + 15
+
             # Terminal-Bench requires Docker socket access for running docker-compose
-            sandbox_id = await self.sandy.create_sandbox(enable_docker_socket=True)
+            sandbox_id = await self.sandy.create_sandbox(
+                enable_docker_socket=True, timeout_minutes=sandbox_ttl_min
+            )
             if not sandbox_id:
                 sandbox_error = self.sandy.last_error or "Could not create sandbox"
                 return ItemResult(item_id=item_id, error=sandbox_error)
@@ -577,6 +681,23 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 extracted = await self._extract_archive(sandbox_id, archive)
                 if not extracted:
                     return ItemResult(item_id=item_id, error="Failed to extract task archive")
+
+                # BEFORE the build: the task dir is the docker build context,
+                # so anything left here is baked into the image the agent then
+                # reaches with `docker exec`.
+                ns = f"s{sandbox_id[:12]}".lower()
+                holdout = await self._withhold_answer_key(sandbox_id, ns)
+                if not holdout.get("withheld"):
+                    return ItemResult(
+                        item_id=item_id,
+                        error=(
+                            "Refusing to score: answer key still present before build "
+                            f"(leaked={holdout.get('leaked_in_workspace')}, "
+                            f"probe={holdout.get('probe')!r})"
+                        ),
+                        judge_output={"holdout": holdout},
+                        metadata={"task_id": item.get("task_id"), "holdout": holdout},
+                    )
 
                 setup_result = await self._run_terminal_bench(sandbox_id, item.get("task_id") or "task")
                 container_name = setup_result.get("container_name")
@@ -591,18 +712,21 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     )
 
                 try:
-                    # Take the answer key out of the workspace BEFORE the
-                    # agent starts. This matters more than the network seal:
-                    # the reference solution and the held-out tests ship inside
-                    # the task archive, so they were local files the whole time.
-                    ns = setup_result.get("namespace") or "unknown"
-                    holdout = await self._withhold_answer_key(sandbox_id, ns)
-                    if not holdout.get("withheld"):
+                    # Assert the property from OUTSIDE: look for the answer
+                    # key where the agent can actually reach it. The task image
+                    # was built from the sanitised dir, but verify rather than
+                    # assume -- the last three integrity checks were all true
+                    # about our code and false about the world.
+                    container_clean = await self._verify_container_clean(
+                        sandbox_id, container_name
+                    )
+                    holdout["container"] = container_clean
+                    if not container_clean.get("clean"):
                         return ItemResult(
                             item_id=item_id,
                             error=(
-                                "Refusing to score: could not withhold the reference "
-                                f"solution/tests from the agent ({holdout.get('probe')!r})."
+                                "Refusing to score: answer key reachable inside the "
+                                f"task container: {container_clean.get('found_in_container')}"
                             ),
                             judge_output={"setup": setup_result, "holdout": holdout},
                             metadata={"task_id": item.get("task_id"), "holdout": holdout},
@@ -626,27 +750,6 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                             metadata={"task_id": item.get("task_id"), "seal": seal},
                         )
 
-                    # Terminal-Bench's per-task budgets (600-900s) assume a
-                    # fast model. Kimi K3 through our proxy averages ~55s per
-                    # request (measured over 95 requests; max 722s), so a 900s
-                    # budget buys roughly 12-16 turns -- and Terminal-Bench Hard
-                    # tasks need more. That is why 5 of 6 items in the first
-                    # paired run died at ~640-680s with exitCode 1 and no
-                    # output: the agent ran out of wall clock mid-task, not out
-                    # of ability.
-                    #
-                    # The multiplier is applied IDENTICALLY to both arms and
-                    # recorded on every item, so the budget stays a controlled
-                    # variable rather than a hidden one. Default 1.0 keeps
-                    # upstream behaviour for anyone who wants it.
-                    timeout_multiplier = float(
-                        os.getenv("TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER") or "1.0"
-                    )
-                    base_agent_timeout_sec = item.get("max_agent_timeout_sec") or 180
-                    agent_timeout = int(
-                        base_agent_timeout_sec * timeout_multiplier * 1000
-                    )
-                    test_timeout = int((item.get("max_test_timeout_sec") or 300) * 1000)
 
                     settings = get_settings()
                     agent_api_key = self.client.get_api_key() or settings.chutes_api_key
@@ -660,10 +763,16 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     # Chutes fork with the RLM harness). Set per run with
                     #   "config": {"terminal_bench": {"agent": "chutescoder"}}
                     # which the worker already attaches as adapter.run_config.
+                    # Read under the adapter's real name. This used the literal
+                    # "terminal_bench" while base.get_items_for_evaluation reads
+                    # self.get_name() == "terminal_bench_hard", so a config that
+                    # set both `agent` and `item_ids` had the agent honoured and
+                    # the item_ids silently ignored -- launched with ["72"], ran
+                    # item 24. Both keys accepted; the real name wins.
+                    _cfg = getattr(self, "run_config", None) or {}
+                    _tb = {**_cfg.get("terminal_bench", {}), **_cfg.get(self.get_name(), {})}
                     agent_name = (
-                        (getattr(self, "run_config", None) or {})
-                        .get("terminal_bench", {})
-                        .get("agent")
+                        _tb.get("agent")
                         or os.getenv("TERMINAL_BENCH_AGENT")
                         or "codex"
                     )
@@ -678,6 +787,32 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     )
                     agent_usage = await self._collect_agent_usage(sandbox_id)
                     agent_summary = agent_result.get("summary") or {}
+
+                    infra_reason = classify_agent_exit(
+                        agent_summary, agent_timeout / 1000
+                    )
+                    if infra_reason:
+                        return ItemResult(
+                            item_id=item_id,
+                            item_hash=self.compute_item_hash(item.get("task_id")),
+                            prompt=prompt,
+                            error=infra_reason,
+                            latency_ms=int((time.time() - start_time) * 1000),
+                            input_tokens=agent_usage.get("input_tokens"),
+                            output_tokens=agent_usage.get("output_tokens"),
+                            metadata={
+                                "task_id": item.get("task_id"),
+                                "agent": agent_name,
+                                "agent_summary": agent_summary,
+                                "agent_usage": agent_usage,
+                                "holdout": holdout,
+                                "seal": seal,
+                                "agent_timeout_sec": agent_timeout / 1000,
+                                "agent_timeout_multiplier": timeout_multiplier,
+                                "sandbox_ttl_min": sandbox_ttl_min,
+                                "excluded_reason": "infrastructure",
+                            },
+                        )
                     agent_events = agent_result.get("events") or []
                     agent_output = next(
                         (event.get("text") for event in reversed(agent_events) if event.get("type") == "output"),
