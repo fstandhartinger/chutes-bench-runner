@@ -12,6 +12,7 @@ avoiding large in-memory caches for 100% runs.
 import asyncio
 import ast
 import os
+import re
 import time
 from typing import Any, AsyncIterator, Optional
 
@@ -57,6 +58,50 @@ def _normalize_answer(value: Any) -> str:
     return text
 
 
+# Speaker/role labels a model prefixes an answer with when it has been reading a
+# dialogue transcript. Formatting, not content.
+_ROLE_PREFIX = re.compile(
+    r"^\s*(?:user|assistant|system|speaker|answer|final answer|a|q)\s*[:\-]\s*",
+    re.IGNORECASE,
+)
+# Wrapping decoration: quotes, backticks, markdown emphasis, brackets.
+_WRAPPERS = [('"', '"'), ("'", "'"), ("`", "`"), ("**", "**"), ("*", "*"),
+             ("(", ")"), ("[", "]"), ("{", "}")]
+
+
+def _normalize_prediction(text: str) -> str:
+    """Strip formatting from a prediction. Never change what it says.
+
+    OOLONG scores by exact match, so `User: 88675` against a ground truth of
+    `88675` scores 0 -- for BOTH arms. Enough of that and the benchmark is
+    pinned at zero regardless of correctness, which is a floor effect, not a
+    strict metric: a comparison where both arms score 0 on every item cannot
+    show a harness difference in either direction, so the run is wasted.
+
+    This removes only presentation: a leading speaker/role label, wrapping
+    quotes / backticks / markdown emphasis, surrounding whitespace and trailing
+    sentence punctuation.
+
+    It deliberately does NOT do substring or fuzzy matching. A response of
+    "Computers & Internet is less common than Family & Relationships" against a
+    ground truth of "less common than" stays **wrong** -- recovering that would
+    be grading, not formatting.
+    """
+    if not text:
+        return ""
+    out = text.strip()
+    for _ in range(3):  # e.g. `**"19"**`
+        before = out
+        out = _ROLE_PREFIX.sub("", out).strip()
+        for left, right in _WRAPPERS:
+            if len(out) > len(left) + len(right) and out.startswith(left) and out.endswith(right):
+                out = out[len(left):-len(right)].strip()
+        out = out.rstrip(".!;,").strip()
+        if out == before:
+            break
+    return out
+
+
 def _compute_numeric_score(expected: str, predicted: str) -> float:
     """
     Compute score for numeric answers using 0.75^|y-ŷ| formula.
@@ -75,6 +120,15 @@ def _compute_numeric_score(expected: str, predicted: str) -> float:
 def _is_exact_match(expected: str, predicted: str) -> bool:
     """Check for exact match (case-insensitive, stripped)."""
     return expected.strip().lower() == predicted.strip().lower()
+
+
+def score_answer(expected: str, predicted: str, answer_type: str) -> tuple[float, bool]:
+    """OOLONG's own metric: 0.75^|y-y'| for numerics, exact match otherwise."""
+    if answer_type == "NUMERIC":
+        score = _compute_numeric_score(expected, predicted)
+        return score, score >= 0.75  # correct if within ~1 unit
+    correct = _is_exact_match(expected, predicted)
+    return (1.0 if correct else 0.0), correct
 
 
 def _extract_answer(response: str) -> str:
@@ -352,15 +406,22 @@ class OolongAdapter(BenchmarkAdapter):
 
             # Score based on answer type
             # From RLM paper: "Numerical answers as score(ŷ)=0.75^|y-ŷ| and other answers as exact match"
-            if answer_type == "NUMERIC":
-                score = _compute_numeric_score(expected, extracted_answer)
-                is_correct = score >= 0.75  # Consider correct if within ~1 unit
-            else:
-                is_correct = _is_exact_match(expected, extracted_answer)
-                score = 1.0 if is_correct else 0.0
+            # Scored twice: on the raw extraction and on the formatting-
+            # normalised one (see _normalize_prediction). The normalised score
+            # is the reported one; both are kept on the item so a reviewer can
+            # see exactly what the normalisation rule did rather than trust it.
+            score_raw, correct_raw = score_answer(expected, extracted_answer, answer_type)
+            normalized_answer = _normalize_prediction(extracted_answer)
+            score, is_correct = score_answer(expected, normalized_answer, answer_type)
 
             item_metadata = {
                 **metadata,
+                "extracted_answer": extracted_answer,
+                "normalized_answer": normalized_answer,
+                "score_raw": score_raw,
+                "is_correct_raw": correct_raw,
+                "score_normalized": score,
+                "normalization": "formatting_only",
                 "task": item["task"],
                 "task_group": item["task_group"],
                 "answer_type": answer_type,

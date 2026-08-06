@@ -47,9 +47,9 @@ from app.services.sandy_service import SandyService
 
 from app.benchmarks.adapters.oolong import (
     OolongAdapter,
-    _compute_numeric_score,
     _extract_answer,
-    _is_exact_match,
+    _normalize_prediction,
+    score_answer,
 )
 
 logger = get_logger(__name__)
@@ -201,14 +201,16 @@ class OolongAgenticAdapter(OolongAdapter):
                 )
 
             # Identical scoring to single-shot OOLONG, so the arms differ only
-            # in the harness.
+            # in the harness -- including the raw/normalised pair, so the two
+            # adapters cannot drift apart on the metric.
             extracted = _extract_answer(raw_answer)
-            if item["answer_type"] == "NUMERIC":
-                score = _compute_numeric_score(item["answer"], extracted)
-                is_correct = score >= 0.75
-            else:
-                is_correct = _is_exact_match(item["answer"], extracted)
-                score = 1.0 if is_correct else 0.0
+            score_raw, correct_raw = score_answer(
+                item["answer"], extracted, item["answer_type"]
+            )
+            normalized = _normalize_prediction(extracted)
+            score, is_correct = score_answer(
+                item["answer"], normalized, item["answer_type"]
+            )
 
             return ItemResult(
                 item_id=item_id,
@@ -226,6 +228,11 @@ class OolongAgenticAdapter(OolongAdapter):
                     "agent_summary": agent_summary,
                     "agent_usage": agent_usage,
                     "extracted_answer": extracted,
+                    "normalized_answer": normalized,
+                    "score_raw": score_raw,
+                    "is_correct_raw": correct_raw,
+                    "score_normalized": score,
+                    "normalization": "formatting_only",
                     "task": item["task"],
                     "task_group": item["task_group"],
                     "answer_type": item["answer_type"],
