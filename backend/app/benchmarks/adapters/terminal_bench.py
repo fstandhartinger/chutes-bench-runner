@@ -395,6 +395,65 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             f"{lines}\\n{lines6}\\n' >> /etc/hosts"
         )
 
+    # Upstream Terminal-Bench task directories ship the reference solution and
+    # the held-out tests alongside the task, and `_extract_archive` unpacks the
+    # whole thing into /workspace/task -- the agent's own working directory. So
+    # every run had `solution.sh` (a complete working implementation, canary
+    # string and all) and `tests/test_outputs.py` sitting in front of the agent,
+    # and the prompt then told it to "write a solution script to
+    # /workspace/task/solution.sh" -- the exact path the answer already
+    # occupied.
+    #
+    # Two failures, not one:
+    #   * contamination -- the agent can read the reference solution and the
+    #     tests. Sealing the network (BENCHMARK_SOURCE_HOSTS) was beside the
+    #     point while the answer key was a local file.
+    #   * false credit -- if the agent never overwrites solution.sh, the harness
+    #     copies the REFERENCE solution into the container and runs it, scoring
+    #     a pass the agent did not earn.
+    #
+    # So the answer key is moved out of the workspace before the agent starts
+    # and the tests are put back only for scoring. The reference solution is
+    # never restored: we score what the agent wrote.
+    HOLDOUT_ROOT = "/opt/tb-holdout"
+
+    async def _withhold_answer_key(self, sandbox_id: str, ns: str) -> dict:
+        """Move solution.sh and tests/ out of the agent's reach; verify it."""
+        holdout = f"{self.HOLDOUT_ROOT}/{ns}"
+        await self.sandy.execute_command(
+            sandbox_id,
+            f"mkdir -p {holdout} && "
+            f"for p in solution.sh tests run-tests.sh; do "
+            f"  [ -e task/$p ] && mv task/$p {holdout}/ || true; "
+            f"done; true",
+        )
+        probe = await self.sandy.execute_command(
+            sandbox_id,
+            "echo SOL=$(test -e task/solution.sh && echo present || echo absent) "
+            "TESTS=$(test -e task/tests && echo present || echo absent) "
+            "HELD=$(ls {h} 2>/dev/null | tr '\n' ',')".format(h=holdout),
+        )
+        out = ((probe or {}).get("stdout") or "").strip()
+        verdict = {
+            "holdout_dir": holdout,
+            "probe": out,
+            "withheld": "SOL=absent" in out and "TESTS=absent" in out,
+        }
+        return verdict
+
+    async def _restore_tests(self, sandbox_id: str, ns: str) -> dict:
+        """Put the tests back for scoring. Never the reference solution."""
+        holdout = f"{self.HOLDOUT_ROOT}/{ns}"
+        result = await self.sandy.execute_command(
+            sandbox_id,
+            f"for p in tests run-tests.sh; do "
+            f"  [ -e {holdout}/$p ] && cp -r {holdout}/$p task/ || true; "
+            f"done; "
+            f"echo RESTORED=$(test -e task/tests && echo yes || echo no) "
+            f"REF_SOLUTION_STILL_WITHHELD=$(test -e task/solution.sh && echo no || echo yes)",
+        )
+        return {"probe": ((result or {}).get("stdout") or "").strip()}
+
     async def _seal_network(self, sandbox_id: str, container_name: str) -> dict:
         """Blackhole the answer sources, then prove it took effect.
 
@@ -532,6 +591,23 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     )
 
                 try:
+                    # Take the answer key out of the workspace BEFORE the
+                    # agent starts. This matters more than the network seal:
+                    # the reference solution and the held-out tests ship inside
+                    # the task archive, so they were local files the whole time.
+                    ns = setup_result.get("namespace") or "unknown"
+                    holdout = await self._withhold_answer_key(sandbox_id, ns)
+                    if not holdout.get("withheld"):
+                        return ItemResult(
+                            item_id=item_id,
+                            error=(
+                                "Refusing to score: could not withhold the reference "
+                                f"solution/tests from the agent ({holdout.get('probe')!r})."
+                            ),
+                            judge_output={"setup": setup_result, "holdout": holdout},
+                            metadata={"task_id": item.get("task_id"), "holdout": holdout},
+                        )
+
                     # Seal before the agent starts, and refuse to score an
                     # item we could not seal. See BENCHMARK_SOURCE_HOSTS.
                     seal = await self._seal_network(sandbox_id, container_name)
@@ -600,7 +676,13 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                             item_hash=self.compute_item_hash(item.get("task_id")),
                             prompt=prompt,
                             response=agent_output,
-                            error="Agent did not write task/solution.sh",
+                            error=(
+                                "Agent did not write task/solution.sh. "
+                                "(Meaningful only since the reference solution "
+                                "is withheld -- before that, this file always "
+                                "existed and the harness would have scored the "
+                                "reference implementation.)"
+                            ),
                             latency_ms=latency_ms,
                             metadata={
                                 "task_id": item.get("task_id"),
@@ -628,6 +710,11 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     # tooling. See _unseal_network.
                     seal["released_for_tests"] = await self._unseal_network(
                         sandbox_id, container_name
+                    )
+                    # Put the tests back for scoring. The reference solution
+                    # stays withheld -- we score what the agent wrote.
+                    holdout["restored_for_tests"] = await self._restore_tests(
+                        sandbox_id, ns
                     )
 
                     # Test phase: copy tests and run
@@ -693,6 +780,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                             # Recorded per item so a reviewer can confirm the
                             # run was sealed without taking it on trust.
                             "seal": seal,
+                            "holdout": holdout,
                             "agent_summary": agent_summary,
                             "agent_output_excerpt": agent_output[:2000] if agent_output else "",
                             "task_yaml": task_yaml,
