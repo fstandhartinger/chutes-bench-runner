@@ -317,6 +317,10 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             "container_name": container_name,
             "cleanup_cmd": cleanup_cmd,
             "cleanup_cwd": cleanup_cwd,
+            # Needed by evaluate_item's teardown so the per-sandbox images do
+            # not accumulate.
+            "image_name": image_name,
+            "namespace": ns,
         }
 
     # Hosts that serve Terminal-Bench's own task definitions, held-out tests and
@@ -673,6 +677,24 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     if cleanup_cmd:
                         await self.sandy.execute_command(
                             sandbox_id, cleanup_cmd, cwd=cleanup_cwd
+                        )
+                    # Namespacing the task image per sandbox (see _run_terminal_bench)
+                    # fixed items overwriting each other, but it also means every
+                    # item now leaves its own multi-GB image behind instead of
+                    # reusing one. On a host that runs at ~95% disk that fills the
+                    # filesystem within a few dozen items, so the image goes when
+                    # the item does. `docker compose down` removes containers, not
+                    # images.
+                    stale = " ".join(
+                        x for x in (
+                            setup_result.get("image_name"),
+                            f"client_{setup_result.get('namespace')}"
+                            if setup_result.get("namespace") else None,
+                        ) if x
+                    )
+                    if stale:
+                        await self.sandy.execute_command(
+                            sandbox_id, f"docker rmi -f {stale} 2>/dev/null || true"
                         )
             finally:
                 await self.sandy.terminate_sandbox(sandbox_id)
