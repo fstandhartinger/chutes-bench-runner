@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import shlex
 import time
@@ -18,6 +19,57 @@ from app.services.sandy_service import SandyService
 
 logger = get_logger(__name__)
 
+
+
+# Cumulative token usage for a Sandy-driven agent has to be read back out of
+# the sandbox: the tokens are spent by the CLI agent over a connection
+# bench-runner never sees, so the run row otherwise reports 0 in / 0 out / $0.
+# That makes token efficiency unmeasurable, and token efficiency is half of
+# what a harness comparison is for -- an arm that wins by spending 6x the
+# tokens has not obviously won.
+#
+# Both codex and chutescoder persist a rollout JSONL under
+# <config_home>/sessions/YYYY/MM/DD/ and emit `token_count` events carrying
+# TokenUsageInfo. The last one holds the session total, split into
+# input / cached_input / output / reasoning_output.
+AGENT_USAGE_PROBE = r"""
+import glob, json, os, sys
+PATTERNS = [
+    "/root/.chutescoder/sessions/*/*/*/rollout-*.jsonl",
+    "/root/.codex/sessions/*/*/*/rollout-*.jsonl",
+]
+files = []
+for pattern in PATTERNS:
+    files.extend(glob.glob(pattern))
+if not files:
+    print(json.dumps({"error": "no rollout found"}))
+    raise SystemExit
+path = max(files, key=os.path.getmtime)
+last, seen = None, 0
+for line in open(path, errors="replace"):
+    try:
+        obj = json.loads(line)
+    except Exception:
+        continue
+    payload = obj.get("payload") or {}
+    if payload.get("type") == "token_count":
+        seen += 1
+        if payload.get("info"):
+            last = payload["info"]
+if not last:
+    print(json.dumps({"error": "no token_count events", "events_seen": seen}))
+    raise SystemExit
+total = last.get("total_token_usage") or {}
+print(json.dumps({
+    "rollout": os.path.basename(path),
+    "token_count_events": seen,
+    "input_tokens": total.get("input_tokens"),
+    "cached_input_tokens": total.get("cached_input_tokens"),
+    "output_tokens": total.get("output_tokens"),
+    "reasoning_output_tokens": total.get("reasoning_output_tokens"),
+    "total_tokens": total.get("total_tokens"),
+}))
+"""
 
 def settings_allow_unsealed() -> bool:
     """Escape hatch for deliberately running Terminal-Bench with open egress.
@@ -382,6 +434,28 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         verdict["sealed"] = verdict["sandbox_blocked"] and verdict["container_blocked"]
         return verdict
 
+    async def _collect_agent_usage(self, sandbox_id: str) -> dict:
+        """Read the agent's own cumulative token usage out of the sandbox.
+
+        Must run before the sandbox is terminated. Returns `{"error": ...}`
+        rather than an estimate when the rollout is missing or carries no
+        usage events -- an invented number here would be worse than a gap,
+        because it would silently become a token-efficiency claim.
+        """
+        try:
+            encoded = base64.b64encode(AGENT_USAGE_PROBE.encode()).decode("ascii")
+            result = await self.sandy.execute_command(
+                sandbox_id,
+                f"echo {encoded} | base64 -d > /tmp/_usage_probe.py "
+                "&& python3 /tmp/_usage_probe.py",
+            )
+            raw = ((result or {}).get("stdout") or "").strip()
+            if not raw:
+                return {"error": "usage probe produced no output"}
+            return json.loads(raw)
+        except Exception as exc:
+            return {"error": f"usage probe failed: {exc}"}
+
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single Terminal-Bench item."""
         if not self._items:
@@ -481,6 +555,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                         raw_prompt=True,
                         env_vars=agent_env_vars,
                     )
+                    agent_usage = await self._collect_agent_usage(sandbox_id)
                     agent_summary = agent_result.get("summary") or {}
                     agent_events = agent_result.get("events") or []
                     agent_output = next(
@@ -575,10 +650,13 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                             "test_result": test_result,
                         },
                         error=error,
+                        input_tokens=agent_usage.get("input_tokens"),
+                        output_tokens=agent_usage.get("output_tokens"),
                         metadata={
                             "task_id": item.get("task_id"),
                             "difficulty": item.get("difficulty"),
                             "agent": agent_name,
+                            "agent_usage": agent_usage,
                             # Recorded per item so a reviewer can confirm the
                             # run was sealed without taking it on trust.
                             "seal": seal,
