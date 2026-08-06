@@ -1,5 +1,6 @@
 """AA-LCR (Artificial Analysis Long Context Reasoning) benchmark adapter."""
 import os
+import re
 import time
 import zipfile
 from typing import Any, AsyncIterator, Optional
@@ -160,12 +161,18 @@ class AALCRAdapter(BenchmarkAdapter):
             max_tokens=32,
             min_output_tokens=0,
         )
-        verdict = (response or "").strip().upper()
-        if "CORRECT" in verdict and "INCORRECT" not in verdict:
-            return True, response.strip()
-        if "INCORRECT" in verdict and "CORRECT" not in verdict:
-            return False, response.strip()
-        return False, response.strip() or "Unrecognized judge response"
+        # "CORRECT" is a substring of "INCORRECT", so the obvious membership
+        # test mislabels every negative verdict. The old code happened to
+        # return the right boolean via the fallback, but tagged it
+        # "Unrecognized judge response", which made a healthy judge
+        # indistinguishable from a broken one -- exactly the signal you need
+        # when a judge model is retired out from under you. Match on words.
+        words = set(re.findall(r"[A-Z]+", (response or "").upper()))
+        if "INCORRECT" in words:
+            return False, (response or "").strip()
+        if "CORRECT" in words:
+            return True, (response or "").strip()
+        return False, (response or "").strip() or "Unrecognized judge response"
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single AA-LCR item."""
@@ -232,6 +239,15 @@ class AALCRAdapter(BenchmarkAdapter):
                 "document_set_id": item.get("document_set_id"),
                 "system_prompt": system_prompt,
                 "judge_model": settings.aa_lcr_judge_model,
+                # Artificial Analysis's published AA-LCR figures (Kimi K3
+                # 74.67) were produced with their judge, not this one. Carried
+                # on every item so a score cannot be quoted against theirs by
+                # accident. Internal / within-experiment comparisons only.
+                "judge_substituted": (
+                    settings.aa_lcr_judge_model
+                    != "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
+                ),
+                "comparable_to_published": False,
             }
             return ItemResult(
                 item_id=item_id,

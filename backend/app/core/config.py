@@ -134,14 +134,30 @@ class Settings(BaseSettings):
     sandy_volume_root: str = "/var/lib/sandy/volumes"
     sandy_docker_upstream: Optional[str] = None
 
-    # AA-LCR judge model (LLM-based equality checker)
-    aa_lcr_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
-    # HLE judge model (LLM-based judge)
-    hle_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
-    # AA-Omniscience judge model
-    aa_omniscience_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
-    # GDPval judge model (LLM-based evaluator against reference docs)
-    gdpval_judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
+    # LLM judges.
+    #
+    # These all defaulted to Qwen/Qwen3-235B-A22B-Instruct-2507-TEE, which has
+    # been retired from Chutes -- every judged benchmark failed with
+    # `404 model not found` AFTER completing all its items, so the model work
+    # was paid for and then thrown away.
+    #
+    # The replacement is constrained by how the judges are called: a single
+    # turn with max_tokens=32 and "Reply only with CORRECT or INCORRECT".
+    # A reasoning-first model spends the whole budget thinking and returns an
+    # empty string. Probed against four hand-checked equality cases,
+    # Qwen3.5-397B, Qwen3.6-27B, Kimi-K2.6 and Qwen3-235B-Thinking all
+    # returned "" 4/4; DeepSeek-V3.2, DeepSeek-V4-Flash and gemma-4-31B-turbo
+    # returned the right verdict 4/4. Re-probe before changing this.
+    #
+    # NOTE FOR REPORTING: this is not the judge Artificial Analysis used for
+    # their published AA-LCR figures, so our AA-LCR score is internal and
+    # judge-substituted, and must not be compared to their 74.67. It remains
+    # valid for within-experiment comparisons (arm B vs arm C), which is what
+    # we actually need it for. The judge id is recorded on every item.
+    aa_lcr_judge_model: str = "deepseek-ai/DeepSeek-V3.2-TEE"
+    hle_judge_model: str = "deepseek-ai/DeepSeek-V3.2-TEE"
+    aa_omniscience_judge_model: str = "deepseek-ai/DeepSeek-V3.2-TEE"
+    gdpval_judge_model: str = "deepseek-ai/DeepSeek-V3.2-TEE"
     # CritPt external evaluation API
     critpt_eval_url: str = "https://artificialanalysis.ai/api/v2/critpt/evaluate"
     critpt_api_key: Optional[str] = None
