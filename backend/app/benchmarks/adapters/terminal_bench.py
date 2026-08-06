@@ -447,6 +447,36 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         verdict["sealed"] = verdict["sandbox_blocked"] and verdict["container_blocked"]
         return verdict
 
+    async def _unseal_network(self, sandbox_id: str, container_name: str) -> dict:
+        """Lift the seal for the scoring phase only.
+
+        The seal must not still be up when the tests run. Terminal-Bench's own
+        test scaffolding installs its tooling from the network -- several tasks
+        ship `setup-uv-pytest.sh`, and the `uv` installer resolves through
+        GitHub releases. With github blackholed, that scaffolding fails and the
+        item scores 0 for a reason that has nothing to do with the agent:
+
+            /tests/setup-uv-pytest.sh: line 18: uv: command not found
+
+        We hit exactly that and briefly read the resulting 0/2 as evidence that
+        the previous 2/2 had been contamination. It was not; it was this.
+
+        Contamination only matters while the agent (and the solution it wrote)
+        is running, and both are finished by the time this is called, so
+        restoring egress here costs nothing and keeps the scorer working.
+        """
+        restore = (
+            "sed -i '/chutes-bench-runner: benchmark answer sources/,$d' /etc/hosts"
+        )
+        result = await self.sandy.execute_command(sandbox_id, restore)
+        container = await self.sandy.execute_command(
+            sandbox_id, f"docker exec {container_name} sh -c {shlex.quote(restore)}"
+        )
+        return {
+            "sandbox_exit": (result or {}).get("exit_code"),
+            "container_exit": (container or {}).get("exit_code"),
+        }
+
     async def _collect_agent_usage(self, sandbox_id: str) -> dict:
         """Read the agent's own cumulative token usage out of the sandbox.
 
@@ -608,6 +638,13 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                         sandbox_id,
                         f"docker exec {container_name} bash -c 'bash /solution.sh'",
                         timeout_ms=agent_timeout,
+                    )
+
+                    # Agent and its solution are both done -- release the seal
+                    # so the benchmark's own test scaffolding can install its
+                    # tooling. See _unseal_network.
+                    seal["released_for_tests"] = await self._unseal_network(
+                        sandbox_id, container_name
                     )
 
                     # Test phase: copy tests and run
