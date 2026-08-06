@@ -27,6 +27,7 @@ from app.benchmarks.adapters.oolong_pairs import OolongPairsAdapter
 from app.benchmarks.adapters.oolong_agentic import OolongAgenticAdapter
 from app.benchmarks.adapters.kimi_vendor_verifier import KimiVendorVerifierAdapter
 from app.benchmarks.adapters.deepresearch_bench import DeepResearchBenchAdapter
+from app.benchmarks.adapters.deepswe import DeepSWEAdapter
 
 __all__ = [
     "MMLUProAdapter",
@@ -55,8 +56,8 @@ __all__ = [
     "OolongAgenticAdapter",
     "KimiVendorVerifierAdapter",
     "DeepResearchBenchAdapter",
+    "DeepSWEAdapter",
 ]
-
 
 
 
