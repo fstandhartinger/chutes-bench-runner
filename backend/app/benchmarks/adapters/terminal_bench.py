@@ -339,7 +339,19 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                         "CHUTES_API_KEY": agent_api_key,
                     }
 
-                    agent_name = "codex"
+                    # Which Sandy CLI agent drives the task. Selectable so the
+                    # same benchmark can be run as a paired A/B of harnesses on
+                    # one model -- "codex" (upstream) vs "chutescoder" (the
+                    # Chutes fork with the RLM harness). Set per run with
+                    #   "config": {"terminal_bench": {"agent": "chutescoder"}}
+                    # which the worker already attaches as adapter.run_config.
+                    agent_name = (
+                        (getattr(self, "run_config", None) or {})
+                        .get("terminal_bench", {})
+                        .get("agent")
+                        or os.getenv("TERMINAL_BENCH_AGENT")
+                        or "codex"
+                    )
                     agent_result = await self.sandy.run_agent(
                         sandbox_id,
                         agent=agent_name,
