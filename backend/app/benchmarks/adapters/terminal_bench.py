@@ -22,39 +22,62 @@ logger = get_logger(__name__)
 
 
 
-def classify_agent_exit(agent_summary: dict, agent_timeout_sec: float) -> Optional[str]:
-    """Distinguish an infrastructure kill from a capability failure.
+def classify_agent_exit(
+    agent_summary: dict,
+    agent_timeout_sec: float,
+    sandbox_alive: Optional[bool],
+) -> tuple[Optional[str], Optional[str]]:
+    """Separate an infrastructure kill from a harness crash. They are not the same.
 
-    An agent that exits non-zero *well before* its budget did not run out of
-    time -- something killed it. The concrete case: Sandy reaped the sandbox at
-    its 10-minute TTL while the declared budget was 1200s, the agent died at
-    666s mid-sentence, `test -f task/solution.sh` then failed because the
-    sandbox was gone, and the item was recorded as score 0.0. That is
-    arithmetically identical to the agent trying and failing, and it was the
-    modal outcome -- 9 of 15 rows.
+    An agent that exits non-zero well before its budget did not run out of
+    time -- something ended it. But "something" splits two ways, and only one
+    of them is ours:
 
-    Scoring 0 for infrastructure is worse than erroring: it is a number, it
-    averages in, and it silently drags whichever arm was unlucky. So these are
-    returned as errors and excluded from scoring instead.
+      * the sandbox was reaped underneath it (Sandy's TTL). Infrastructure,
+        nothing to do with the agent, and scoring it 0 would be recording our
+        own bug as a capability failure. Excluded.
 
-    Returns a reason string when the exit looks like infrastructure, else None.
+      * the agent process died while the sandbox was still alive -- kernel
+        boot failure, a bad Python cell taking the turn down, the RLM sidecar
+        dying. That is a **robustness property of the harness under test**.
+        Excluding it would systematically flatter whichever arm crashes more,
+        and the RLM arm has strictly more machinery to crash. Scored, not
+        excluded.
+
+    The distinction is checkable rather than a judgement call: the sandbox is
+    queryable at the moment of the exit, so we ask it.
+
+    Returns (exclusion_reason, note). exclusion_reason is None when the item
+    should still be scored; note carries the classification either way.
     """
     if not agent_summary:
-        return None
+        return None, None
     if agent_summary.get("exitCode") in (0, None):
-        return None
+        return None, None
     duration = agent_summary.get("duration")
     if duration is None or not agent_timeout_sec:
-        return None
-    if duration < 0.9 * agent_timeout_sec:
+        return None, None
+    if duration >= 0.9 * agent_timeout_sec:
+        return None, "agent_exhausted_budget"
+
+    detail = (
+        f"exit {agent_summary.get('exitCode')} after {duration:.0f}s against a "
+        f"{agent_timeout_sec:.0f}s budget ({duration / agent_timeout_sec:.0%})"
+    )
+    if sandbox_alive is False:
         return (
-            f"Infrastructure failure, not scored: agent exited "
-            f"{agent_summary.get('exitCode')} after {duration:.0f}s against a "
-            f"{agent_timeout_sec:.0f}s budget ({duration / agent_timeout_sec:.0%} "
-            f"of it). A non-zero exit well short of the budget means something "
-            f"killed the agent rather than the agent running out of time."
+            "infrastructure_sandbox_gone",
+            f"Sandbox was gone at exit -- {detail}. Excluded: this is our "
+            f"infrastructure, not the agent.",
         )
-    return None
+    # Sandbox alive (or we could not tell -- in which case do NOT exclude,
+    # because the failure mode of a wrong guess here is silently dropping
+    # harness crashes from the arm that produces them).
+    return (
+        None,
+        f"Agent process died while the sandbox was still alive -- {detail}. "
+        f"Scored: this is a robustness property of the harness, not infrastructure.",
+    )
 
 
 def settings_allow_unsealed() -> bool:
@@ -622,6 +645,18 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             "container_exit": (container or {}).get("exit_code"),
         }
 
+    async def _sandbox_alive(self, sandbox_id: str) -> Optional[bool]:
+        """Is the sandbox still there? None if we could not tell."""
+        try:
+            result = await self.sandy.execute_command(sandbox_id, "echo alive")
+            if result is None:
+                return False
+            if (result.get("stdout") or "").strip() == "alive":
+                return True
+            return False
+        except Exception:
+            return None
+
     async def _collect_agent_usage(self, sandbox_id: str) -> dict:
         return await collect_agent_usage(self.sandy, sandbox_id)
 
@@ -788,15 +823,16 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     agent_usage = await self._collect_agent_usage(sandbox_id)
                     agent_summary = agent_result.get("summary") or {}
 
-                    infra_reason = classify_agent_exit(
-                        agent_summary, agent_timeout / 1000
+                    sandbox_alive = await self._sandbox_alive(sandbox_id)
+                    exclusion_reason, exit_note = classify_agent_exit(
+                        agent_summary, agent_timeout / 1000, sandbox_alive
                     )
-                    if infra_reason:
+                    if exclusion_reason:
                         return ItemResult(
                             item_id=item_id,
                             item_hash=self.compute_item_hash(item.get("task_id")),
                             prompt=prompt,
-                            error=infra_reason,
+                            error=exit_note,
                             latency_ms=int((time.time() - start_time) * 1000),
                             input_tokens=agent_usage.get("input_tokens"),
                             output_tokens=agent_usage.get("output_tokens"),
@@ -810,9 +846,12 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                                 "agent_timeout_sec": agent_timeout / 1000,
                                 "agent_timeout_multiplier": timeout_multiplier,
                                 "sandbox_ttl_min": sandbox_ttl_min,
-                                "excluded_reason": "infrastructure",
+                                "sandbox_alive_at_exit": sandbox_alive,
+                                "exclusion_reason": exclusion_reason,
+                                "exit_note": exit_note,
                             },
                         )
+
                     agent_events = agent_result.get("events") or []
                     agent_output = next(
                         (event.get("text") for event in reversed(agent_events) if event.get("type") == "output"),
