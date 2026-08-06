@@ -181,7 +181,9 @@ class BenchmarkAdapter(ABC):
         # -- launched with ["72"], ran item 24.
         _cfg = getattr(self, "run_config", None) or {}
         _merged: dict = {}
-        for key in (self.get_name(), self.get_name().rsplit("_", 1)[0]):
+        # Family defaults first; the concrete adapter's configuration wins.
+        # This matters for versioned names such as terminal_bench_2_1.
+        for key in (self.get_name().rsplit("_", 1)[0], self.get_name()):
             _merged.update(_cfg.get(key) or {})
         requested = _merged.get("item_ids")
         if requested:

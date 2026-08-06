@@ -1,19 +1,34 @@
-"""Terminal-Bench Hard benchmark adapter."""
+"""Version-pinned Terminal-Bench benchmark adapters."""
 from __future__ import annotations
 
+import asyncio
 import base64
-import json
+import copy
+import hashlib
+import io
 import os
 import shlex
+import tarfile
+import tempfile
 import time
-from typing import Any, AsyncIterator, Optional
+import tomllib
+from collections.abc import AsyncIterator
+from pathlib import Path, PurePosixPath
+from typing import Any, Optional
 
+import httpx
 import yaml
 
+from app.benchmarks.adapters.terminal_bench_identity import (
+    TERMINAL_BENCH_1,
+    TERMINAL_BENCH_2_0,
+    TERMINAL_BENCH_2_1,
+    TERMINAL_BENCH_HARD,
+    TerminalBenchSpec,
+)
 from app.benchmarks.agent_usage import collect_agent_usage
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.benchmarks.utils import load_dataset_with_retry
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
@@ -128,13 +143,21 @@ def settings_allow_unsealed() -> bool:
     }
 
 
-@register_adapter("terminal_bench_hard")
-class TerminalBenchHardAdapter(BenchmarkAdapter):
-    """
-    Terminal-Bench Hard adapter.
+class BenchmarkIdentityError(RuntimeError):
+    """The requested benchmark identity cannot be reproduced exactly."""
 
-    Uses the official task archive and docker-based evaluation harness.
+
+class TerminalBenchBaseAdapter(BenchmarkAdapter):
     """
+    Shared evaluator for pinned Terminal-Bench releases.
+
+    Legacy Terminal-Bench 1.0 tasks and Harbor-format 2.x tasks use different
+    execution protocols. The containment, answer-key holdout, usage recording,
+    and infrastructure-exclusion safeguards below are shared by both.
+    """
+
+    benchmark_name = ""
+    benchmark_spec: TerminalBenchSpec
 
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -142,16 +165,16 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         self.sandy = SandyService()
 
     def get_name(self) -> str:
-        return "terminal_bench_hard"
+        return self.benchmark_name
 
     def get_display_name(self) -> str:
-        return "Terminal-Bench Hard"
+        return self.benchmark_spec.display_name
 
     def requires_setup(self) -> bool:
-        return False
+        return True
 
     def get_setup_notes(self) -> Optional[str]:
-        return None
+        return "Requires Sandy with Docker socket access."
 
     def supports_subset(self) -> bool:
         return True
@@ -162,44 +185,214 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         return len(self._items)
 
     async def preload(self) -> None:
-        """Load Terminal-Bench dataset."""
+        """Load an exact, pinned upstream release and assert its identity."""
         if self._items:
             return
 
         try:
-            logger.info("Loading Terminal-Bench dataset")
-            dataset = await load_dataset_with_retry(
-                "ia03/terminal-bench",
-                split="test",
-                token=os.environ.get("HF_TOKEN"),
+            logger.info(
+                "Loading pinned Terminal-Bench dataset",
+                benchmark=self.get_name(),
+                repository=self.benchmark_spec.repository,
+                commit=self.benchmark_spec.commit,
+                expected_count=self.benchmark_spec.expected_count,
+            )
+            source_archive = await self._load_source_archive()
+            self._items = await asyncio.to_thread(
+                self._items_from_source_archive, source_archive
+            )
+            self._assert_benchmark_identity()
+            logger.info(
+                "Loaded pinned Terminal-Bench dataset",
+                benchmark=self.get_name(),
+                item_count=len(self._items),
+                commit=self.benchmark_spec.commit,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to load Terminal-Bench",
+                benchmark=self.get_name(),
+                error=str(e),
             )
             self._items = []
-            for i, item in enumerate(dataset):
-                task_yaml = item.get("task_yaml") or ""
-                instruction = ""
-                try:
-                    parsed_yaml = yaml.safe_load(task_yaml) if task_yaml else {}
-                    instruction = parsed_yaml.get("instruction", "")
-                except Exception:
-                    parsed_yaml = {}
-                self._items.append(
-                    {
-                        "id": str(i),
-                        "task_id": item.get("task_id"),
-                        "task_yaml": task_yaml,
-                        "instruction": instruction,
-                        "archive": item.get("archive"),
-                        "difficulty": item.get("difficulty", ""),
-                        "parsed_yaml": parsed_yaml,
-                        "max_agent_timeout_sec": item.get("max_agent_timeout_sec"),
-                        "max_test_timeout_sec": item.get("max_test_timeout_sec"),
-                    }
-                )
-            logger.info("Loaded %s Terminal-Bench items", len(self._items))
-        except Exception as e:
-            logger.error("Failed to load Terminal-Bench", error=str(e))
-            self._items = []
             raise
+
+    def _cache_path(self) -> Path:
+        configured = os.getenv("TERMINAL_BENCH_DATASET_CACHE")
+        cache_root = Path(configured) if configured else Path(tempfile.gettempdir()) / "chutes-bench-runner"
+        repo_name = self.benchmark_spec.repository.rsplit("/", 1)[-1]
+        return cache_root / f"{repo_name}-{self.benchmark_spec.commit}.tar.gz"
+
+    async def _load_source_archive(self) -> bytes:
+        """Download and cache the immutable upstream Git archive."""
+        cache_path = self._cache_path()
+        if cache_path.is_file():
+            cached = await asyncio.to_thread(cache_path.read_bytes)
+            if hashlib.sha256(cached).hexdigest() == self.benchmark_spec.archive_sha256:
+                return cached
+            logger.warning(
+                "Discarding Terminal-Bench cache with wrong SHA-256",
+                path=str(cache_path),
+            )
+            await asyncio.to_thread(cache_path.unlink)
+
+        async with httpx.AsyncClient(follow_redirects=True, timeout=180.0) as client:
+            response = await client.get(self.benchmark_spec.archive_url)
+            response.raise_for_status()
+            archive = response.content
+
+        actual_sha256 = hashlib.sha256(archive).hexdigest()
+        if actual_sha256 != self.benchmark_spec.archive_sha256:
+            raise BenchmarkIdentityError(
+                f"{self.get_name()} source archive SHA-256 mismatch: "
+                f"expected {self.benchmark_spec.archive_sha256}, got {actual_sha256}"
+            )
+
+        await asyncio.to_thread(cache_path.parent.mkdir, parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=cache_path.name, dir=cache_path.parent)
+        os.close(fd)
+        temp_path = Path(temp_name)
+        try:
+            await asyncio.to_thread(temp_path.write_bytes, archive)
+            await asyncio.to_thread(os.replace, temp_path, cache_path)
+        finally:
+            if temp_path.exists():
+                await asyncio.to_thread(temp_path.unlink)
+        return archive
+
+    def _items_from_source_archive(self, archive: bytes) -> list[dict[str, Any]]:
+        """Package each canonical upstream task as the evaluator's task archive."""
+        members_by_task: dict[str, list[tuple[tarfile.TarInfo, str]]] = {
+            task_id: [] for task_id in self.benchmark_spec.task_ids
+        }
+        metadata_markers: set[str] = set()
+        root_parts = PurePosixPath(self.benchmark_spec.task_root).parts
+
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as source:
+            for member in source.getmembers():
+                parts = PurePosixPath(member.name).parts
+                if len(parts) < 2:
+                    continue
+                relative_parts = parts[1:]  # GitHub's generated top-level directory.
+                if root_parts:
+                    if relative_parts[: len(root_parts)] != root_parts:
+                        continue
+                    relative_parts = relative_parts[len(root_parts) :]
+                if len(relative_parts) < 2:
+                    continue
+
+                task_id = relative_parts[0]
+                task_relative = PurePosixPath(*relative_parts[1:])
+                if task_relative.is_absolute() or ".." in task_relative.parts:
+                    raise BenchmarkIdentityError(
+                        f"Unsafe path in {self.get_name()} source archive: {member.name}"
+                    )
+                if task_id not in members_by_task:
+                    continue
+                if member.issym() or member.islnk():
+                    link = PurePosixPath(member.linkname)
+                    if link.is_absolute() or ".." in link.parts:
+                        raise BenchmarkIdentityError(
+                            f"Unsafe link in {self.get_name()} source archive: {member.name}"
+                        )
+                relative_name = str(task_relative)
+                members_by_task[task_id].append((member, relative_name))
+                expected_marker = (
+                    "task.yaml" if self.benchmark_spec.task_format == "legacy" else "task.toml"
+                )
+                if relative_name == expected_marker:
+                    metadata_markers.add(task_id)
+
+            missing = set(self.benchmark_spec.task_ids) - metadata_markers
+            if missing:
+                raise BenchmarkIdentityError(
+                    f"{self.get_name()} source is missing {len(missing)} canonical tasks: "
+                    f"{', '.join(sorted(missing))}"
+                )
+
+            items: list[dict[str, Any]] = []
+            for index, task_id in enumerate(self.benchmark_spec.task_ids):
+                task_archive = io.BytesIO()
+                file_contents: dict[str, bytes] = {}
+                with tarfile.open(fileobj=task_archive, mode="w") as task_tar:
+                    for member, relative_name in members_by_task[task_id]:
+                        copied = copy.copy(member)
+                        copied.name = relative_name
+                        extracted = source.extractfile(member) if member.isfile() else None
+                        if extracted is not None:
+                            content = extracted.read()
+                            file_contents[relative_name] = content
+                            task_tar.addfile(copied, io.BytesIO(content))
+                        else:
+                            task_tar.addfile(copied)
+                items.append(
+                    self._make_item(index, task_id, task_archive.getvalue(), file_contents)
+                )
+        return items
+
+    def _make_item(
+        self,
+        index: int,
+        task_id: str,
+        archive: bytes,
+        files: dict[str, bytes],
+    ) -> dict[str, Any]:
+        if self.benchmark_spec.task_format == "legacy":
+            task_yaml = files["task.yaml"].decode("utf-8")
+            parsed = yaml.safe_load(task_yaml) or {}
+            instruction = parsed.get("instruction", "")
+            environment: dict[str, Any] = {}
+            task_manifest = task_yaml
+            agent_timeout = parsed.get("max_agent_timeout_sec")
+            test_timeout = parsed.get("max_test_timeout_sec")
+        else:
+            task_manifest = files["task.toml"].decode("utf-8")
+            parsed = tomllib.loads(task_manifest)
+            instruction = files["instruction.md"].decode("utf-8")
+            environment = parsed.get("environment") or {}
+            agent_timeout = (parsed.get("agent") or {}).get("timeout_sec")
+            test_timeout = (parsed.get("verifier") or {}).get("timeout_sec")
+
+        return {
+            "id": str(index),
+            "task_id": task_id,
+            "task_yaml": task_manifest,
+            "instruction": instruction,
+            "archive": archive,
+            "difficulty": (parsed.get("metadata") or parsed).get("difficulty", ""),
+            "parsed_yaml": parsed,
+            "max_agent_timeout_sec": agent_timeout,
+            "max_test_timeout_sec": test_timeout,
+            "task_format": self.benchmark_spec.task_format,
+            "docker_image": environment.get("docker_image"),
+            "cpus": environment.get("cpus"),
+            "memory_mb": environment.get("memory_mb"),
+            "dataset_repository": self.benchmark_spec.repository,
+            "dataset_commit": self.benchmark_spec.commit,
+            "manifest_repository": self.benchmark_spec.manifest_repository,
+            "manifest_commit": self.benchmark_spec.manifest_commit,
+        }
+
+    def _assert_benchmark_identity(self) -> None:
+        """Fail startup if count, ordering, uniqueness, or membership drifted."""
+        expected = list(self.benchmark_spec.task_ids)
+        loaded = [item.get("task_id") for item in self._items]
+        if len(self._items) != self.benchmark_spec.expected_count:
+            raise BenchmarkIdentityError(
+                f"{self.get_name()} identity check failed: expected "
+                f"{self.benchmark_spec.expected_count} items, loaded {len(self._items)}"
+            )
+        if len(set(loaded)) != len(loaded):
+            raise BenchmarkIdentityError(
+                f"{self.get_name()} identity check failed: duplicate task IDs loaded"
+            )
+        if loaded != expected:
+            missing = sorted(set(expected) - set(loaded))
+            unexpected = sorted(set(loaded) - set(expected))
+            raise BenchmarkIdentityError(
+                f"{self.get_name()} task manifest mismatch; "
+                f"missing={missing}, unexpected={unexpected}"
+            )
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         if not self._items:
@@ -293,7 +486,81 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
             "done; true",
         )
 
-    async def _run_terminal_bench(self, sandbox_id: str, task_id: str) -> dict[str, Any]:
+    async def _run_harbor_task(
+        self, sandbox_id: str, item: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Start a Harbor-format 2.x task from its release-pinned image."""
+        task_id = item.get("task_id") or "task"
+        source_image = item.get("docker_image")
+        if not source_image:
+            return {"error": f"Harbor task {task_id} has no docker_image"}
+
+        ns = f"s{sandbox_id[:12]}".lower()
+        container_name = f"tbench_{ns}_{task_id}_client".lower()
+        pull_result = await self.sandy.execute_command(
+            sandbox_id,
+            f"docker pull {shlex.quote(source_image)}",
+            timeout_ms=900000,
+        )
+        if pull_result.get("exit_code") != 0:
+            return {
+                "error": pull_result.get("stderr")
+                or pull_result.get("stdout")
+                or pull_result.get("error")
+                or f"Could not pull {source_image}",
+                "pull": pull_result,
+            }
+
+        resource_flags: list[str] = []
+        if item.get("cpus"):
+            resource_flags.extend(["--cpus", shlex.quote(str(item["cpus"]))])
+        if item.get("memory_mb"):
+            resource_flags.extend(["--memory", f"{int(item['memory_mb'])}m"])
+        run_command = " ".join(
+            [
+                "docker run -d",
+                "--name",
+                shlex.quote(container_name),
+                *resource_flags,
+                shlex.quote(source_image),
+                "sleep infinity",
+            ]
+        )
+        run_result = await self.sandy.execute_command(
+            sandbox_id,
+            run_command,
+            timeout_ms=300000,
+        )
+        if run_result.get("exit_code") != 0:
+            return {
+                "error": run_result.get("stderr")
+                or run_result.get("stdout")
+                or run_result.get("error"),
+                "run": run_result,
+            }
+        await self.sandy.execute_command(
+            sandbox_id,
+            f"docker exec {shlex.quote(container_name)} mkdir -p /logs/agent /logs/verifier",
+        )
+        return {
+            "container_name": container_name,
+            "cleanup_cmd": f"docker rm -f {shlex.quote(container_name)}",
+            "cleanup_cwd": None,
+            # Official release images are shared across tasks/runs and should
+            # remain cached. Only legacy per-sandbox build images are reaped.
+            "image_name": None,
+            "namespace": ns,
+            "source_image": source_image,
+            "cleanup_images": False,
+        }
+
+    async def _run_terminal_bench(
+        self, sandbox_id: str, item: dict[str, Any]
+    ) -> dict[str, Any]:
+        if item.get("task_format") == "harbor":
+            return await self._run_harbor_task(sandbox_id, item)
+
+        task_id = item.get("task_id") or "task"
         task_dir = "/workspace/task"
         compose_path = "docker-compose.yaml"
         compose_check = await self.sandy.execute_command(
@@ -469,6 +736,11 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         "hf.co",
         "cdn-lfs.huggingface.co",
         "cdn-lfs-us-1.hf.co",
+        "hub.harborframework.com",
+        "harborframework.com",
+        "www.harborframework.com",
+        "tbench.ai",
+        "www.tbench.ai",
         "raw.githack.com",
         "cdn.jsdelivr.net",
         "gitclone.com",
@@ -573,9 +845,10 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
         result = await self.sandy.execute_command(
             sandbox_id,
             f"docker exec {container_name} sh -c "
-            f"\"find / -xdev \\( -name 'solution.sh' -o -name 'test_outputs.py' "
+            f"\"{{ find /tests /solution -type f 2>/dev/null; "
+            f"find / -xdev \\( -name 'solution.sh' -o -name 'test_outputs.py' "
             f"-o -name 'evaluation_tests_hidden' -o -name 'run-tests.sh' \\) "
-            f"-not -path '*/proc/*' 2>/dev/null | head -20\"",
+            f"-not -path '*/proc/*' 2>/dev/null; }} | sort -u | head -20\"",
         )
         found = [
             line.strip()
@@ -695,6 +968,32 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
     async def _collect_agent_usage(self, sandbox_id: str) -> dict:
         return await collect_agent_usage(self.sandy, sandbox_id)
 
+    @staticmethod
+    def _parse_harbor_reward(raw_reward: str) -> Optional[float]:
+        """Parse the scalar reward emitted by a Harbor verifier."""
+        value = (raw_reward or "").strip()
+        if not value:
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        try:
+            import json
+
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+        if isinstance(parsed, (int, float)):
+            return float(parsed)
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("reward"), (int, float)):
+                return float(parsed["reward"])
+            numeric = [float(v) for v in parsed.values() if isinstance(v, (int, float))]
+            if len(numeric) == 1:
+                return numeric[0]
+        return None
+
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single Terminal-Bench item."""
         if not self._items:
@@ -706,14 +1005,29 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
 
         instruction = item.get("instruction") or ""
         task_yaml = item.get("task_yaml") or ""
-        prompt = (
-            "You are an interactive terminal agent working inside a sandbox that can execute docker commands.\n"
-            "A task container will be running. Use docker exec to inspect and solve the task.\n"
-            "Write a solution script to /workspace/task/solution.sh that completes the task.\n"
-            "Do NOT run the task tests yourself; the harness will run them after you finish.\n\n"
-            f"Task instruction:\n{instruction}\n\n"
-            f"Task YAML:\n{task_yaml}\n"
-        )
+        if item.get("task_format") == "harbor":
+            # Harbor agents change the running task environment directly; the
+            # verifier later inspects that same container. Requiring a legacy
+            # solution.sh here would silently turn TB 2.x into another harness.
+            prompt = (
+                "You are an interactive terminal agent working inside a sandbox "
+                "that can execute docker commands.\n"
+                "A task container will be running. Use docker exec to inspect it "
+                "and make all required changes directly inside that container.\n"
+                "The task container's working directory is /app. Do not look for "
+                "or run verifier tests; the harness will verify the final container "
+                "state after you finish.\n\n"
+                f"Task instruction:\n{instruction}\n"
+            )
+        else:
+            prompt = (
+                "You are an interactive terminal agent working inside a sandbox that can execute docker commands.\n"
+                "A task container will be running. Use docker exec to inspect and solve the task.\n"
+                "Write a solution script to /workspace/task/solution.sh that completes the task.\n"
+                "Do NOT run the task tests yourself; the harness will run them after you finish.\n\n"
+                f"Task instruction:\n{instruction}\n\n"
+                f"Task YAML:\n{task_yaml}\n"
+            )
 
         try:
             start_time = time.time()
@@ -769,7 +1083,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                         metadata={"task_id": item.get("task_id"), "holdout": holdout},
                     )
 
-                setup_result = await self._run_terminal_bench(sandbox_id, item.get("task_id") or "task")
+                setup_result = await self._run_terminal_bench(sandbox_id, item)
                 container_name = setup_result.get("container_name")
                 cleanup_cmd = setup_result.get("cleanup_cmd")
                 cleanup_cwd = setup_result.get("cleanup_cwd")
@@ -894,58 +1208,64 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     )
                     latency_ms = int((time.time() - start_time) * 1000)
 
-                    solution_check = await self.sandy.execute_command(
-                        sandbox_id,
-                        "test -f task/solution.sh",
-                    )
-                    if solution_check.get("exit_code") != 0:
-                        return ItemResult(
-                            item_id=item_id,
-                            item_hash=self.compute_item_hash(item.get("task_id")),
-                            prompt=prompt,
-                            response=agent_output,
-                            error=(
-                                "Agent did not write task/solution.sh. "
-                                "(Meaningful only since the reference solution "
-                                "is withheld -- before that, this file always "
-                                "existed and the harness would have scored the "
-                                "reference implementation.)"
-                            ),
-                            latency_ms=latency_ms,
-                            # Failed items cost real money. Without this the
-                            # arm that fails looks free: the first paired run
-                            # reported arm B at 0 tokens / $0.00 across three
-                            # items, which reads as "never ran" when in fact it
-                            # ran and spent -- a 1-item rerun of the same task
-                            # billed $0.18. Cost is part of the result, so an
-                            # unsuccessful item has to carry its usage too.
-                            input_tokens=agent_usage.get("input_tokens"),
-                            output_tokens=agent_usage.get("output_tokens"),
-                            metadata={
-                                "task_id": item.get("task_id"),
-                                "agent": agent_name,
-                                "agent_summary": agent_summary,
-                                "agent_usage": agent_usage,
-                                "holdout": holdout,
-                                "seal": seal,
-                                "agent_timeout_sec": agent_timeout / 1000,
-                                "agent_timeout_multiplier": timeout_multiplier,
-                            },
+                    if item.get("task_format") == "legacy":
+                        solution_check = await self.sandy.execute_command(
+                            sandbox_id,
+                            "test -f task/solution.sh",
                         )
+                        if solution_check.get("exit_code") != 0:
+                            return ItemResult(
+                                item_id=item_id,
+                                item_hash=self.compute_item_hash(item.get("task_id")),
+                                prompt=prompt,
+                                response=agent_output,
+                                error=(
+                                    "Agent did not write task/solution.sh. "
+                                    "(Meaningful only since the reference solution "
+                                    "is withheld -- before that, this file always "
+                                    "existed and the harness would have scored the "
+                                    "reference implementation.)"
+                                ),
+                                latency_ms=latency_ms,
+                                # Failed items cost real money. Without this the
+                                # arm that fails looks free: the first paired run
+                                # reported arm B at 0 tokens / $0.00 across three
+                                # items, which reads as "never ran" when in fact it
+                                # ran and spent -- a 1-item rerun of the same task
+                                # billed $0.18. Cost is part of the result, so an
+                                # unsuccessful item has to carry its usage too.
+                                input_tokens=agent_usage.get("input_tokens"),
+                                output_tokens=agent_usage.get("output_tokens"),
+                                metadata={
+                                    "task_id": item.get("task_id"),
+                                    "agent": agent_name,
+                                    "agent_summary": agent_summary,
+                                    "agent_usage": agent_usage,
+                                    "holdout": holdout,
+                                    "seal": seal,
+                                    "agent_timeout_sec": agent_timeout / 1000,
+                                    "agent_timeout_multiplier": timeout_multiplier,
+                                },
+                            )
 
-                    await self.sandy.execute_command(
-                        sandbox_id,
-                        "chmod +x task/solution.sh",
-                    )
-                    await self.sandy.execute_command(
-                        sandbox_id,
-                        f"docker cp task/solution.sh {container_name}:/solution.sh",
-                    )
-                    agent_exec = await self.sandy.execute_command(
-                        sandbox_id,
-                        f"docker exec {container_name} bash -c 'bash /solution.sh'",
-                        timeout_ms=agent_timeout,
-                    )
+                        await self.sandy.execute_command(
+                            sandbox_id,
+                            "chmod +x task/solution.sh",
+                        )
+                        await self.sandy.execute_command(
+                            sandbox_id,
+                            f"docker cp task/solution.sh {container_name}:/solution.sh",
+                        )
+                        agent_exec = await self.sandy.execute_command(
+                            sandbox_id,
+                            f"docker exec {container_name} bash -c 'bash /solution.sh'",
+                            timeout_ms=agent_timeout,
+                        )
+                    else:
+                        # Harbor's protocol is direct manipulation of the task
+                        # container. Requiring or executing solution/solve.sh
+                        # would run the held-out oracle rather than the agent.
+                        agent_exec = {"mode": "direct-container", "exit_code": 0}
 
                     # Agent and its solution are both done -- release the seal
                     # so the benchmark's own test scaffolding can install its
@@ -962,54 +1282,98 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     # Test phase: copy tests and run
                     await self.sandy.execute_command(
                         sandbox_id,
-                        f"docker cp task/tests {container_name}:/tests",
+                        f"docker exec {container_name} sh -c 'rm -rf /tests && mkdir -p /tests'",
                     )
-                    test_script_check = await self.sandy.execute_command(
+                    await self.sandy.execute_command(
                         sandbox_id,
-                        "test -f task/run-tests.sh",
+                        f"docker cp task/tests/. {container_name}:/tests/",
                     )
-                    if test_script_check.get("exit_code") == 0:
-                        await self.sandy.execute_command(
+                    reward_result: Optional[dict[str, Any]] = None
+                    harbor_reward: Optional[float] = None
+                    if item.get("task_format") == "harbor":
+                        test_result = await self.sandy.execute_command(
                             sandbox_id,
-                            f"docker cp task/run-tests.sh {container_name}:/run-tests.sh",
+                            f"docker exec -w /app {container_name} bash /tests/test.sh",
+                            timeout_ms=test_timeout,
                         )
+                        reward_result = await self.sandy.execute_command(
+                            sandbox_id,
+                            f"docker exec {container_name} sh -c "
+                            "'if [ -f /logs/verifier/reward.json ]; then "
+                            "cat /logs/verifier/reward.json; "
+                            "elif [ -f /logs/verifier/reward.txt ]; then "
+                            "cat /logs/verifier/reward.txt; else exit 1; fi'",
+                        )
+                        harbor_reward = self._parse_harbor_reward(
+                            (reward_result or {}).get("stdout") or ""
+                        )
+                        is_correct = harbor_reward is not None and harbor_reward >= 1.0
+                        error = None
+                        if harbor_reward is None:
+                            error = (
+                                (test_result or {}).get("stderr")
+                                or (test_result or {}).get("error")
+                                or "Harbor verifier did not emit a scalar reward"
+                            )
                     else:
-                        default_script = (
-                            "#!/bin/bash\n"
-                            "set -e\n"
-                            "cd /tests\n"
-                            "python -m pip install pytest\n"
-                            "python -m pytest test_outputs.py -v\n"
-                        )
-                        await self.sandy.write_file(sandbox_id, "default-run-tests.sh", default_script)
-                        await self.sandy.execute_command(
+                        test_script_check = await self.sandy.execute_command(
                             sandbox_id,
-                            f"docker cp default-run-tests.sh {container_name}:/run-tests.sh",
+                            "test -f task/run-tests.sh",
                         )
+                        if test_script_check.get("exit_code") == 0:
+                            await self.sandy.execute_command(
+                                sandbox_id,
+                                f"docker cp task/run-tests.sh {container_name}:/run-tests.sh",
+                            )
+                        else:
+                            default_script = (
+                                "#!/bin/bash\n"
+                                "set -e\n"
+                                "cd /tests\n"
+                                "python -m pip install pytest\n"
+                                "python -m pytest test_outputs.py -v\n"
+                            )
+                            await self.sandy.write_file(
+                                sandbox_id, "default-run-tests.sh", default_script
+                            )
+                            await self.sandy.execute_command(
+                                sandbox_id,
+                                f"docker cp default-run-tests.sh {container_name}:/run-tests.sh",
+                            )
 
-                    test_result = await self.sandy.execute_command(
-                        sandbox_id,
-                        f"docker exec {container_name} bash /run-tests.sh",
-                        timeout_ms=test_timeout,
-                    )
-
-                    is_correct = test_result.get("exit_code") == 0
-                    error = None if is_correct else (test_result.get("stderr") or test_result.get("error"))
+                        test_result = await self.sandy.execute_command(
+                            sandbox_id,
+                            f"docker exec {container_name} bash /run-tests.sh",
+                            timeout_ms=test_timeout,
+                        )
+                        is_correct = test_result.get("exit_code") == 0
+                        error = None if is_correct else (
+                            test_result.get("stderr") or test_result.get("error")
+                        )
 
                     return ItemResult(
                         item_id=item_id,
                         item_hash=self.compute_item_hash(item.get("task_id")),
                         prompt=prompt,
                         response=agent_output,
-                        expected="[Tests passed]",
+                        expected=(
+                            "[Harbor verifier reward >= 1]"
+                            if item.get("task_format") == "harbor"
+                            else "[Tests passed]"
+                        ),
                         is_correct=is_correct,
-                        score=1.0 if is_correct else 0.0,
+                        score=(
+                            harbor_reward
+                            if item.get("task_format") == "harbor" and harbor_reward is not None
+                            else (1.0 if is_correct else 0.0)
+                        ),
                         latency_ms=latency_ms,
                         judge_output={
                             "setup": setup_result,
                             "agent_summary": agent_summary,
                             "agent_exec": agent_exec,
                             "test_result": test_result,
+                            "reward_result": reward_result,
                         },
                         error=error,
                         input_tokens=agent_usage.get("input_tokens"),
@@ -1029,6 +1393,11 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                             "agent_summary": agent_summary,
                             "agent_output_excerpt": agent_output[:2000] if agent_output else "",
                             "task_yaml": task_yaml,
+                            "task_format": item.get("task_format"),
+                            "dataset_repository": item.get("dataset_repository"),
+                            "dataset_commit": item.get("dataset_commit"),
+                            "manifest_repository": item.get("manifest_repository"),
+                            "manifest_commit": item.get("manifest_commit"),
                         },
                     )
                 finally:
@@ -1043,13 +1412,15 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     # filesystem within a few dozen items, so the image goes when
                     # the item does. `docker compose down` removes containers, not
                     # images.
-                    stale = " ".join(
-                        x for x in (
-                            setup_result.get("image_name"),
-                            f"client_{setup_result.get('namespace')}"
-                            if setup_result.get("namespace") else None,
-                        ) if x
-                    )
+                    stale = ""
+                    if setup_result.get("cleanup_images", True):
+                        stale = " ".join(
+                            x for x in (
+                                setup_result.get("image_name"),
+                                f"client_{setup_result.get('namespace')}"
+                                if setup_result.get("namespace") else None,
+                            ) if x
+                        )
                     if stale:
                         await self.sandy.execute_command(
                             sandbox_id, f"docker rmi -f {stale} 2>/dev/null || true"
@@ -1074,3 +1445,51 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                     "exclusion_reason": exclusion_reason,
                 },
             )
+
+
+@register_adapter("terminal_bench")
+class TerminalBenchAdapter(TerminalBenchBaseAdapter):
+    """The current stable Terminal-Bench release (2.1)."""
+
+    benchmark_name = "terminal_bench"
+    benchmark_spec = TERMINAL_BENCH_2_1
+
+
+@register_adapter("terminal_bench_1")
+class TerminalBench1Adapter(TerminalBenchBaseAdapter):
+    """The official legacy Terminal-Bench 1.0 Core v0.1.1 task set."""
+
+    benchmark_name = "terminal_bench_1"
+    benchmark_spec = TERMINAL_BENCH_1
+
+
+@register_adapter("terminal_bench_2")
+class TerminalBench2Adapter(TerminalBenchBaseAdapter):
+    """The current verified 2.x release, Terminal-Bench 2.1."""
+
+    benchmark_name = "terminal_bench_2"
+    benchmark_spec = TERMINAL_BENCH_2_1
+
+
+@register_adapter("terminal_bench_2_0")
+class TerminalBench20Adapter(TerminalBenchBaseAdapter):
+    """The original Terminal-Bench 2.0 release."""
+
+    benchmark_name = "terminal_bench_2_0"
+    benchmark_spec = TERMINAL_BENCH_2_0
+
+
+@register_adapter("terminal_bench_2_1")
+class TerminalBench21Adapter(TerminalBenchBaseAdapter):
+    """The verified Terminal-Bench 2.1 release."""
+
+    benchmark_name = "terminal_bench_2_1"
+    benchmark_spec = TERMINAL_BENCH_2_1
+
+
+@register_adapter("terminal_bench_hard")
+class TerminalBenchHardAdapter(TerminalBenchBaseAdapter):
+    """The reproducible 47-task Terminal-Bench Hard leaderboard subset."""
+
+    benchmark_name = "terminal_bench_hard"
+    benchmark_spec = TERMINAL_BENCH_HARD
