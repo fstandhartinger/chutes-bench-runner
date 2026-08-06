@@ -57,9 +57,6 @@ logger = get_logger(__name__)
 CORPUS_PATH = "/workspace/corpus.txt"
 ANSWER_PATH = "/workspace/answer.txt"
 
-# Chunked because a single OOLONG context runs to hundreds of KB and the write
-# goes through an HTTP call per chunk.
-_WRITE_CHUNK_CHARS = 200_000
 
 
 @register_adapter("oolong_agentic")
@@ -91,37 +88,34 @@ class OolongAgenticAdapter(OolongAdapter):
         )
 
     async def _write_corpus(self, sandbox_id: str, text: str) -> bool:
-        """Stream the corpus into the sandbox in base64 chunks."""
+        """Put the corpus in the sandbox, and prove it arrived intact.
+
+        Written with `sandy.write_file` rather than shell `printf`/heredoc:
+        an OOLONG context runs to hundreds of KB, and pushing that through a
+        command line silently truncates. The first attempt did exactly that --
+        48,514 bytes of an expected 198,514 -- which the length check below
+        caught. Without that check it would have looked like the agent giving a
+        wrong answer to a question whose evidence was missing.
+        """
         encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
-        chunks = [
-            encoded[i : i + _WRITE_CHUNK_CHARS]
-            for i in range(0, len(encoded), _WRITE_CHUNK_CHARS)
-        ]
-        await self.sandy.execute_command(sandbox_id, "rm -f /workspace/corpus.b64")
-        for chunk in chunks:
-            if not await self.sandy.execute_command(
-                sandbox_id, f"printf '%s' {chunk!r} >> /workspace/corpus.b64"
-            ):
-                return False
+        if not await self.sandy.write_file(sandbox_id, "corpus.b64", encoded):
+            logger.error("Corpus upload failed", chars=len(encoded))
+            return False
         result = await self.sandy.execute_command(
-            sandbox_id, f"base64 -d /workspace/corpus.b64 > {CORPUS_PATH}"
+            sandbox_id, f"base64 -d corpus.b64 > {CORPUS_PATH} && rm -f corpus.b64"
         )
         if (result or {}).get("exit_code") != 0:
+            logger.error("Corpus decode failed", result=str(result)[:300])
             return False
-        # Verify the round trip -- a truncated corpus would silently become a
-        # wrong answer that looks like a capability failure.
-        check = await self.sandy.execute_command(
-            sandbox_id, f"wc -c < {CORPUS_PATH}"
-        )
+
+        check = await self.sandy.execute_command(sandbox_id, f"wc -c < {CORPUS_PATH}")
         try:
             written = int(((check or {}).get("stdout") or "0").strip())
         except ValueError:
             return False
         expected = len(text.encode("utf-8"))
         if written != expected:
-            logger.error(
-                "Corpus write mismatch", written=written, expected=expected
-            )
+            logger.error("Corpus write mismatch", written=written, expected=expected)
             return False
         return True
 
