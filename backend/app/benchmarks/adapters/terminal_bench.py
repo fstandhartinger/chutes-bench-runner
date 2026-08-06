@@ -35,6 +35,8 @@ from app.services.sandy_service import SandyService
 
 logger = get_logger(__name__)
 
+TERMINAL_BENCH_ITEM_TIMEOUT_MARGIN_SECONDS = 15 * 60
+
 
 
 def classify_agent_exit(
@@ -178,6 +180,51 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
 
     def supports_subset(self) -> bool:
         return True
+
+    @staticmethod
+    def _item_budgets_ms(item: dict[str, Any]) -> tuple[float, float, int, int]:
+        """Return the exact agent and verifier budgets used by evaluation."""
+        timeout_multiplier = float(
+            os.getenv("TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER") or "1.0"
+        )
+        base_agent_timeout_sec = item.get("max_agent_timeout_sec") or 180
+        agent_timeout_ms = int(base_agent_timeout_sec * timeout_multiplier * 1000)
+        test_timeout_ms = int((item.get("max_test_timeout_sec") or 300) * 1000)
+        return (
+            base_agent_timeout_sec,
+            timeout_multiplier,
+            agent_timeout_ms,
+            test_timeout_ms,
+        )
+
+    def get_item_timeout_seconds(self, item_id: Optional[str] = None) -> Optional[int]:
+        """Cover the declared agent and verifier budgets plus harness overhead.
+
+        The worker owns this outer deadline. It must not expire before the
+        inner Terminal-Bench budgets that it is supervising.
+        """
+        items = self._items
+        if item_id is not None:
+            item = next((candidate for candidate in items if candidate["id"] == item_id), None)
+            if item is None:
+                return None
+            items = [item]
+        if not items:
+            return None
+
+        item_timeouts = []
+        for item in items:
+            _, _, agent_timeout_ms, test_timeout_ms = self._item_budgets_ms(item)
+            # run_agent enforces a 60-second minimum even if a malformed task
+            # declares less, so the outer deadline must cover that same floor.
+            agent_timeout_seconds = max(60, (agent_timeout_ms + 999) // 1000)
+            test_timeout_seconds = (test_timeout_ms + 999) // 1000
+            item_timeouts.append(
+                agent_timeout_seconds
+                + test_timeout_seconds
+                + TERMINAL_BENCH_ITEM_TIMEOUT_MARGIN_SECONDS
+            )
+        return max(item_timeouts)
 
     async def get_total_items(self) -> int:
         if not self._items:
@@ -1037,12 +1084,12 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
 
             # Budget has to be known before the sandbox exists, because the
             # sandbox TTL must outlive it (see below).
-            timeout_multiplier = float(
-                os.getenv("TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER") or "1.0"
-            )
-            base_agent_timeout_sec = item.get("max_agent_timeout_sec") or 180
-            agent_timeout = int(base_agent_timeout_sec * timeout_multiplier * 1000)
-            test_timeout = int((item.get("max_test_timeout_sec") or 300) * 1000)
+            (
+                base_agent_timeout_sec,
+                timeout_multiplier,
+                agent_timeout,
+                test_timeout,
+            ) = self._item_budgets_ms(item)
 
             # Sandy's default TTL is 10 minutes and bench-runner never calls
             # /refresh, so the sandbox was being reaped mid-item no matter what
@@ -1050,7 +1097,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             # + 15 minutes of slack for image build and teardown.
             sandbox_ttl_min = int(
                 (agent_timeout + test_timeout) / 60000
-            ) + 15
+            ) + TERMINAL_BENCH_ITEM_TIMEOUT_MARGIN_SECONDS // 60
 
             # Terminal-Bench requires Docker socket access for running docker-compose
             sandbox_id = await self.sandy.create_sandbox(

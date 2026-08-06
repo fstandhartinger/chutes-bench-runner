@@ -131,7 +131,7 @@ class OolongPairsAdapter(BenchmarkAdapter):
         # Allow parallel items; streaming fetches are serialized with a lock.
         return True
 
-    def get_item_timeout_seconds(self) -> Optional[int]:
+    def get_item_timeout_seconds(self, item_id: Optional[str] = None) -> Optional[int]:
         """Longer timeout for quadratic complexity tasks."""
         return 300  # 5 minutes
 

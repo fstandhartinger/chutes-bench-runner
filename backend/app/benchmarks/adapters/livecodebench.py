@@ -44,7 +44,7 @@ class LiveCodeBenchAdapter(BenchmarkAdapter):
     def get_item_concurrency(self) -> Optional[int]:
         return 2
 
-    def get_item_timeout_seconds(self) -> Optional[int]:
+    def get_item_timeout_seconds(self, item_id: Optional[str] = None) -> Optional[int]:
         return 1800
 
     def _looks_like_code(self, code: str) -> bool:

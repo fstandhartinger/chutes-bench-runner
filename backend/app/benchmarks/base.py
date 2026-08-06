@@ -118,8 +118,8 @@ class BenchmarkAdapter(ABC):
         """Optional per-benchmark item concurrency override."""
         return None
 
-    def get_item_timeout_seconds(self) -> Optional[int]:
-        """Return per-item timeout in seconds, or None to use default."""
+    def get_item_timeout_seconds(self, item_id: Optional[str] = None) -> Optional[int]:
+        """Return the timeout for an item, or None to use the runner default."""
         return None
 
     def requires_setup(self) -> bool:

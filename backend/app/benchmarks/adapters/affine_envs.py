@@ -334,7 +334,7 @@ class AffineEnvAdapter(BenchmarkAdapter):
     def get_item_concurrency(self) -> Optional[int]:
         return self._replicas
 
-    def get_item_timeout_seconds(self) -> Optional[int]:
+    def get_item_timeout_seconds(self, item_id: Optional[str] = None) -> Optional[int]:
         return self.spec.item_timeout_seconds
 
     async def get_total_items(self) -> int:

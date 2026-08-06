@@ -61,6 +61,31 @@ def test_adapter_names_resolve_to_explicit_releases() -> None:
     assert TerminalBenchHardAdapter.benchmark_spec is TERMINAL_BENCH_HARD
 
 
+def test_item_timeout_covers_long_agent_budget(monkeypatch) -> None:
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    adapter._items = [
+        {
+            "id": "long",
+            "max_agent_timeout_sec": 3600,
+            "max_test_timeout_sec": 600,
+        },
+        {
+            "id": "short",
+            "max_agent_timeout_sec": 300,
+            "max_test_timeout_sec": 60,
+        },
+    ]
+    monkeypatch.setenv("TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER", "2.0")
+
+    long_timeout = adapter.get_item_timeout_seconds("long")
+
+    assert long_timeout == 7200 + 600 + 900
+    assert long_timeout > 1200
+    assert long_timeout >= 7200
+    assert adapter.get_item_timeout_seconds("short") == 600 + 60 + 900
+    assert adapter.get_item_timeout_seconds() == long_timeout
+
+
 def test_hard_manifest_is_the_reproduced_leaderboard_subset() -> None:
     assert TERMINAL_BENCH_HARD.commit == "74221fb0b6b5a7f88e53bed5726edaaf236348c9"
     assert TERMINAL_BENCH_HARD.manifest_repository == "NVIDIA-NeMo/Evaluator"

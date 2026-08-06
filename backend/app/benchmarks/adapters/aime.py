@@ -33,7 +33,7 @@ class AIME2025Adapter(BenchmarkAdapter):
     def supports_parallel_items(self) -> bool:
         return True
 
-    def get_item_timeout_seconds(self) -> Optional[int]:
+    def get_item_timeout_seconds(self, item_id: Optional[str] = None) -> Optional[int]:
         return 300
 
     async def get_total_items(self) -> int:

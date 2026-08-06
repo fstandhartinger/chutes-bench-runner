@@ -46,12 +46,55 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 PROGRESS_PERSIST_INTERVAL = 5
+ITEM_TIMEOUT_EXCLUSION_REASON = "infrastructure_item_timeout"
+ITEM_TIMEOUT_ERROR_PREFIX = "Item evaluation timed out"
+
+
+class _RunnerItemTimeoutError(TimeoutError):
+    """The worker's outer item deadline expired, not an adapter timeout."""
+
+
+async def _evaluate_adapter_item(
+    adapter: BenchmarkAdapter,
+    item_id: str,
+    timeout_seconds: Optional[float],
+) -> ItemResult:
+    """Evaluate an item while distinguishing the outer cap from inner timeouts."""
+    if timeout_seconds is None:
+        return await adapter.evaluate_item(item_id)
+
+    task = asyncio.create_task(adapter.evaluate_item(item_id))
+    done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+    if task in done:
+        return task.result()
+
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    raise _RunnerItemTimeoutError
+
+
+def _item_timeout_result(item_id: str, timeout_seconds: Optional[int]) -> ItemResult:
+    error = ITEM_TIMEOUT_ERROR_PREFIX
+    if timeout_seconds:
+        error = f"{error} after {timeout_seconds}s"
+    return ItemResult(
+        item_id=item_id,
+        error=error,
+        metadata={
+            "exclusion_reason": ITEM_TIMEOUT_EXCLUSION_REASON,
+            "worker_item_timeout_seconds": timeout_seconds,
+        },
+    )
 
 
 def _is_retryable_item_error(error: Optional[str]) -> bool:
     if not error:
         return False
     message = error.lower()
+    # The worker's outer cap is deterministic for this item. Retrying under
+    # the same cap cannot succeed and only adds backoff/cancellation churn.
+    if message.startswith(ITEM_TIMEOUT_ERROR_PREFIX.lower()):
+        return False
     if "currently disabled" in message or ("chute" in message and "disabled" in message):
         return False
     if "http 402" in message or "zero balance" in message:
@@ -171,9 +214,25 @@ def _is_run_retryable(error: Optional[str]) -> bool:
 
 
 def _apply_error_score_defaults(result: ItemResult) -> ItemResult:
-    if result.error and result.score is None:
+    exclusion_reason = (result.metadata or {}).get("exclusion_reason")
+    if result.error and result.score is None and not exclusion_reason:
         result.score = 0.0
     return result
+
+
+def _is_excluded_item(result: ItemResult) -> bool:
+    return bool((result.metadata or {}).get("exclusion_reason"))
+
+
+def _accuracy_excluding_infrastructure(
+    correct_items: int,
+    sampled_items: int,
+    excluded_items: int,
+) -> Optional[float]:
+    scored_items = max(0, sampled_items - excluded_items)
+    if not scored_items:
+        return None
+    return correct_items / scored_items
 
 
 def _compute_run_stale_seconds(
@@ -1469,7 +1528,6 @@ class BenchmarkWorker:
                     )
                     existing_rows = list(result.scalars().all())
                 completed_item_ids = {row.item_id for row in existing_rows}
-                correct = sum(1 for row in existing_rows if row.is_correct)
                 existing_results = [
                     ItemResult(
                         item_id=row.item_id,
@@ -1489,15 +1547,37 @@ class BenchmarkWorker:
                     )
                     for row in existing_rows
                 ]
+                excluded_items = sum(
+                    1 for item_result in existing_results if _is_excluded_item(item_result)
+                )
+                correct = sum(
+                    1
+                    for item_result in existing_results
+                    if item_result.is_correct and not _is_excluded_item(item_result)
+                )
             else:
                 async with async_session_maker() as read_db:
                     result = await read_db.execute(
-                        select(BenchmarkItemResult.item_id, BenchmarkItemResult.is_correct)
+                        select(
+                            BenchmarkItemResult.item_id,
+                            BenchmarkItemResult.is_correct,
+                            BenchmarkItemResult.item_metadata,
+                        )
                         .where(BenchmarkItemResult.run_benchmark_id == rb.id)
                     )
                     existing_rows = list(result.all())
                 completed_item_ids = {row.item_id for row in existing_rows}
-                correct = sum(1 for row in existing_rows if row.is_correct)
+                excluded_items = sum(
+                    1
+                    for row in existing_rows
+                    if (row.item_metadata or {}).get("exclusion_reason")
+                )
+                correct = sum(
+                    1
+                    for row in existing_rows
+                    if row.is_correct
+                    and not (row.item_metadata or {}).get("exclusion_reason")
+                )
 
             completed_items = len(completed_item_ids)
             pending_item_ids = [item_id for item_id in items_to_evaluate if item_id not in completed_item_ids]
@@ -1529,7 +1609,11 @@ class BenchmarkWorker:
             )
 
             if not pending_item_ids:
-                accuracy = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
+                accuracy = _accuracy_excluding_infrastructure(
+                    correct,
+                    len(items_to_evaluate),
+                    excluded_items,
+                )
                 additional_metrics = await adapter.postprocess(existing_results) if needs_postprocess else {}
                 accuracy_override_present = "accuracy_override" in additional_metrics
                 accuracy_override = additional_metrics.pop("accuracy_override", None)
@@ -1546,6 +1630,8 @@ class BenchmarkWorker:
                     "accuracy": accuracy,
                     "total_items": total_items,
                     "sampled_items": len(items_to_evaluate),
+                    "scored_items": len(items_to_evaluate) - excluded_items,
+                    "excluded_items": excluded_items,
                     "sampled_pct": run.subset_pct,
                     "subset_count": run.subset_count,
                     "subset_seed": run.subset_seed,
@@ -1589,14 +1675,34 @@ class BenchmarkWorker:
                     max_concurrency = max(1, override_concurrency)
             else:
                 max_concurrency = 1
-            item_timeout = adapter.get_item_timeout_seconds()
-            if item_timeout is None:
-                item_timeout = settings.worker_item_timeout_seconds
             is_gremium_run = (run.provider or "").startswith("gremium")
-            if is_gremium_run:
-                item_timeout = settings.gremium_item_timeout_seconds
-            if item_timeout is not None and item_timeout <= 0:
-                item_timeout = None
+
+            def get_effective_item_timeout(item_id: str) -> Optional[int]:
+                item_timeout = adapter.get_item_timeout_seconds(item_id)
+                if item_timeout is None:
+                    item_timeout = settings.worker_item_timeout_seconds
+                if is_gremium_run:
+                    # A provider-specific default may extend an adapter budget,
+                    # but it must never shorten the adapter's declared cap.
+                    item_timeout = max(
+                        item_timeout or 0,
+                        settings.gremium_item_timeout_seconds,
+                    )
+                if item_timeout is not None and item_timeout <= 0:
+                    return None
+                return item_timeout
+
+            resolved_item_timeouts = [
+                timeout
+                for item_id in items_to_evaluate
+                if (timeout := get_effective_item_timeout(item_id)) is not None
+            ]
+            if resolved_item_timeouts:
+                cached_timeout = self._benchmark_timeout_cache.get(rb.benchmark_name, 0)
+                self._benchmark_timeout_cache[rb.benchmark_name] = max(
+                    cached_timeout,
+                    max(resolved_item_timeouts),
+                )
             item_attempts = settings.worker_item_attempts
             if is_gremium_run:
                 item_attempts = settings.gremium_item_attempts
@@ -1606,6 +1712,7 @@ class BenchmarkWorker:
             abort_error: Optional[str] = None
 
             async def evaluate_item(item_id: str) -> ItemResult:
+                item_timeout = get_effective_item_timeout(item_id)
                 attempt = 0
                 delay_seconds = 1
                 last_result: Optional[ItemResult] = None
@@ -1622,23 +1729,14 @@ class BenchmarkWorker:
                         if deadline is not None:
                             timeout_remaining = max(0.0, deadline - time.monotonic())
                             if timeout_remaining <= 0:
-                                raise asyncio.TimeoutError
-                        if item_timeout:
-                            result = await asyncio.wait_for(
-                                adapter.evaluate_item(item_id),
-                                timeout=timeout_remaining,
-                            )
-                        else:
-                            result = await adapter.evaluate_item(item_id)
-                    except asyncio.TimeoutError:
-                        result = ItemResult(
-                            item_id=item_id,
-                            error=(
-                                f"Item evaluation timed out after {item_timeout}s"
-                                if item_timeout
-                                else "Item evaluation timed out"
-                            ),
+                                raise _RunnerItemTimeoutError
+                        result = await _evaluate_adapter_item(
+                            adapter,
+                            item_id,
+                            timeout_remaining,
                         )
+                    except _RunnerItemTimeoutError:
+                        result = _item_timeout_result(item_id, item_timeout)
                     except Exception as exc:
                         detail = str(exc) or exc.__class__.__name__
                         result = ItemResult(item_id=item_id, error=detail)
@@ -1664,13 +1762,16 @@ class BenchmarkWorker:
                 return last_result or ItemResult(item_id=item_id, error="Item evaluation failed")
 
             async def record_result(result: ItemResult) -> None:
-                nonlocal correct, completed_items, abort_error
+                nonlocal correct, excluded_items, completed_items, abort_error
 
                 async with result_lock:
                     if needs_postprocess:
                         new_results.append(result)
 
-                    if result.is_correct:
+                    is_excluded = _is_excluded_item(result)
+                    if is_excluded:
+                        excluded_items += 1
+                    elif result.is_correct:
                         correct += 1
 
                     completed_items += 1
@@ -1753,7 +1854,11 @@ class BenchmarkWorker:
                         raise Exception(abort_error or "Fatal benchmark error")
 
             all_results = existing_results + new_results if needs_postprocess else []
-            accuracy = correct / len(items_to_evaluate) if items_to_evaluate else 0.0
+            accuracy = _accuracy_excluding_infrastructure(
+                correct,
+                len(items_to_evaluate),
+                excluded_items,
+            )
             additional_metrics = await adapter.postprocess(all_results) if needs_postprocess else {}
             accuracy_override_present = "accuracy_override" in additional_metrics
             accuracy_override = additional_metrics.pop("accuracy_override", None)
@@ -1771,6 +1876,8 @@ class BenchmarkWorker:
                 "accuracy": accuracy,
                 "total_items": total_items,
                 "sampled_items": len(items_to_evaluate),
+                "scored_items": len(items_to_evaluate) - excluded_items,
+                "excluded_items": excluded_items,
                 "sampled_pct": run.subset_pct,
                 "subset_count": run.subset_count,
                 "subset_seed": run.subset_seed,

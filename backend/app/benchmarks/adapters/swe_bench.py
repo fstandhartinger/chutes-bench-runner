@@ -67,7 +67,7 @@ class SWEBenchProAdapter(BenchmarkAdapter):
     def supports_subset(self) -> bool:
         return True
 
-    def get_item_timeout_seconds(self) -> Optional[int]:
+    def get_item_timeout_seconds(self, item_id: Optional[str] = None) -> Optional[int]:
         return 3600
 
     async def get_total_items(self) -> int:

@@ -149,7 +149,7 @@ class KimiVendorVerifierAdapter(BenchmarkAdapter):
     def get_item_concurrency(self) -> Optional[int]:
         return DEFAULT_ITEM_CONCURRENCY
 
-    def get_item_timeout_seconds(self) -> Optional[int]:
+    def get_item_timeout_seconds(self, item_id: Optional[str] = None) -> Optional[int]:
         return self.timeout_seconds
 
     def requires_setup(self) -> bool:

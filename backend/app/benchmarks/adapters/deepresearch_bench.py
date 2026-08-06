@@ -495,7 +495,7 @@ class DeepResearchBenchAdapter(BenchmarkAdapter):
             value = 1
         return max(1, min(value, 3))
 
-    def get_item_timeout_seconds(self) -> Optional[int]:
+    def get_item_timeout_seconds(self, item_id: Optional[str] = None) -> Optional[int]:
         """Deep research can be slow; allow up to 6 minutes per item."""
         return 360
 
