@@ -80,6 +80,41 @@ def classify_agent_exit(
     )
 
 
+# Transport-level failures between bench-runner and Sandy. These never reach
+# classify_agent_exit, because that function guards the case where the agent
+# ran and exited -- here the *request* broke, so there is no agent_summary, no
+# duration and no exit code to classify. The exclusion logic had a hole exactly
+# where the most common failure now lives, and these landed as score 0 with no
+# exclusion_reason: infrastructure recorded as capability, again.
+TRANSPORT_FAILURE_MARKERS = (
+    "peer closed connection",
+    "incomplete chunked read",
+    "server disconnected",
+    "connection reset",
+    "remote protocol error",
+    "readtimeout",
+    "read timeout",
+    "connecttimeout",
+    "all connection attempts failed",
+    "sandbox not found",
+)
+
+
+def classify_bare_failure(error_text: str, agent_summary: Optional[dict]) -> Optional[str]:
+    """Exclusion reason for a failure that produced no agent summary.
+
+    If the agent never reported at all, we cannot say the harness failed --
+    we can only say we never heard back. Scoring that 0 penalises whichever
+    arm happened to be running when the transport broke.
+    """
+    if agent_summary:
+        return None
+    text = (error_text or "").lower()
+    if any(marker in text for marker in TRANSPORT_FAILURE_MARKERS):
+        return "infrastructure_transport"
+    return None
+
+
 def settings_allow_unsealed() -> bool:
     """Escape hatch for deliberately running Terminal-Bench with open egress.
 
@@ -1024,10 +1059,18 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
 
         except Exception as e:
             logger.error("Terminal-Bench evaluation failed", item_id=item_id, error=str(e))
+            summary = locals().get("agent_summary")
+            exclusion_reason = classify_bare_failure(str(e), summary)
             return ItemResult(
                 item_id=item_id,
                 prompt=prompt,
                 response=locals().get("agent_output", "") or "",
                 error=str(e),
-                metadata={"task_id": item.get("task_id")},
+                metadata={
+                    "task_id": item.get("task_id"),
+                    "agent": locals().get("agent_name"),
+                    "agent_summary": summary,
+                    "agent_usage": locals().get("agent_usage"),
+                    "exclusion_reason": exclusion_reason,
+                },
             )
