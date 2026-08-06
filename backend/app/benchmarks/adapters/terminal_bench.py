@@ -176,6 +176,30 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 target_path = f"{cwd.rstrip('/')}/{compose_path}"
             await self.sandy.write_file(sandbox_id, target_path, patched)
 
+    async def _reap_orphans(self, sandbox_id: str) -> None:
+        """Remove task containers/images whose sandbox is already gone.
+
+        Cleanup normally runs `compose down` *inside* the sandbox, so if the
+        sandbox dies first -- timeout, eviction, a failed item -- its task
+        containers and images are stranded on the shared host daemon with
+        nothing left to remove them. Observed five orphans accumulating across
+        a handful of runs on a host that sits at ~92% disk.
+
+        Safe because names are namespaced: anything whose `sN` prefix has no
+        live `sandy_N` container cannot belong to a running item.
+        """
+        await self.sandy.execute_command(
+            sandbox_id,
+            "live=$(docker ps --format '{{.Names}}' | grep '^sandy_' | sed 's/^sandy_/s/'); "
+            "for c in $(docker ps -a --format '{{.Names}}' | grep '^tbench_s'); do "
+            "  ns=$(echo \"$c\" | sed -E 's/^tbench_(s[0-9a-f]+)_.*/\\1/'); "
+            "  echo \"$live\" | grep -qx \"$ns\" || docker rm -f \"$c\" >/dev/null 2>&1; "
+            "done; "
+            "for i in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^(client_s|tbench_s)'); do "
+            "  docker rmi \"$i\" >/dev/null 2>&1 || true; "
+            "done; true",
+        )
+
     async def _run_terminal_bench(self, sandbox_id: str, task_id: str) -> dict[str, Any]:
         task_dir = "/workspace/task"
         compose_path = "docker-compose.yaml"
@@ -490,6 +514,7 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                 return ItemResult(item_id=item_id, error=sandbox_error)
 
             try:
+                await self._reap_orphans(sandbox_id)
                 extracted = await self._extract_archive(sandbox_id, archive)
                 if not extracted:
                     return ItemResult(item_id=item_id, error="Failed to extract task archive")
