@@ -147,6 +147,65 @@ class SWEBenchProAdapter(BenchmarkAdapter):
             tag = tag[:128]
         return f"{dockerhub_username}/sweap-images:{tag}"
 
+    # SWE-Bench Pro task images are built by cloning the repo and checking out
+    # the base commit, and `cp -a /app /workspace/repo` hands the agent the
+    # whole `.git` along with it. `git reset --hard <base>` moves HEAD; it does
+    # NOT remove refs that point at *descendants* of base. If the image's clone
+    # retained the branch the fix landed on, then `git log --all`,
+    # `git show <fix>`, or even the reflog hands the agent the reference patch
+    # for the very issue it was asked to solve -- inside the repository it was
+    # told to work in.
+    #
+    # This is the same bug class as the Terminal-Bench one (c00e99c), where the
+    # reference solution shipped inside the task archive into the agent's
+    # working directory. That one was found only after it had already produced
+    # a headline number.
+    #
+    # **Not observed here.** Confirming it needs a multi-GB image pull and the
+    # runner host was at 92% disk, so this is a defensive strip rather than a
+    # fix for a demonstrated leak -- and `leak_before` records what was actually
+    # reachable, so the first real run tells us whether the leak was live. Do
+    # not quietly drop that field: it is the evidence, and the whole point is
+    # not to take the seal on faith.
+    async def _strip_future_history(self, sandbox_id: str, base_commit: str) -> dict[str, Any]:
+        """Reduce the repo to base_commit and nothing after it, then prove it."""
+        script = (
+            "cd /workspace/repo && "
+            # Commits reachable from any ref but NOT from base -- i.e. the future.
+            f"BEFORE=$(git rev-list --all --not {base_commit} --count 2>/dev/null || echo -1) && "
+            f"git checkout -q --detach {base_commit} && "
+            # Drop every ref (branches, tags, remote-tracking), then recreate one.
+            "git for-each-ref --format='%(refname)' | xargs -r -n1 git update-ref -d && "
+            f"git branch -q -f main {base_commit} && git checkout -q main && "
+            # Remotes would let the agent simply re-fetch what we just deleted.
+            "for r in $(git remote); do git remote remove $r; done && "
+            "git reflog expire --expire=now --all && "
+            "git gc --prune=now -q 2>/dev/null; "
+            f"AFTER=$(git rev-list --all --not {base_commit} --count 2>/dev/null || echo -1); "
+            "echo BEFORE=$BEFORE AFTER=$AFTER REMOTES=$(git remote | wc -l)"
+        )
+        result = await self.sandy.execute_command(sandbox_id, script, timeout_ms=300000)
+        out = ((result or {}).get("stdout") or "").strip()
+
+        def _field(name: str) -> int:
+            for tok in out.split():
+                if tok.startswith(f"{name}="):
+                    try:
+                        return int(tok.split("=", 1)[1])
+                    except ValueError:
+                        return -1
+            return -1
+
+        before, after, remotes = _field("BEFORE"), _field("AFTER"), _field("REMOTES")
+        return {
+            "probe": out,
+            "leak_before": before,
+            "leak_after": after,
+            "remotes_left": remotes,
+            # -1 means the probe itself did not run; that is not a pass.
+            "stripped": after == 0 and remotes == 0,
+        }
+
     def _create_entryscript(self, sample: dict[str, Any]) -> str:
         # Align with the official SWE-Bench Pro harness: `before_repo_set_cmd` contains multiple lines,
         # but only the *final* command (typically `git checkout <sha> -- <test files>`) should run
@@ -807,6 +866,25 @@ python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspa
                     item_id=item_id,
                     error=detail,
                     metadata={"instance_id": instance_id, "repo": repo},
+                )
+
+            # Take the future out of the repo BEFORE the agent starts. See
+            # _strip_future_history: `git reset --hard` above moved HEAD but
+            # left every ref that pointed past base_commit reachable.
+            history = await self._strip_future_history(sandbox_id, base_commit)
+            if not history.get("stripped"):
+                return ItemResult(
+                    item_id=item_id,
+                    error=(
+                        "Refusing to score: could not confine the repo to the base "
+                        f"commit ({history.get('probe')!r}). The agent would have had "
+                        "the upstream fix reachable from its own git history."
+                    ),
+                    metadata={
+                        "instance_id": instance_id,
+                        "repo": repo,
+                        "history": history,
+                    },
                 )
 
             agent_output, agent_meta, agent_input_tokens, agent_output_tokens = await self._run_agent_loop(

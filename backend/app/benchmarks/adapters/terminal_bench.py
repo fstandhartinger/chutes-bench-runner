@@ -626,7 +626,26 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                             metadata={"task_id": item.get("task_id"), "seal": seal},
                         )
 
-                    agent_timeout = int((item.get("max_agent_timeout_sec") or 180) * 1000)
+                    # Terminal-Bench's per-task budgets (600-900s) assume a
+                    # fast model. Kimi K3 through our proxy averages ~55s per
+                    # request (measured over 95 requests; max 722s), so a 900s
+                    # budget buys roughly 12-16 turns -- and Terminal-Bench Hard
+                    # tasks need more. That is why 5 of 6 items in the first
+                    # paired run died at ~640-680s with exitCode 1 and no
+                    # output: the agent ran out of wall clock mid-task, not out
+                    # of ability.
+                    #
+                    # The multiplier is applied IDENTICALLY to both arms and
+                    # recorded on every item, so the budget stays a controlled
+                    # variable rather than a hidden one. Default 1.0 keeps
+                    # upstream behaviour for anyone who wants it.
+                    timeout_multiplier = float(
+                        os.getenv("TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER") or "1.0"
+                    )
+                    base_agent_timeout_sec = item.get("max_agent_timeout_sec") or 180
+                    agent_timeout = int(
+                        base_agent_timeout_sec * timeout_multiplier * 1000
+                    )
                     test_timeout = int((item.get("max_test_timeout_sec") or 300) * 1000)
 
                     settings = get_settings()
@@ -781,6 +800,9 @@ class TerminalBenchHardAdapter(BenchmarkAdapter):
                             # run was sealed without taking it on trust.
                             "seal": seal,
                             "holdout": holdout,
+                            "agent_timeout_sec": agent_timeout / 1000,
+                            "agent_timeout_base_sec": base_agent_timeout_sec,
+                            "agent_timeout_multiplier": timeout_multiplier,
                             "agent_summary": agent_summary,
                             "agent_output_excerpt": agent_output[:2000] if agent_output else "",
                             "task_yaml": task_yaml,
