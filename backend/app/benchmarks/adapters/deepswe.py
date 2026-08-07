@@ -180,8 +180,9 @@ class DeepSWEAdapter(BenchmarkAdapter):
 
     def get_setup_notes(self) -> str | None:
         return (
-            "Requires Sandy with Docker socket access; pulls one unique DeepSWE "
-            "v1.1 image per item and removes task-specific images after scoring."
+            "Requires worker-side Docker access; the Sandy agent sandbox receives "
+            "neither the Docker socket nor Sandy's shared cache. Pulls one unique "
+            "DeepSWE v1.1 image per item and removes task-specific images after scoring."
         )
 
     def supports_subset(self) -> bool:
