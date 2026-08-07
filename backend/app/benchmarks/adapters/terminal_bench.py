@@ -148,6 +148,60 @@ VERIFIER_NETWORK_FAILURE_MARKERS = (
 VERIFIER_NETWORK_EXCLUSION_REASON = "infrastructure_verifier_network"
 VERIFIER_NOT_EXECUTED_EXCLUSION_REASON = "infrastructure_verifier_not_executed"
 AGENT_NOT_TERMINATED_EXCLUSION_REASON = "infrastructure_agent_not_terminated"
+AGENT_LAUNCH_FAILED_EXCLUSION_REASON = "infrastructure_agent_launch_failed"
+
+# httpx includes one of these prefixes in HTTPStatusError messages. Restrict
+# the match to Sandy's agent endpoint so an unrelated 4xx/5xx later in an item
+# does not get mislabeled as a launch failure.
+AGENT_RUN_HTTP_FAILURE_MARKERS = (
+    "redirect response",
+    "client error",
+    "server error",
+)
+UNKNOWN_AGENT_FAILURE_MARKERS = (
+    "unknown agent",
+    "unregistered agent",
+    "unsupported agent",
+    "invalid agent",
+)
+
+
+def classify_agent_launch_failure(
+    error_text: str,
+    agent_summary: Optional[dict],
+    agent_usage: Optional[dict],
+    *,
+    agent_invoked: bool,
+) -> Optional[str]:
+    """Exclude requests where there is no evidence that an agent ran.
+
+    A non-2xx from Sandy's agent-run endpoint is a launch/configuration
+    failure, not a capability result. The same is true when the request
+    returns without a completion summary, token counts, or a rollout. Requiring
+    all three pieces of evidence to be absent keeps real agent failures scored.
+    """
+    if agent_summary:
+        return None
+
+    text = (error_text or "").lower()
+    if (
+        "/agent/run" in text
+        and any(marker in text for marker in AGENT_RUN_HTTP_FAILURE_MARKERS)
+    ) or any(marker in text for marker in UNKNOWN_AGENT_FAILURE_MARKERS):
+        return AGENT_LAUNCH_FAILED_EXCLUSION_REASON
+
+    usage = agent_usage or {}
+    has_tokens = any(
+        isinstance(usage.get(field), int)
+        for field in ("input_tokens", "output_tokens")
+    )
+    has_rollout = any(
+        usage.get(field) not in (None, "")
+        for field in ("rollout", "session", "usage_source")
+    )
+    if agent_invoked and not has_tokens and not has_rollout:
+        return AGENT_LAUNCH_FAILED_EXCLUSION_REASON
+    return None
 
 
 def classify_verifier_network_failure(test_result: Optional[dict]) -> Optional[str]:
@@ -161,7 +215,13 @@ def classify_verifier_network_failure(test_result: Optional[dict]) -> Optional[s
     return None
 
 
-def classify_bare_failure(error_text: str, agent_summary: Optional[dict]) -> Optional[str]:
+def classify_bare_failure(
+    error_text: str,
+    agent_summary: Optional[dict],
+    agent_usage: Optional[dict] = None,
+    *,
+    agent_invoked: bool = False,
+) -> Optional[str]:
     """Exclusion reason for a failure that produced no agent summary.
 
     If the agent never reported at all, we cannot say the harness failed --
@@ -171,9 +231,22 @@ def classify_bare_failure(error_text: str, agent_summary: Optional[dict]) -> Opt
     if agent_summary:
         return None
     text = (error_text or "").lower()
+    launch_failure = classify_agent_launch_failure(
+        error_text,
+        agent_summary,
+        agent_usage,
+        agent_invoked=False,
+    )
+    if launch_failure:
+        return launch_failure
     if any(marker in text for marker in TRANSPORT_FAILURE_MARKERS):
         return "infrastructure_transport"
-    return None
+    return classify_agent_launch_failure(
+        error_text,
+        agent_summary,
+        agent_usage,
+        agent_invoked=agent_invoked,
+    )
 
 
 def settings_allow_unsealed() -> bool:
@@ -1935,6 +2008,48 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                         except RuntimeError as exc:
                             usage_error = str(exc)
 
+                    launch_exclusion_reason = classify_agent_launch_failure(
+                        "",
+                        agent_summary,
+                        agent_usage,
+                        agent_invoked=True,
+                    )
+                    if launch_exclusion_reason:
+                        agent_events = agent_result.get("events") or []
+                        launch_error = next(
+                            (
+                                event.get("error") or event.get("message")
+                                for event in reversed(agent_events)
+                                if isinstance(event, dict)
+                                and event.get("type") == "error"
+                            ),
+                            None,
+                        )
+                        return ItemResult(
+                            item_id=item_id,
+                            item_hash=self.compute_item_hash(item.get("task_id")),
+                            prompt=prompt,
+                            error=(
+                                str(launch_error)
+                                if launch_error
+                                else (
+                                    "Agent launch produced no completion summary, "
+                                    "token counts, or rollout."
+                                )
+                            ),
+                            latency_ms=int((time.time() - start_time) * 1000),
+                            metadata={
+                                "task_id": item.get("task_id"),
+                                "agent": agent_name,
+                                "agent_summary": agent_summary,
+                                "agent_usage": agent_usage,
+                                "agent_provider": agent_provider_metadata,
+                                "holdout": holdout,
+                                "seal": seal,
+                                "exclusion_reason": launch_exclusion_reason,
+                            },
+                        )
+
                     sandbox_alive = await self._sandbox_alive(sandbox_id)
                     exclusion_reason, exit_note = classify_agent_exit(
                         agent_summary, agent_timeout / 1000, sandbox_alive
@@ -2378,7 +2493,13 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
         except Exception as e:
             logger.error("Terminal-Bench evaluation failed", item_id=item_id, error=str(e))
             summary = locals().get("agent_summary")
-            exclusion_reason = classify_bare_failure(str(e), summary)
+            observability = self._item_observability.get(item_id) or {}
+            exclusion_reason = classify_bare_failure(
+                str(e),
+                summary,
+                locals().get("agent_usage"),
+                agent_invoked=bool(observability.get("agent_invoked")),
+            )
             return ItemResult(
                 item_id=item_id,
                 prompt=prompt,

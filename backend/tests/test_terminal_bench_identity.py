@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.benchmarks.adapters.terminal_bench import (
+    AGENT_LAUNCH_FAILED_EXCLUSION_REASON,
     AGENT_NOT_TERMINATED_EXCLUSION_REASON,
     VERIFIER_NETWORK_EXCLUSION_REASON,
     VERIFIER_NOT_EXECUTED_EXCLUSION_REASON,
@@ -22,6 +23,8 @@ from app.benchmarks.adapters.terminal_bench import (
     TerminalBenchAdapter,
     TerminalBenchHardAdapter,
     classify_agent_exit,
+    classify_agent_launch_failure,
+    classify_bare_failure,
     classify_verifier_network_failure,
 )
 from app.benchmarks.adapters.terminal_bench_identity import (
@@ -490,6 +493,46 @@ def test_agent_exit_classification_still_excludes_only_dead_sandbox() -> None:
     exclusion, note = classify_agent_exit(summary, 100, True)
     assert exclusion is None
     assert "Scored" in (note or "")
+
+
+def test_agent_run_http_400_is_excluded_as_launch_infrastructure() -> None:
+    error = (
+        "Client error '400 Bad Request' for url "
+        "'http://host.docker.internal:7331/api/sandboxes/sbx/agent/run'"
+    )
+
+    assert (
+        classify_bare_failure(error, None)
+        == AGENT_LAUNCH_FAILED_EXCLUSION_REASON
+    )
+
+
+def test_unknown_agent_is_excluded_as_launch_infrastructure() -> None:
+    assert (
+        classify_bare_failure("Unknown agent: prime-agent", None)
+        == AGENT_LAUNCH_FAILED_EXCLUSION_REASON
+    )
+
+
+def test_agent_invocation_without_summary_tokens_or_rollout_is_excluded() -> None:
+    assert (
+        classify_agent_launch_failure(
+            "",
+            {},
+            {"error": "no agent usage file found"},
+            agent_invoked=True,
+        )
+        == AGENT_LAUNCH_FAILED_EXCLUSION_REASON
+    )
+    assert (
+        classify_agent_launch_failure(
+            "",
+            {},
+            {"usage_source": "codex-token-count", "input_tokens": 10},
+            agent_invoked=True,
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
