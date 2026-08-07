@@ -7,12 +7,19 @@ import json
 import tarfile
 from pathlib import Path
 
+import pytest
+
 from app.benchmarks.adapters.deepswe import DeepSWEAdapter
 from app.benchmarks.agent_evidence import read_rollout_metrics
 from app.benchmarks.base import ItemResult
+from app.services.run_service import save_item_result
 
 
-def test_observed_rollout_compactions_land_in_top_level_item_metadata(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_observed_rollout_compactions_land_in_top_level_item_metadata(
+    tmp_path: Path,
+    test_session,
+) -> None:
     evidence_path = tmp_path / "observed-compaction.tar.gz"
     events = [
         {"type": "event_msg", "payload": {"type": "context_compacted"}},
@@ -48,12 +55,19 @@ def test_observed_rollout_compactions_land_in_top_level_item_metadata(tmp_path: 
     }
 
     result = adapter.attach_item_observability(ItemResult(item_id="task", score=0.0))
+    row = await save_item_result(
+        test_session,
+        "00000000-0000-0000-0000-000000000000",
+        item_id=result.item_id,
+        score=result.score,
+        item_metadata=result.metadata,
+    )
 
-    assert result.metadata is not None
-    assert result.metadata["compaction_events"] == parsed_metrics["compaction_events"]
-    assert result.metadata["compaction_events_by_type"] == parsed_metrics[
+    assert row is not None
+    assert row.item_metadata["compaction_events"] == parsed_metrics["compaction_events"]
+    assert row.item_metadata["compaction_events_by_type"] == parsed_metrics[
         "compaction_events_by_type"
     ]
-    assert result.metadata["compaction_experiment"]["compaction_events"] == parsed_metrics[
+    assert row.item_metadata["compaction_experiment"]["compaction_events"] == parsed_metrics[
         "compaction_events"
     ]
