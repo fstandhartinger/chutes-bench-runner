@@ -82,6 +82,7 @@ class Settings(BaseSettings):
 
     # Worker
     worker_poll_interval: int = 5
+    worker_cancellation_poll_seconds: float = 2.0
     worker_max_concurrent: int = 3
     worker_item_concurrency: int = 4
     worker_item_timeout_seconds: int = 1200

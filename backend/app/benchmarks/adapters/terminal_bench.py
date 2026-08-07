@@ -195,6 +195,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []
         self._item_observability: dict[str, dict[str, Any]] = {}
+        self._active_sandbox_ids: set[str] = set()
         self.sandy = SandyService()
 
     def get_name(self) -> str:
@@ -564,6 +565,86 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             "done; true",
         )
 
+    async def _sandbox_identity(self, sandbox_id: str) -> Optional[tuple[str, str]]:
+        """Read the exact Sandy id/owner labels from this sandbox container."""
+        sandbox_name = f"sandy_{sandbox_id}"
+        result = await self.sandy.execute_command(
+            sandbox_id,
+            "docker inspect -f "
+            "'{{ index .Config.Labels \"sandy.id\" }}|"
+            "{{ index .Config.Labels \"sandy.owner\" }}' "
+            f"{shlex.quote(sandbox_name)}",
+        )
+        if result.get("exit_code") != 0:
+            return None
+        raw = (result.get("stdout") or "").strip()
+        actual_id, separator, owner = raw.partition("|")
+        if not separator or actual_id != sandbox_id or not owner:
+            return None
+        return actual_id, owner
+
+    async def _task_container_label_flags(self, sandbox_id: str) -> str:
+        identity = await self._sandbox_identity(sandbox_id)
+        if not identity:
+            logger.warning(
+                "Could not verify Sandy ownership labels for task container",
+                sandbox_id=sandbox_id,
+            )
+            return ""
+        _, owner = identity
+        labels = (
+            f"sandy.owner={owner}",
+            f"chutes.bench.sandbox_id={sandbox_id}",
+        )
+        return " ".join(f"--label {shlex.quote(label)}" for label in labels)
+
+    async def _cleanup_owned_task_containers(self, sandbox_id: str) -> bool:
+        """Remove only task containers proven to belong to ``sandbox_id``.
+
+        Every new task container copies the Sandy owner's label and carries the
+        full sandbox id. Re-reading those labels before deletion prevents a
+        cancellation from touching another live run on the shared Docker host.
+        """
+        identity = await self._sandbox_identity(sandbox_id)
+        if not identity:
+            logger.warning(
+                "Skipping task-container sweep because sandbox ownership is unverified",
+                sandbox_id=sandbox_id,
+            )
+            return False
+        _, owner = identity
+        owner_filter = shlex.quote(f"label=sandy.owner={owner}")
+        sandbox_filter = shlex.quote(f"label=chutes.bench.sandbox_id={sandbox_id}")
+        quoted_owner = shlex.quote(owner)
+        quoted_sandbox_id = shlex.quote(sandbox_id)
+        namespace = f"s{sandbox_id[:12]}".lower()
+        command = (
+            f"for c in $(docker ps -aq --filter {owner_filter} --filter {sandbox_filter}); do "
+            "  test \"$(docker inspect -f '{{ index .Config.Labels \"sandy.owner\" }}' \"$c\")\" "
+            f"    = {quoted_owner} || continue; "
+            "  test \"$(docker inspect -f '{{ index .Config.Labels \"chutes.bench.sandbox_id\" }}' \"$c\")\" "
+            f"    = {quoted_sandbox_id} || continue; "
+            "  docker rm -f \"$c\" >/dev/null 2>&1 || true; "
+            "done; "
+            f"for image in $(docker images --format '{{{{.Repository}}}}:{{{{.Tag}}}}'); do "
+            f"  case \"$image\" in tbench_{namespace}_*|client_{namespace}:*) "
+            "    docker rmi -f \"$image\" >/dev/null 2>&1 || true ;; "
+            "  esac; "
+            "done; true"
+        )
+        result = await self.sandy.execute_command(sandbox_id, command, timeout_ms=300_000)
+        return result.get("exit_code") == 0
+
+    async def cleanup(self) -> None:
+        """Terminate any item sandbox still active when a run is canceled."""
+        active_sandbox_ids = list(getattr(self, "_active_sandbox_ids", set()))
+        for sandbox_id in active_sandbox_ids:
+            try:
+                await self._cleanup_owned_task_containers(sandbox_id)
+            finally:
+                await self.sandy.terminate_sandbox(sandbox_id)
+                self._active_sandbox_ids.discard(sandbox_id)
+
     async def _run_harbor_task(
         self, sandbox_id: str, item: dict[str, Any]
     ) -> dict[str, Any]:
@@ -594,11 +675,13 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             resource_flags.extend(["--cpus", shlex.quote(str(item["cpus"]))])
         if item.get("memory_mb"):
             resource_flags.extend(["--memory", f"{int(item['memory_mb'])}m"])
+        label_flags = await self._task_container_label_flags(sandbox_id)
         run_command = " ".join(
             [
                 "docker run -d",
                 "--name",
                 shlex.quote(container_name),
+                label_flags,
                 *resource_flags,
                 shlex.quote(source_image),
                 "sleep infinity",
@@ -714,6 +797,39 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                 "T_BENCH_TEST_DIR": "/tests",
                 "DOCKER_HOST": "unix:///var/run/docker.sock",
             }
+            identity = await self._sandbox_identity(sandbox_id)
+            label_override_path = None
+            if identity:
+                _, owner = identity
+                services_result = await self.sandy.execute_command(
+                    sandbox_id,
+                    f"{compose_cmd} -f {compose_path} config --services",
+                    cwd=task_dir,
+                )
+                services = [
+                    service.strip()
+                    for service in (services_result.get("stdout") or "").splitlines()
+                    if service.strip()
+                    and all(char.isalnum() or char in "_.-" for char in service.strip())
+                ]
+                if services:
+                    label_override_path = ".chutes-bench-labels.yaml"
+                    override = {
+                        "services": {
+                            service: {
+                                "labels": {
+                                    "sandy.owner": owner,
+                                    "chutes.bench.sandbox_id": sandbox_id,
+                                }
+                            }
+                            for service in services
+                        }
+                    }
+                    await self.sandy.write_file(
+                        sandbox_id,
+                        f"{task_dir}/{label_override_path}",
+                        yaml.safe_dump(override, sort_keys=True),
+                    )
             env_lines = [f"{key}={value}" for key, value in env.items()]
             await self.sandy.write_file(
                 sandbox_id,
@@ -725,9 +841,12 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             # items as the same project and recreates/removes each other's
             # containers.
             compose_project = f"tb{ns}"
+            compose_files = f"-f {compose_path}"
+            if label_override_path:
+                compose_files += f" -f {label_override_path}"
             up_cmd = (
                 f"{compose_cmd} -p {compose_project} --env-file .env "
-                f"-f {compose_path} up --build -d"
+                f"{compose_files} up --build -d"
             )
             up_result = await self.sandy.execute_command(
                 sandbox_id,
@@ -745,7 +864,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                     "stderr": up_result.get("stderr"),
                 }
             container_name = env["T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME"]
-            cleanup_cmd = f"{compose_cmd} -p {compose_project} -f {compose_path} down"
+            cleanup_cmd = f"{compose_cmd} -p {compose_project} {compose_files} down"
             cleanup_cwd = task_dir
         else:
             build_result = await self.sandy.execute_command(
@@ -761,9 +880,11 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                     "stdout": build_result.get("stdout"),
                     "stderr": build_result.get("stderr"),
                 }
+            label_flags = await self._task_container_label_flags(sandbox_id)
             run_result = await self.sandy.execute_command(
                 sandbox_id,
-                f"docker run -d --name {container_name} {image_name} sleep infinity",
+                f"docker run -d --name {container_name} {label_flags} "
+                f"{image_name} sleep infinity",
             )
             if run_result.get("exit_code") != 0:
                 error_detail = run_result.get("stderr") or run_result.get("stdout") or run_result.get("error")
@@ -1404,6 +1525,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             if not sandbox_id:
                 sandbox_error = self.sandy.last_error or "Could not create sandbox"
                 return ItemResult(item_id=item_id, error=sandbox_error)
+            self._active_sandbox_ids.add(sandbox_id)
 
             try:
                 await self._reap_orphans(sandbox_id)
@@ -1927,8 +2049,14 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                             sandbox_id, f"docker rmi -f {stale} 2>/dev/null || true"
                         )
             finally:
-                await self._finish_evidence_retention(item_id, sandbox_id)
-                await self.sandy.terminate_sandbox(sandbox_id)
+                try:
+                    await self._finish_evidence_retention(item_id, sandbox_id)
+                finally:
+                    try:
+                        await self._cleanup_owned_task_containers(sandbox_id)
+                    finally:
+                        await self.sandy.terminate_sandbox(sandbox_id)
+                        self._active_sandbox_ids.discard(sandbox_id)
 
         except Exception as e:
             logger.error("Terminal-Bench evaluation failed", item_id=item_id, error=str(e))

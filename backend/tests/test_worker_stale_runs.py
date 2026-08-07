@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
@@ -18,6 +19,7 @@ from app.models.run import (
 from app.worker.runner import (
     BenchmarkWorker,
     _compute_run_stale_seconds,
+    _evaluate_adapter_item,
     _is_retryable_db_write_error,
     _try_transition_stale_run,
 )
@@ -429,3 +431,112 @@ async def test_is_run_canceled_fails_open_on_transient_db_error(monkeypatch) -> 
 
     assert await worker._is_run_canceled("run-1") is False
     assert broken_factory.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_is_run_canceled_accepts_status_without_timestamp(test_session, monkeypatch) -> None:
+    model = Model(
+        slug="status-cancel-model",
+        name="Status Cancel Model",
+        provider="chutes",
+        is_active=True,
+    )
+    test_session.add(model)
+    await test_session.flush()
+    run = BenchmarkRun(
+        model_id=model.id,
+        model_slug=model.slug,
+        provider="chutes",
+        subset_pct=100,
+        status=RunStatus.CANCELED.value,
+        canceled_at=None,
+    )
+    test_session.add(run)
+    await test_session.commit()
+
+    test_session_maker = async_sessionmaker(
+        test_session.bind,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    monkeypatch.setattr("app.worker.runner.async_session_maker", test_session_maker)
+
+    assert await BenchmarkWorker()._is_run_canceled(run.id) is True
+
+
+@pytest.mark.asyncio
+async def test_execute_claimed_run_polls_and_cancels_inflight_work(
+    test_session,
+    monkeypatch,
+) -> None:
+    model = Model(
+        slug="cancel-model",
+        name="Cancel Model",
+        provider="chutes",
+        is_active=True,
+    )
+    test_session.add(model)
+    await test_session.flush()
+    run = BenchmarkRun(
+        model_id=model.id,
+        model_slug=model.slug,
+        provider="chutes",
+        subset_pct=100,
+        status=RunStatus.RUNNING.value,
+    )
+    test_session.add(run)
+    await test_session.commit()
+
+    test_session_maker = async_sessionmaker(
+        test_session.bind,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    monkeypatch.setattr("app.worker.runner.async_session_maker", test_session_maker)
+    monkeypatch.setattr("app.worker.runner.settings.worker_cancellation_poll_seconds", 0.01)
+
+    worker = BenchmarkWorker()
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def long_running_execute(_db, _run) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr(worker, "execute_run", long_running_execute)
+    monkeypatch.setattr(
+        worker,
+        "_is_run_canceled",
+        AsyncMock(side_effect=[False, True]),
+    )
+
+    task = asyncio.create_task(worker.execute_claimed_run(run.id, run.model_slug))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await asyncio.wait_for(task, timeout=1)
+
+    assert stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_canceling_item_wrapper_cancels_adapter_work() -> None:
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    class BlockingAdapter:
+        async def evaluate_item(self, _item_id):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+    task = asyncio.create_task(_evaluate_adapter_item(BlockingAdapter(), "item", 60))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert stopped.is_set()

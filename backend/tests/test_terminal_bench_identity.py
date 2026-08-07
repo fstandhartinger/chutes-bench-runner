@@ -270,6 +270,54 @@ async def test_answer_key_holdout_and_container_probe_are_preserved() -> None:
     assert "find /tests /solution -type f" in container_probe
 
 
+@pytest.mark.asyncio
+async def test_cancellation_cleanup_targets_only_matching_sandy_owner_and_id() -> None:
+    sandbox_id = "123456781234"
+    owner = "/var/lib/sandy/state"
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    adapter.sandy = type("Sandy", (), {})()
+    adapter.sandy.execute_command = AsyncMock(
+        side_effect=[
+            {"exit_code": 0, "stdout": f"{sandbox_id}|{owner}\n"},
+            {"exit_code": 0},
+        ]
+    )
+
+    assert await adapter._cleanup_owned_task_containers(sandbox_id) is True
+
+    cleanup_command = adapter.sandy.execute_command.await_args_list[1].args[1]
+    assert f"label=sandy.owner={owner}" in cleanup_command
+    assert f"label=chutes.bench.sandbox_id={sandbox_id}" in cleanup_command
+    assert "docker rm -f \"$c\"" in cleanup_command
+    assert "tbench_s123456781234_" in cleanup_command
+
+
+@pytest.mark.asyncio
+async def test_harbor_task_container_carries_sandbox_ownership_labels() -> None:
+    sandbox_id = "123456781234"
+    owner = "/var/lib/sandy/state"
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    adapter.sandy = type("Sandy", (), {})()
+    adapter.sandy.execute_command = AsyncMock(
+        side_effect=[
+            {"exit_code": 0},  # pull
+            {"exit_code": 0, "stdout": f"{sandbox_id}|{owner}\n"},
+            {"exit_code": 0},  # run
+            {"exit_code": 0},  # mkdir
+        ]
+    )
+
+    result = await adapter._run_harbor_task(
+        sandbox_id,
+        {"task_id": "task-one", "docker_image": "example/task:latest"},
+    )
+
+    assert result["container_name"].startswith("tbench_s123456781234_")
+    run_command = adapter.sandy.execute_command.await_args_list[2].args[1]
+    assert f"sandy.owner={owner}" in run_command
+    assert f"chutes.bench.sandbox_id={sandbox_id}" in run_command
+
+
 def test_agent_exit_classification_still_excludes_only_dead_sandbox() -> None:
     summary = {"exitCode": 1, "duration": 10}
     exclusion, _ = classify_agent_exit(summary, 100, False)

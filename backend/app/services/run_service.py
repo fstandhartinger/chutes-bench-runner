@@ -194,44 +194,38 @@ async def update_run_status(
     if overall_score is not None:
         update_data["overall_score"] = overall_score
 
+    statement = update(BenchmarkRun).where(BenchmarkRun.id == run_id)
+    if status == RunStatus.CANCELED:
+        update_data["canceled_at"] = func.coalesce(BenchmarkRun.canceled_at, datetime.utcnow())
+    else:
+        # A late item/result callback must never resurrect or overwrite a run
+        # after its cancellation transaction commits.
+        statement = statement.where(
+            BenchmarkRun.status != RunStatus.CANCELED.value,
+            BenchmarkRun.canceled_at.is_(None),
+        )
     await db.execute(
-        update(BenchmarkRun)
-        .where(BenchmarkRun.id == run_id)
-        .values(**update_data)
-        .execution_options(synchronize_session=False)
+        statement.values(**update_data).execution_options(synchronize_session=False)
     )
     await db.commit()
 
 
 async def cancel_run(db: AsyncSession, run_id: str) -> bool:
     """Cancel a run if it's still running or queued."""
-    run = await get_run(db, run_id)
-    if not run or run.status not in (RunStatus.QUEUED.value, RunStatus.RUNNING.value):
+    # Lock the lifecycle root first. Worker writes take this same lock before
+    # persisting child/item progress, so cancellation and progress cannot pass
+    # each other and leave a canceled parent with live children.
+    result = await db.execute(
+        select(BenchmarkRun.status)
+        .where(BenchmarkRun.id == run_id)
+        .with_for_update()
+    )
+    status = result.scalar_one_or_none()
+    if status not in (RunStatus.QUEUED.value, RunStatus.RUNNING.value):
+        await db.rollback()
         return False
 
     now = datetime.utcnow()
-    await db.execute(
-        update(BenchmarkRunBenchmark)
-        .where(BenchmarkRunBenchmark.run_id == run_id)
-        .where(BenchmarkRunBenchmark.status == BenchmarkRunStatus.RUNNING.value)
-        .values(
-            status=BenchmarkRunStatus.SKIPPED.value,
-            error_message="Run canceled",
-            completed_at=now,
-            updated_at=now,
-        )
-    )
-    await db.execute(
-        update(BenchmarkRunBenchmark)
-        .where(BenchmarkRunBenchmark.run_id == run_id)
-        .where(BenchmarkRunBenchmark.status == BenchmarkRunStatus.PENDING.value)
-        .values(
-            status=BenchmarkRunStatus.SKIPPED.value,
-            error_message="Run canceled",
-            completed_at=now,
-            updated_at=now,
-        )
-    )
     await db.execute(
         update(BenchmarkRun)
         .where(BenchmarkRun.id == run_id)
@@ -242,9 +236,37 @@ async def cancel_run(db: AsyncSession, run_id: str) -> bool:
             updated_at=now,
         )
     )
-    await db.commit()
-
-    await add_run_event(db, run_id, "run_canceled", message="Run canceled by user")
+    await db.execute(
+        update(BenchmarkRunBenchmark)
+        .where(BenchmarkRunBenchmark.run_id == run_id)
+        .where(
+            BenchmarkRunBenchmark.status.not_in(
+                [
+                    BenchmarkRunStatus.SUCCEEDED.value,
+                    BenchmarkRunStatus.FAILED.value,
+                    BenchmarkRunStatus.SKIPPED.value,
+                ]
+            )
+        )
+        .values(
+            status=BenchmarkRunStatus.SKIPPED.value,
+            error_message="Run canceled",
+            completed_at=now,
+            updated_at=now,
+        )
+    )
+    db.add(
+        RunEvent(
+            run_id=run_id,
+            event_type="run_canceled",
+            message="Run canceled by user",
+        )
+    )
+    try:
+        await db.commit()
+    except BaseException:
+        await db.rollback()
+        raise
     return True
 
 
@@ -312,11 +334,7 @@ async def update_benchmark_status(
     update_data: dict[str, Any] = {"status": status.value, "updated_at": now}
 
     if status == BenchmarkRunStatus.RUNNING:
-        started_result = await db.execute(
-            select(BenchmarkRunBenchmark.started_at).where(BenchmarkRunBenchmark.id == run_benchmark_id)
-        )
-        if started_result.scalar_one_or_none() is None:
-            update_data["started_at"] = now
+        update_data["started_at"] = func.coalesce(BenchmarkRunBenchmark.started_at, now)
     elif status in (BenchmarkRunStatus.SUCCEEDED, BenchmarkRunStatus.FAILED, BenchmarkRunStatus.SKIPPED):
         update_data["completed_at"] = now
 
@@ -335,14 +353,31 @@ async def update_benchmark_status(
     if sampled_item_ids is not None:
         update_data["sampled_item_ids"] = sampled_item_ids
 
-    run_id_result = await db.execute(
-        select(BenchmarkRunBenchmark.run_id).where(BenchmarkRunBenchmark.id == run_benchmark_id)
+    lifecycle_result = await db.execute(
+        select(BenchmarkRun.id, BenchmarkRun.status, BenchmarkRun.canceled_at)
+        .join(BenchmarkRunBenchmark, BenchmarkRunBenchmark.run_id == BenchmarkRun.id)
+        .where(BenchmarkRunBenchmark.id == run_benchmark_id)
+        .with_for_update()
     )
-    run_id = run_id_result.scalar_one_or_none()
+    lifecycle = lifecycle_result.one_or_none()
+    if not lifecycle:
+        await db.rollback()
+        return
+    run_id, run_status, canceled_at = lifecycle
+    if run_status == RunStatus.CANCELED.value or canceled_at is not None:
+        # This also rolls back an item row flushed immediately before this
+        # checkpoint in the same session.
+        await db.rollback()
+        return
+
     if run_id:
         await db.execute(
             update(BenchmarkRun)
             .where(BenchmarkRun.id == run_id)
+            .where(
+                BenchmarkRun.status != RunStatus.CANCELED.value,
+                BenchmarkRun.canceled_at.is_(None),
+            )
             .values(updated_at=now)
             .execution_options(synchronize_session=False)
         )
@@ -396,8 +431,20 @@ async def save_item_result(
     test_code: Optional[str] = None,
     item_metadata: Optional[dict[str, Any]] = None,
     item_hash: Optional[str] = None,
-) -> BenchmarkItemResult:
-    """Save a single item result."""
+) -> Optional[BenchmarkItemResult]:
+    """Save a single item result unless its run has already been canceled."""
+    lifecycle_result = await db.execute(
+        select(BenchmarkRun.status, BenchmarkRun.canceled_at)
+        .join(BenchmarkRunBenchmark, BenchmarkRunBenchmark.run_id == BenchmarkRun.id)
+        .where(BenchmarkRunBenchmark.id == run_benchmark_id)
+        .with_for_update()
+    )
+    lifecycle = lifecycle_result.one_or_none()
+    if lifecycle:
+        run_status, canceled_at = lifecycle
+        if run_status == RunStatus.CANCELED.value or canceled_at is not None:
+            return None
+
     result = BenchmarkItemResult(
         run_benchmark_id=run_benchmark_id,
         item_id=item_id,
@@ -428,6 +475,18 @@ async def save_item_result(
         await db.rollback()
         if getattr(exc, "connection_invalidated", False):
             logger.warning("DB connection invalidated while saving item result; retrying", error=str(exc))
+            lifecycle_result = await db.execute(
+                select(BenchmarkRun.status, BenchmarkRun.canceled_at)
+                .join(BenchmarkRunBenchmark, BenchmarkRunBenchmark.run_id == BenchmarkRun.id)
+                .where(BenchmarkRunBenchmark.id == run_benchmark_id)
+                .with_for_update()
+            )
+            lifecycle = lifecycle_result.one_or_none()
+            if not lifecycle:
+                return None
+            run_status, canceled_at = lifecycle
+            if run_status == RunStatus.CANCELED.value or canceled_at is not None:
+                return None
             db.add(result)
             await db.flush()
         else:

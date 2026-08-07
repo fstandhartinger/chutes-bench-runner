@@ -54,6 +54,10 @@ class _RunnerItemTimeoutError(TimeoutError):
     """The worker's outer item deadline expired, not an adapter timeout."""
 
 
+class _RunCanceledError(Exception):
+    """A benchmark noticed that its parent run was canceled."""
+
+
 async def _evaluate_adapter_item(
     adapter: BenchmarkAdapter,
     item_id: str,
@@ -64,13 +68,21 @@ async def _evaluate_adapter_item(
         return await adapter.evaluate_item(item_id)
 
     task = asyncio.create_task(adapter.evaluate_item(item_id))
-    done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
-    if task in done:
-        return task.result()
+    try:
+        done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+        if task in done:
+            return task.result()
 
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-    raise _RunnerItemTimeoutError
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise _RunnerItemTimeoutError
+    except asyncio.CancelledError:
+        # asyncio does not automatically cancel a child created with
+        # create_task(). Without this, canceling the run leaves the adapter
+        # (and its model request/sandbox) running in the background.
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 def _item_timeout_result(item_id: str, timeout_seconds: Optional[int]) -> ItemResult:
@@ -346,9 +358,18 @@ class BenchmarkWorker:
             try:
                 async with async_session_maker() as db:
                     result = await db.execute(
-                        select(BenchmarkRun.canceled_at).where(BenchmarkRun.id == run_id)
+                        select(BenchmarkRun.status, BenchmarkRun.canceled_at).where(
+                            BenchmarkRun.id == run_id
+                        )
                     )
-                    return result.scalar_one_or_none() is not None
+                    row = result.one_or_none()
+                    return bool(
+                        row
+                        and (
+                            row.status == RunStatus.CANCELED.value
+                            or row.canceled_at is not None
+                        )
+                    )
             except Exception as exc:
                 if _is_retryable_db_write_error(exc) and attempt < 2:
                     logger.warning(
@@ -450,7 +471,7 @@ class BenchmarkWorker:
         for attempt in range(3):
             try:
                 async with async_session_maker() as item_db:
-                    await save_item_result(
+                    saved_result = await save_item_result(
                         item_db, run_benchmark_id,
                         item_id=result.item_id,
                         item_hash=result.item_hash,
@@ -473,6 +494,16 @@ class BenchmarkWorker:
                         test_code=result.test_code,
                         item_metadata=result.metadata,
                     )
+
+                    if saved_result is None:
+                        await item_db.rollback()
+                        logger.info(
+                            "Discarding item result completed after run cancellation",
+                            run_id=run_id,
+                            benchmark=benchmark_name,
+                            item_id=result.item_id,
+                        )
+                        return
 
                     if should_persist_progress:
                         await update_benchmark_status(
@@ -803,6 +834,7 @@ class BenchmarkWorker:
 
     async def execute_claimed_run(self, run_id: str, model_slug: str) -> None:
         """Execute a claimed run in its own session."""
+        execution_task: Optional[asyncio.Task] = None
         async with async_session_maker() as db:
             run = await get_run(db, run_id)
             if not run:
@@ -810,8 +842,30 @@ class BenchmarkWorker:
                 return
 
             try:
-                await self.execute_run(db, run)
+                if await self._is_run_canceled(run_id):
+                    logger.info("Claimed run was canceled before execution", run_id=run_id)
+                    return
+
+                execution_task = asyncio.create_task(self.execute_run(db, run))
+                poll_seconds = max(settings.worker_cancellation_poll_seconds, 0.1)
+                while True:
+                    done, _ = await asyncio.wait({execution_task}, timeout=poll_seconds)
+                    if execution_task in done:
+                        await execution_task
+                        return
+                    if await self._is_run_canceled(run_id):
+                        logger.info(
+                            "Canceling in-flight run work",
+                            run_id=run_id,
+                            model=model_slug,
+                        )
+                        execution_task.cancel()
+                        await asyncio.gather(execution_task, return_exceptions=True)
+                        return
             except asyncio.CancelledError:
+                if execution_task is not None and not execution_task.done():
+                    execution_task.cancel()
+                    await asyncio.gather(execution_task, return_exceptions=True)
                 logger.warning("Run execution canceled", run_id=run_id)
                 raise
             except Exception as e:
@@ -885,12 +939,17 @@ class BenchmarkWorker:
             return
         heartbeat_interval = max(settings.worker_heartbeat_seconds, 30)
         preload_task = asyncio.create_task(adapter.preload())
-        while True:
-            done, _ = await asyncio.wait({preload_task}, timeout=heartbeat_interval)
-            self.last_progress_at[run_id] = datetime.utcnow()
-            if preload_task in done:
-                await preload_task
-                return
+        try:
+            while True:
+                done, _ = await asyncio.wait({preload_task}, timeout=heartbeat_interval)
+                self.last_progress_at[run_id] = datetime.utcnow()
+                if preload_task in done:
+                    await preload_task
+                    return
+        except asyncio.CancelledError:
+            preload_task.cancel()
+            await asyncio.gather(preload_task, return_exceptions=True)
+            raise
 
     async def requeue_stale_runs(self) -> None:
         """Requeue stale running runs after a worker restart or stall."""
@@ -1233,6 +1292,9 @@ class BenchmarkWorker:
                     if score is not None:
                         total_score += score
                         completed_benchmarks += 1
+                except _RunCanceledError:
+                    logger.info("Run canceled during benchmark", run_id=run.id)
+                    return
                 except Exception as e:
                     error_detail = str(e)
                     if error_detail:
@@ -1262,6 +1324,10 @@ class BenchmarkWorker:
                 await client.close()
             if judge_client:
                 await judge_client.close()
+
+        if await self._is_run_canceled(run.id):
+            logger.info("Run canceled before final status update", run_id=run.id)
+            return
 
         # Compute overall score
         if completed_benchmarks == 0 and failed_benchmarks > 0:
@@ -1837,36 +1903,36 @@ class BenchmarkWorker:
                     pending_tasks.add(asyncio.create_task(run_item(item_id)))
                     return True
 
-                for _ in range(min(max_concurrency, len(pending_item_ids))):
-                    await schedule_next()
-
-                completed_since_check = 0
-                while pending_tasks:
-                    done, _ = await asyncio.wait(
-                        pending_tasks, return_when=asyncio.FIRST_COMPLETED
-                    )
-                    for task in done:
-                        pending_tasks.discard(task)
-                        result = await task
-                        await record_result(result)
-                        if abort_event.is_set():
-                            for pending in pending_tasks:
-                                pending.cancel()
-                            await asyncio.gather(*pending_tasks, return_exceptions=True)
-                            raise Exception(abort_error or "Fatal benchmark error")
-                        completed_since_check += 1
-                        if completed_since_check % 10 == 0:
-                            if await self._is_run_canceled(run.id):
-                                for pending in pending_tasks:
-                                    pending.cancel()
-                                await asyncio.gather(*pending_tasks, return_exceptions=True)
-                                raise Exception("Run canceled")
+                try:
+                    for _ in range(min(max_concurrency, len(pending_item_ids))):
                         await schedule_next()
+
+                    completed_since_check = 0
+                    while pending_tasks:
+                        done, _ = await asyncio.wait(
+                            pending_tasks, return_when=asyncio.FIRST_COMPLETED
+                        )
+                        for task in done:
+                            pending_tasks.discard(task)
+                            result = await task
+                            await record_result(result)
+                            if abort_event.is_set():
+                                raise Exception(abort_error or "Fatal benchmark error")
+                            completed_since_check += 1
+                            if completed_since_check % 10 == 0:
+                                if await self._is_run_canceled(run.id):
+                                    raise _RunCanceledError("Run canceled")
+                            await schedule_next()
+                finally:
+                    for pending in pending_tasks:
+                        pending.cancel()
+                    if pending_tasks:
+                        await asyncio.gather(*pending_tasks, return_exceptions=True)
             else:
                 for i, item_id in enumerate(pending_item_ids):
                     if i % 10 == 0:
                         if await self._is_run_canceled(run.id):
-                            raise Exception("Run canceled")
+                            raise _RunCanceledError("Run canceled")
 
                     result = await evaluate_item(item_id)
                     await record_result(result)
@@ -1936,7 +2002,7 @@ class BenchmarkWorker:
 
             return score
 
-        except Exception as e:
+        except Exception:
             raise
         finally:
             try:
