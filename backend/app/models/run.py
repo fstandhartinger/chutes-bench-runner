@@ -60,6 +60,7 @@ class BenchmarkRun(Base):
     canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     code_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     git_sha: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    provenance: Mapped[Optional[dict]] = mapped_column(JSON_TYPE, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

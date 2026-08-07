@@ -173,11 +173,19 @@ count together, so a dead codeload pin cannot pass on manifest length alone.
 
 The existing incident-driven controls remain in both execution paths:
 
-- the local answer key is removed by `_withhold_answer_key` before the agent
-  can access it;
-- `_verify_container_clean` checks the actual task container from outside;
+- the task archive is partitioned in the trusted worker before Sandy receives
+  it; tests stay in worker memory until scoring and reference bytes are never
+  restored;
+- `_withhold_answer_key` exhaustively probes the agent-visible sandbox,
+  including the historical holdout path and source-archive digest, while
+  `_verify_container_clean` checks the actual task container through both the
+  workload path and the outside Docker API;
+- the raw Docker socket and shared Sandy cache are removed from the sandbox
+  mount namespace before the agent starts, and a task-scoped gateway refuses
+  container creation or access to anything except the exact task container;
 - benchmark source hosts, including Harbor Hub and tbench.ai, are sealed during
-  the agent phase and restored only for verification;
+  the agent phase and restored only for verification; the item cannot score
+  unless an agent-position Docker bypass probe also passes;
 - agent token usage and the effective agent/test budgets are recorded even on
   failed items;
 - `classify_agent_exit` and bare transport exclusions retain the distinction

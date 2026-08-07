@@ -144,6 +144,34 @@ async def get_run(db: AsyncSession, run_id: str) -> Optional[BenchmarkRun]:
     return result.scalar_one_or_none()
 
 
+async def bind_run_provenance(
+    db: AsyncSession,
+    run_id: str,
+    provenance: dict[str, Any],
+) -> None:
+    """Bind a run to one immutable worker/runtime snapshot before execution."""
+    result = await db.execute(
+        select(BenchmarkRun).where(BenchmarkRun.id == run_id).with_for_update()
+    )
+    run = result.scalar_one_or_none()
+    if run is None:
+        raise ValueError(f"Run {run_id} not found")
+    if run.provenance is not None and run.provenance != provenance:
+        raise RuntimeError(
+            "Refusing to resume a run under different code/runtime provenance"
+        )
+    git_sha = str(provenance.get("bench_runner_git_sha") or "")
+    if len(git_sha) != 40:
+        raise RuntimeError("Run provenance is missing a full Git SHA")
+    code_version = str(provenance.get("code_version") or "")
+    if len(code_version) != 64:
+        raise RuntimeError("Run provenance is missing a code-version SHA-256")
+    run.provenance = provenance
+    run.git_sha = git_sha
+    run.code_version = code_version
+    await db.commit()
+
+
 async def list_runs(
     db: AsyncSession,
     status: Optional[str] = None,

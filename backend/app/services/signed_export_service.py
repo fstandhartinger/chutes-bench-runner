@@ -159,6 +159,7 @@ async def _build_results_payload(db: AsyncSession, run: BenchmarkRun) -> dict[st
             "created_at": _isoformat(run.created_at),
             "code_version": run.code_version,
             "git_sha": run.git_sha,
+            "provenance": run.provenance,
         },
         "benchmarks": benchmarks_payload,
     }

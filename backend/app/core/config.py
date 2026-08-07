@@ -156,6 +156,7 @@ class Settings(BaseSettings):
     sandy_api_key: Optional[str] = None
     sandy_volume_root: str = "/var/lib/sandy/volumes"
     sandy_docker_upstream: Optional[str] = None
+    sandy_runtime_image: str = "sandy-runtime:latest"
 
     # LLM judges.
     #

@@ -16,6 +16,7 @@ reportlab>=4.0.8
 python-dotenv>=1.0.0
 tenacity>=8.2.3
 structlog>=24.1.0
+docker>=7.1.0
 cryptography>=42.0.0
 langdetect>=1.0.9
 

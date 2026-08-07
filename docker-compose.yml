@@ -21,6 +21,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        BENCH_RUNNER_GIT_SHA: ${BENCH_RUNNER_GIT_SHA:-}
     ports:
       - "8000:8000"
     environment:
@@ -39,6 +41,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        BENCH_RUNNER_GIT_SHA: ${BENCH_RUNNER_GIT_SHA:-}
     environment:
       DATABASE_URL: postgresql://bench:bench@db:5432/bench_runner
       CHUTES_API_KEY: ${CHUTES_API_KEY}
@@ -68,7 +72,6 @@ services:
 
 volumes:
   postgres_data:
-
 
 
 

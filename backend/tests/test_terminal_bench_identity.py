@@ -6,7 +6,8 @@ import io
 import tarfile
 from collections import Counter
 from dataclasses import replace
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -413,50 +414,159 @@ async def test_answer_key_holdout_and_container_probe_are_preserved() -> None:
     adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
     adapter.sandy = type("Sandy", (), {})()
     adapter.sandy.execute_command = AsyncMock(
-        side_effect=[
-            {"exit_code": 0},
-            {
-                "exit_code": 0,
-                "stdout": "LEFT=environment,instruction.md,task.toml ARCHIVES=0 "
-                "HELD=solution,tests,",
-            },
-            {"exit_code": 0, "stdout": ""},
-        ]
+        return_value={
+            "exit_code": 0,
+            "stdout": (
+                "HOLDOUT_READ=BLOCKED\nCANDIDATES_BEGIN\nCANDIDATES_END\n"
+                "SOURCE_ARCHIVE=ABSENT\n"
+            ),
+        }
     )
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as task:
+        for name, content in {
+            "instruction.md": b"Do the work",
+            "solution/solve.sh": b"secret solution",
+            "tests/test_outputs.py": b"secret tests",
+        }.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            task.addfile(member, io.BytesIO(content))
+    partition = adapter._partition_answer_key(archive.getvalue())
 
-    holdout = await adapter._withhold_answer_key("sandbox", "s123")
-    clean = await adapter._verify_container_clean("sandbox", "container")
+    holdout = await adapter._withhold_answer_key("sandbox", "s123", partition)
 
     assert holdout["withheld"] is True
-    assert clean["clean"] is True
     holdout_command = adapter.sandy.execute_command.await_args_list[0].args[1]
-    assert "*solution*" in holdout_command
-    assert "*test*" in holdout_command
-    assert "rm -f /workspace/archive.tar /workspace/archive.b64" in holdout_command
-    container_probe = adapter.sandy.execute_command.await_args_list[2].args[1]
-    assert "find /tests /solution -type f" in container_probe
+    assert "test -r /opt/tb-holdout/s123" in holdout_command
+    assert "find / -type f" in holdout_command
+    assert partition["source_archive_sha256"] in holdout_command
+
+
+def test_answer_key_is_partitioned_before_any_bytes_enter_sandy() -> None:
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    archive = io.BytesIO()
+    files = {
+        "instruction.md": b"public instruction",
+        "task.toml": b"[environment]",
+        "solution/solve.sh": b"reference bytes",
+        "tests/test_outputs.py": b"test bytes",
+        "evaluation_tests_hidden/cases.json": b"hidden bytes",
+    }
+    with tarfile.open(fileobj=archive, mode="w") as task:
+        for name, content in files.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            task.addfile(member, io.BytesIO(content))
+
+    partition = adapter._partition_answer_key(archive.getvalue())
+
+    with tarfile.open(fileobj=io.BytesIO(partition["safe_archive"])) as safe:
+        assert set(safe.getnames()) == {"instruction.md", "task.toml"}
+    with tarfile.open(fileobj=io.BytesIO(partition["tests_archive"])) as tests:
+        assert set(tests.getnames()) == {
+            "tests/test_outputs.py",
+            "evaluation_tests_hidden/cases.json",
+        }
+        assert b"reference bytes" not in partition["tests_archive"]
+    assert [entry["path"] for entry in partition["reference_manifest"]] == [
+        "solution/solve.sh"
+    ]
+    assert partition["source_archive_size_bytes"] == len(archive.getvalue())
+
+
+def test_nested_archive_with_answer_key_is_rejected_before_sandy() -> None:
+    nested = io.BytesIO()
+    with tarfile.open(fileobj=nested, mode="w") as hidden:
+        content = b"nested secret"
+        member = tarfile.TarInfo("payload/solution/solve.sh")
+        member.size = len(content)
+        hidden.addfile(member, io.BytesIO(content))
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as task:
+        public = b"public"
+        instruction = tarfile.TarInfo("instruction.md")
+        instruction.size = len(public)
+        task.addfile(instruction, io.BytesIO(public))
+        embedded = nested.getvalue()
+        fixture = tarfile.TarInfo("fixtures/data.bin")
+        fixture.size = len(embedded)
+        task.addfile(fixture, io.BytesIO(embedded))
+        tests = b"tests"
+        test_member = tarfile.TarInfo("tests/test.py")
+        test_member.size = len(tests)
+        task.addfile(test_member, io.BytesIO(tests))
+
+    with pytest.raises(BenchmarkIdentityError, match="Nested archive.*answer key"):
+        TerminalBench21Adapter._partition_answer_key(archive.getvalue())
 
 
 @pytest.mark.asyncio
-async def test_cancellation_cleanup_targets_only_matching_sandy_owner_and_id() -> None:
-    sandbox_id = "123456781234"
-    owner = "/var/lib/sandy/state"
+async def test_answer_key_probe_fails_closed_on_holdout_or_archive_leak() -> None:
     adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
     adapter.sandy = type("Sandy", (), {})()
     adapter.sandy.execute_command = AsyncMock(
-        side_effect=[
-            {"exit_code": 0, "stdout": f"{sandbox_id}|{owner}\n"},
-            {"exit_code": 0},
-        ]
+        return_value={
+            "exit_code": 0,
+            "stdout": (
+                "HOLDOUT_READ=SUCCEEDED\nCANDIDATES_BEGIN\nCANDIDATES_END\n"
+                "SOURCE_ARCHIVE=PRESENT\n"
+            ),
+        }
+    )
+    partition = {
+        "source_archive_sha256": "a" * 64,
+        "source_archive_size_bytes": 42,
+        "tests_manifest": [],
+        "reference_manifest": [],
+    }
+
+    verdict = await adapter._withhold_answer_key("sandbox", "s123", partition)
+
+    assert verdict["withheld"] is False
+    assert verdict["read_attempt"] == "succeeded"
+    assert verdict["source_archive_absent"] is False
+
+
+@pytest.mark.asyncio
+async def test_cancellation_cleanup_targets_only_matching_sandy_owner_and_id(
+    monkeypatch,
+) -> None:
+    sandbox_id = "123456781234"
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    owned = MagicMock()
+    owned.attrs = {
+        "Config": {"Labels": {"chutes.bench.sandbox_id": sandbox_id}}
+    }
+    decoy = MagicMock()
+    decoy.attrs = {
+        "Config": {"Labels": {"chutes.bench.sandbox_id": "different"}}
+    }
+    image = SimpleNamespace(tags=["tbench_s123456781234_task:latest"])
+    network = MagicMock()
+    client = SimpleNamespace(
+        containers=SimpleNamespace(list=MagicMock(return_value=[owned, decoy])),
+        images=SimpleNamespace(
+            list=MagicMock(return_value=[image]),
+            remove=MagicMock(),
+        ),
+        networks=SimpleNamespace(list=MagicMock(return_value=[network])),
+    )
+    monkeypatch.setattr(
+        "app.benchmarks.adapters.terminal_bench.docker.from_env",
+        lambda: client,
     )
 
     assert await adapter._cleanup_owned_task_containers(sandbox_id) is True
 
-    cleanup_command = adapter.sandy.execute_command.await_args_list[1].args[1]
-    assert f"label=sandy.owner={owner}" in cleanup_command
-    assert f"label=chutes.bench.sandbox_id={sandbox_id}" in cleanup_command
-    assert "docker rm -f \"$c\"" in cleanup_command
-    assert "tbench_s123456781234_" in cleanup_command
+    client.containers.list.assert_called_once_with(
+        all=True,
+        filters={"label": f"chutes.bench.sandbox_id={sandbox_id}"},
+    )
+    owned.remove.assert_called_once_with(force=True)
+    decoy.remove.assert_not_called()
+    client.images.remove.assert_called_once_with(image.tags[0], force=True)
+    network.remove.assert_called_once_with()
 
 
 @pytest.mark.asyncio

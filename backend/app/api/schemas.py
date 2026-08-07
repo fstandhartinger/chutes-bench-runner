@@ -177,6 +177,9 @@ class RunResponse(APIModel):
     overall_score: Optional[float] = None
     error_message: Optional[str] = None
     provider_metadata: Optional[dict[str, Any]] = None
+    code_version: Optional[str] = None
+    git_sha: Optional[str] = None
+    provenance: Optional[dict[str, Any]] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     created_at: datetime

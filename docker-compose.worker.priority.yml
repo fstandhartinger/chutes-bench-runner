@@ -4,10 +4,13 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        BENCH_RUNNER_GIT_SHA: ${BENCH_RUNNER_GIT_SHA:-}
     env_file:
       - .env.worker.priority
     volumes:
       - /var/lib/sandy/cache:/var/lib/sandy/cache
       - /var/lib/sandy/cache/chutes-bench-data:/var/lib/sandy/cache/chutes-bench-data
+      - /var/run/docker.sock:/var/run/docker.sock
     command: python -m app.worker.runner
     restart: unless-stopped

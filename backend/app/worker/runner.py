@@ -30,12 +30,14 @@ from app.services import auth_service
 from app.services.chutes_client import get_chutes_client
 from app.services.openrouter_client import get_openrouter_client
 from app.services.provider_preflight import preflight_provider
+from app.services.provenance_service import collect_worker_provenance
 from app.services.janus_client import get_janus_client
 from app.services.gremium_client import GremiumClient
 from app.services.rlm_client import RLMClient
 from app.services.inference_client import InferenceClient
 from app.services.run_service import (
     add_run_event,
+    bind_run_provenance,
     get_run,
     save_item_result,
     update_benchmark_status,
@@ -1244,6 +1246,27 @@ class BenchmarkWorker:
         )
         run_benchmarks = list(result.scalars().all())
 
+        # No benchmark work is allowed before the exact worker source, adapter
+        # files, runtime image and agent binaries are observed from outside and
+        # durably bound to the run. A retry on a different snapshot fails closed.
+        provenance = await collect_worker_provenance()
+        await bind_run_provenance(db, run.id, provenance)
+        run.provenance = provenance
+        run.git_sha = provenance["bench_runner_git_sha"]
+        run.code_version = provenance["code_version"]
+        await add_run_event(
+            db,
+            run.id,
+            "run_provenance_bound",
+            message="Bound run to immutable worker, adapter, runtime, and agent artifacts",
+            data={
+                "git_sha": run.git_sha,
+                "worker_image_digest": provenance.get("worker_image_digest"),
+                "sandy_runtime_image_digest": provenance.get("sandy_runtime_image_digest"),
+                "adapter_set_sha256": provenance.get("adapter_set_sha256"),
+            },
+        )
+
         total_score = 0.0
         completed_benchmarks = 0
         failed_benchmarks = 0
@@ -1571,6 +1594,7 @@ class BenchmarkWorker:
         adapter.run_benchmark_id = rb.id
         if isinstance(run.config, dict):
             adapter.run_config = run.config
+        adapter.run_provenance = dict(run.provenance or {})
 
         # Check if setup is required
         if adapter.requires_setup():

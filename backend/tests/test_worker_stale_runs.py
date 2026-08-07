@@ -24,6 +24,17 @@ from app.worker.runner import (
     _try_transition_stale_run,
 )
 
+TEST_RUN_PROVENANCE = {
+    "schema": "bench-runner-provenance-v1",
+    "bench_runner_git_sha": "a" * 40,
+    "code_version": "7" * 64,
+    "worker_image_digest": "sha256:" + "1" * 64,
+    "adapter_sha256": {"terminal_bench.py": "2" * 64},
+    "adapter_set_sha256": "3" * 64,
+    "sandy_runtime_image_digest": "sha256:" + "4" * 64,
+    "agent_binaries": {},
+}
+
 
 def test_compute_run_stale_seconds_extends_for_started_work() -> None:
     assert _compute_run_stale_seconds(900, 1800, True) == 1800
@@ -277,6 +288,10 @@ async def test_execute_run_fails_fast_on_zero_balance_probe(test_session, monkey
         expire_on_commit=False,
     )
     monkeypatch.setattr("app.worker.runner.async_session_maker", test_session_maker)
+    monkeypatch.setattr(
+        "app.worker.runner.collect_worker_provenance",
+        AsyncMock(return_value=TEST_RUN_PROVENANCE),
+    )
 
     fake_client = AsyncMock()
     fake_client.is_model_available.return_value = False
@@ -349,6 +364,10 @@ async def test_openrouter_preflight_failure_fails_run_before_items(
         expire_on_commit=False,
     )
     monkeypatch.setattr("app.worker.runner.async_session_maker", test_session_maker)
+    monkeypatch.setattr(
+        "app.worker.runner.collect_worker_provenance",
+        AsyncMock(return_value=TEST_RUN_PROVENANCE),
+    )
     fake_client = AsyncMock()
     fake_client.provider = "openrouter"
     fake_client.run_inference.side_effect = RuntimeError("provider unavailable")

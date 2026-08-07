@@ -404,9 +404,29 @@ Each benchmark adapter in `backend/app/benchmarks/adapters/` uses official datas
 | `swe_bench_pro` | **Yes** | Runs `docker pull` and `docker run` to execute test harness |
 | `terminal_bench_hard` | **Yes** | Uses `docker-compose` and `docker build/run` for task environments |
 
-**Implementation**: The `sandy_service.create_sandbox()` method accepts an `enable_docker_socket` parameter. Terminal-Bench and SWE-Bench adapters pass `enable_docker_socket=True` when creating sandboxes. All other benchmarks use the default (Docker socket disabled).
+**Implementation**: The `sandy_service.create_sandbox()` method accepts an
+`enable_docker_socket` parameter. SWE-Bench retains its existing socket model.
+Terminal-Bench uses the socket only during trusted pre-agent setup. Before the
+model starts, an outside worker helper removes the raw socket from the sandbox
+mount namespace, masks the shared Sandy cache with an empty read-only tmpfs,
+and installs a task-scoped gateway that permits `exec`, `ps`, `inspect`, and
+`logs` for one immutable task-container ID. Container creation, access to any
+other container, and task containers that mount the socket or shared cache are
+rejected. The item fails unless an outside-issued probe observes all of these
+properties from the agent namespace.
 
-**Security note**: Docker socket access allows sandbox code to escape isolation. The Hetzner server should not store sensitive credentials in locations accessible via Docker volume mounts.
+Terminal-Bench task archives are partitioned in trusted worker memory before
+anything enters Sandy. Tests are transferred directly to the task container
+only after the agent is proven stopped; reference solutions are never restored.
+The legacy `/opt/tb-holdout/<namespace>` path remains only as a negative read
+probe and must be inaccessible.
+
+Every newly executed run is bound before benchmark work to a full Git SHA,
+SHA-256 hashes for every adapter file, immutable worker and Sandy-runtime image
+IDs, and SHA-256 hashes for the runtime agent binaries. Production worker
+builds must pass `BENCH_RUNNER_GIT_SHA=$(git rev-parse HEAD)`; the worker fails
+closed if the build does not contain a full SHA or if a resumed run's snapshot
+changes.
 
 ## File Reference
 

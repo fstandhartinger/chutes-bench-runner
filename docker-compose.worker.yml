@@ -4,6 +4,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        BENCH_RUNNER_GIT_SHA: ${BENCH_RUNNER_GIT_SHA:-}
     env_file:
       - .env.worker
     cpus: ${WORKER_CONTAINER_CPU_LIMIT:-2.0}
@@ -15,6 +17,10 @@ services:
     volumes:
       - /var/lib/sandy/cache:/var/lib/sandy/cache
       - /var/lib/sandy/cache/chutes-bench-data:/var/lib/sandy/cache/chutes-bench-data
+      # Trusted worker-side Docker control. Terminal-Bench uses the socket only
+      # during pre-agent setup, then an outside helper removes it from the
+      # sandbox namespace and exposes only task-scoped exec through a gateway.
+      - /var/run/docker.sock:/var/run/docker.sock
     command: python -m app.worker.runner
     restart: unless-stopped
     # Surfaces a wedged main loop in `docker ps` even if the in-process watchdog

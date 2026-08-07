@@ -81,6 +81,7 @@ class BenchmarkAdapter(ABC):
         self.run_id: Optional[str] = None
         self.run_benchmark_id: Optional[str] = None
         self.run_config: dict[str, Any] = {}
+        self.run_provenance: dict[str, Any] = {}
 
     @abstractmethod
     def get_name(self) -> str:

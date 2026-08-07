@@ -11,15 +11,15 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from logging.handlers import RotatingFileHandler
 import math
 import os
 import shutil
 import subprocess
 import time
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from typing import Any, Optional
-from urllib.error import URLError, HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -529,6 +529,8 @@ def maybe_rebuild_and_recreate_workers(
         "--env-file",
         env_file,
         "build",
+        "--build-arg",
+        f"BENCH_RUNNER_GIT_SHA={head}",
         "worker",
     ]
     if not run_compose(build_cmd, logger, dry_run, timeout, cwd=repo_path):
