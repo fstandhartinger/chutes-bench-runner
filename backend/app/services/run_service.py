@@ -37,6 +37,15 @@ def _normalize_benchmark_names(selected: Optional[list[str]]) -> Optional[list[s
     return normalized or None
 
 
+def _run_provenance_lock_query(run_id: str):
+    """Lock only the benchmark_runs row, not its joined-eager model row."""
+    return (
+        select(BenchmarkRun)
+        .where(BenchmarkRun.id == run_id)
+        .with_for_update(of=BenchmarkRun)
+    )
+
+
 async def create_run(
     db: AsyncSession,
     model_id: str,
@@ -150,9 +159,11 @@ async def bind_run_provenance(
     provenance: dict[str, Any],
 ) -> None:
     """Bind a run to one immutable worker/runtime snapshot before execution."""
-    result = await db.execute(
-        select(BenchmarkRun).where(BenchmarkRun.id == run_id).with_for_update()
-    )
+    # BenchmarkRun.model is joined-eagerly loaded.  An unqualified FOR UPDATE
+    # therefore asks PostgreSQL to lock both benchmark_runs and the nullable
+    # side of the models LEFT JOIN, which PostgreSQL rejects before an item can
+    # start.  Scope the lock to the row whose provenance we are binding.
+    result = await db.execute(_run_provenance_lock_query(run_id))
     run = result.scalar_one_or_none()
     if run is None:
         raise ValueError(f"Run {run_id} not found")

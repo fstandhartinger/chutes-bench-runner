@@ -4,13 +4,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from app.models.benchmark import Benchmark
 from app.models.model import Model
 from app.models.run import BenchmarkRun, RunStatus
 from app.services import provenance_service
 from app.services.provenance_service import PROVENANCE_SCHEMA, ProvenanceError
-from app.services.run_service import bind_run_provenance
+from app.services.run_service import _run_provenance_lock_query, bind_run_provenance
 
 
 def _provenance(git_sha: str = "a" * 40) -> dict:
@@ -71,6 +72,16 @@ def test_invalid_embedded_git_sha_fails_closed(monkeypatch) -> None:
 
     with pytest.raises(ProvenanceError, match="full 40-character"):
         provenance_service._git_sha()
+
+
+def test_provenance_lock_targets_only_benchmark_run_row() -> None:
+    sql = str(
+        _run_provenance_lock_query("run-id").compile(
+            dialect=postgresql.dialect()
+        )
+    )
+
+    assert "FOR UPDATE OF benchmark_runs" in sql
 
 
 def test_actual_sandbox_agent_binary_must_match_run_snapshot(monkeypatch) -> None:
