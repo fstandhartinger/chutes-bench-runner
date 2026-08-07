@@ -36,6 +36,7 @@ from app.benchmarks.adapters.terminal_bench import (
     classify_agent_exit,
     classify_bare_failure,
 )
+from app.benchmarks.agent_evidence import retain_agent_evidence
 from app.benchmarks.agent_provider_config import (
     prepare_sandy_agent_launch,
     retain_sandy_agent_rollout,
@@ -167,6 +168,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []
+        self._item_observability: dict[str, dict[str, Any]] = {}
         self.sandy = SandyService()
 
     def get_name(self) -> str:
@@ -1148,6 +1150,140 @@ class DeepSWEAdapter(BenchmarkAdapter):
             or "codex"
         )
 
+    def _new_item_observability(self, item_id: str) -> dict[str, Any]:
+        state = {
+            "agent_invoked": False,
+            "agent_launch": None,
+            "rollout_retained": False,
+            "rollout_retention_error": None,
+            "retention_task": None,
+            "evidence": {
+                "status": "not_available",
+                "path": None,
+                "sha256": None,
+                "size_bytes": None,
+                "error": "agent was not started for this item",
+                "token_usage_samples": None,
+            },
+        }
+        self._item_observability[item_id] = state
+        return state
+
+    def _start_evidence_retention(self, item_id: str, sandbox_id: str) -> None:
+        state = self._item_observability[item_id]
+        if state.get("retention_task") is not None:
+            return
+        state["evidence"] = {
+            "status": "pending",
+            "path": None,
+            "sha256": None,
+            "size_bytes": None,
+            "error": None,
+            "token_usage_samples": None,
+        }
+        state["retention_task"] = asyncio.create_task(
+            retain_agent_evidence(
+                self.sandy,
+                sandbox_id,
+                run_id=getattr(self, "run_id", None),
+                benchmark_name=self.get_name(),
+                item_id=item_id,
+                require_rollout=True,
+            )
+        )
+
+    async def _finish_evidence_retention(self, item_id: str, sandbox_id: str) -> None:
+        """Archive stable rollout evidence before teardown without affecting scoring."""
+        state = self._item_observability.get(item_id)
+        if not state or not state.get("agent_invoked"):
+            return
+        if state.get("retention_task") is None:
+            # The agent stream can fail or be canceled while its process is
+            # still alive. Stop it before copying/archiving a stable final
+            # prefix, then mirror any alternate OpenRouter config home into
+            # the evidence paths consumed by retain_agent_evidence.
+            try:
+                await self.sandy.execute_command(
+                    sandbox_id,
+                    "if [ -f /workspace/.chutes/agent.pid ]; then "
+                    "kill -TERM $(cat /workspace/.chutes/agent.pid) 2>/dev/null || true; "
+                    "sleep 1; kill -KILL $(cat /workspace/.chutes/agent.pid) "
+                    "2>/dev/null || true; fi; "
+                    "test -f /workspace/.chutes/agent.done || "
+                    "echo 143 > /workspace/.chutes/agent.done",
+                    timeout_ms=10_000,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not stop DeepSWE agent before evidence retention",
+                    item_id=item_id,
+                    sandbox_id=sandbox_id,
+                    error=str(exc),
+                )
+            agent_launch = state.get("agent_launch")
+            if agent_launch is not None and not state.get("rollout_retained"):
+                try:
+                    await retain_sandy_agent_rollout(
+                        self.sandy, sandbox_id, agent_launch
+                    )
+                    state["rollout_retained"] = True
+                except Exception as exc:
+                    state["rollout_retention_error"] = (
+                        str(exc) or exc.__class__.__name__
+                    )
+                    logger.warning(
+                        "Could not retain DeepSWE rollout before evidence archive",
+                        item_id=item_id,
+                        sandbox_id=sandbox_id,
+                        error=state["rollout_retention_error"],
+                    )
+            self._start_evidence_retention(item_id, sandbox_id)
+        try:
+            state["evidence"] = await state["retention_task"]
+            state["evidence"]["rollout_retention_error"] = state.get(
+                "rollout_retention_error"
+            )
+        except BaseException as exc:
+            # This hook runs from the sandbox finalizer, including worker
+            # cancellation. Evidence failure must not replace a valid score.
+            state["evidence"] = {
+                "status": "failed",
+                "path": None,
+                "sha256": None,
+                "size_bytes": None,
+                "error": f"retention task failed: {exc}",
+                "token_usage_samples": None,
+                "rollout_retention_error": state.get("rollout_retention_error"),
+            }
+
+    def attach_item_observability(self, result: ItemResult) -> ItemResult:
+        state = self._item_observability.pop(result.item_id, None)
+        if not state:
+            return result
+        evidence = state["evidence"]
+        result.agent_evidence_status = evidence.get("status")
+        result.agent_evidence_path = evidence.get("path")
+        result.agent_evidence_sha256 = evidence.get("sha256")
+        result.agent_evidence_size_bytes = evidence.get("size_bytes")
+        result.agent_evidence_error = evidence.get("error")
+        result.token_usage_samples = evidence.get("token_usage_samples")
+        if result.metadata is None:
+            result.metadata = {}
+        result.metadata["agent_evidence"] = {
+            key: evidence.get(key)
+            for key in (
+                "status",
+                "path",
+                "sha256",
+                "size_bytes",
+                "error",
+                "sandbox_sources",
+                "retention_policy",
+                "rollout_retention_error",
+            )
+        }
+        return result
+
     def _excluded_result(
         self,
         *,
@@ -1177,6 +1313,12 @@ class DeepSWEAdapter(BenchmarkAdapter):
         )
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
+        """Evaluate and attach evidence for scored and excluded outcomes."""
+        self._new_item_observability(item_id)
+        result = await self._evaluate_item(item_id)
+        return self.attach_item_observability(result)
+
+    async def _evaluate_item(self, item_id: str) -> ItemResult:
         if not self._items:
             await self.preload()
         item = next((candidate for candidate in self._items if candidate["id"] == item_id), None)
@@ -1379,7 +1521,9 @@ class DeepSWEAdapter(BenchmarkAdapter):
                 agent=agent_name,
                 model=self.model_slug,
             )
+            self._item_observability[item_id]["agent_launch"] = agent_launch
             agent_started_at = time.monotonic()
+            self._item_observability[item_id]["agent_invoked"] = True
             agent_result = await self.sandy.run_agent(
                 sandbox_id,
                 agent=agent_name,
@@ -1440,14 +1584,23 @@ class DeepSWEAdapter(BenchmarkAdapter):
             usage_error: str | None = None
             try:
                 await retain_sandy_agent_rollout(self.sandy, sandbox_id, agent_launch)
-            except RuntimeError as exc:
-                usage_error = str(exc)
+                self._item_observability[item_id]["rollout_retained"] = True
+            except Exception as exc:
+                usage_error = str(exc) or exc.__class__.__name__
+                self._item_observability[item_id]["rollout_retention_error"] = (
+                    usage_error
+                )
             agent_usage = await collect_agent_usage(self.sandy, sandbox_id)
             if usage_error is None:
                 try:
                     validate_openrouter_agent_usage(agent_launch, agent_usage)
                 except RuntimeError as exc:
                     usage_error = str(exc)
+            # The CLI is proven stopped and alternate-home rollouts have been
+            # mirrored. Transfer the verified archive while patch collection
+            # and the separate verifier continue; the finalizer always awaits
+            # it before destroying the sandbox.
+            self._start_evidence_retention(item_id, sandbox_id)
             if usage_error:
                 return self._excluded_result(
                     item=item,
@@ -1663,21 +1816,24 @@ class DeepSWEAdapter(BenchmarkAdapter):
             )
         finally:
             if sandbox_id:
-                await TerminalBenchAdapter._cleanup_owned_task_containers(
-                    self,
-                    sandbox_id,
-                )
+                try:
+                    await self._finish_evidence_retention(item_id, sandbox_id)
+                finally:
+                    await TerminalBenchAdapter._cleanup_owned_task_containers(
+                        self,
+                        sandbox_id,
+                    )
 
-                def _remove_owned_images() -> None:
-                    client = docker.from_env()
-                    if verifier_image:
-                        with contextlib.suppress(Exception):
-                            client.images.remove(verifier_image, force=False)
-                    if image:
-                        # A shared source image is removed only when Docker proves
-                        # no concurrent task container still references it.
-                        with contextlib.suppress(Exception):
-                            client.images.remove(image, force=False)
+                    def _remove_owned_images() -> None:
+                        client = docker.from_env()
+                        if verifier_image:
+                            with contextlib.suppress(Exception):
+                                client.images.remove(verifier_image, force=False)
+                        if image:
+                            # A shared source image is removed only when Docker proves
+                            # no concurrent task container still references it.
+                            with contextlib.suppress(Exception):
+                                client.images.remove(image, force=False)
 
-                await asyncio.to_thread(_remove_owned_images)
-                await self.sandy.terminate_sandbox(sandbox_id)
+                    await asyncio.to_thread(_remove_owned_images)
+                    await self.sandy.terminate_sandbox(sandbox_id)

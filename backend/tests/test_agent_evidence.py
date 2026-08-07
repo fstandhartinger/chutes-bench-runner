@@ -67,6 +67,16 @@ def _bundle_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def _bundle_without_rollout() -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
+        output = b"agent stdout without a session\n"
+        info = tarfile.TarInfo("agent/combined-stdout-stderr.log")
+        info.size = len(output)
+        bundle.addfile(info, io.BytesIO(output))
+    return buffer.getvalue()
+
+
 class _FakeSandy:
     def __init__(self, bundle: bytes, *, expected_sha256: str | None = None):
         self.bundle = bundle
@@ -192,6 +202,31 @@ async def test_truncated_chunk_is_detected_before_hash_verification(
 
     assert result["status"] == "failed"
     assert "truncated evidence chunk" in result["error"]
+    assert not list(tmp_path.rglob("*.tar.gz"))
+    assert not list(tmp_path.rglob("*.partial"))
+
+
+@pytest.mark.asyncio
+async def test_required_rollout_rejects_log_only_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sandy = _FakeSandy(_bundle_without_rollout())
+    monkeypatch.setattr(
+        "app.benchmarks.agent_evidence.get_settings", lambda: _settings(tmp_path)
+    )
+
+    result = await retain_agent_evidence(
+        sandy,
+        "sandbox-without-rollout",
+        run_id="run-without-rollout",
+        benchmark_name="deepswe",
+        item_id="item-without-rollout",
+        require_rollout=True,
+    )
+
+    assert result["status"] == "failed"
+    assert result["path"] is None
+    assert "no agent rollout JSONL" in result["error"]
     assert not list(tmp_path.rglob("*.tar.gz"))
     assert not list(tmp_path.rglob("*.partial"))
 

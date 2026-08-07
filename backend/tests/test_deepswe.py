@@ -6,6 +6,7 @@ import inspect
 import io
 import tarfile
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -161,7 +162,7 @@ def test_item_timeout_covers_every_declared_phase(monkeypatch) -> None:
 
 
 def test_agent_never_receives_raw_docker_socket_or_verifier_archive() -> None:
-    evaluate_source = inspect.getsource(DeepSWEAdapter.evaluate_item)
+    evaluate_source = inspect.getsource(DeepSWEAdapter._evaluate_item)
     verifier_source = inspect.getsource(DeepSWEAdapter._stage_and_run_verifier)
 
     assert "_start_task_gateway" in evaluate_source
@@ -174,6 +175,108 @@ def test_agent_never_receives_raw_docker_socket_or_verifier_archive() -> None:
     assert "_upload_archive" not in verifier_source
     assert "self.sandy.write_file" not in verifier_source
     assert "docker.from_env" in verifier_source
+
+
+class _RetentionSandy:
+    def __init__(self):
+        self.commands: list[str] = []
+
+    async def execute_command(self, _sandbox_id, command, timeout_ms=None):
+        self.commands.append(command)
+        return {"exit_code": 0, "stdout": ""}
+
+
+@pytest.mark.asyncio
+async def test_excluded_path_mirrors_rollout_before_evidence_archive(monkeypatch) -> None:
+    calls = []
+
+    async def retain_rollout(_sandy, sandbox_id, launch):
+        calls.append(("rollout", sandbox_id, launch))
+
+    async def retain_evidence(_sandy, sandbox_id, **kwargs):
+        assert kwargs["require_rollout"] is True
+        calls.append(("evidence", sandbox_id, kwargs["item_id"]))
+        return {
+            "status": "retained",
+            "path": "/evidence/deepswe.tar.gz",
+            "sha256": "a" * 64,
+            "size_bytes": 123,
+            "error": None,
+            "token_usage_samples": {
+                "events_seen": 2,
+                "samples": [{"sequence": 1}, {"sequence": 2}],
+            },
+        }
+
+    monkeypatch.setattr(deepswe_module, "retain_sandy_agent_rollout", retain_rollout)
+    monkeypatch.setattr(deepswe_module, "retain_agent_evidence", retain_evidence)
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter.sandy = _RetentionSandy()
+    adapter.run_id = "run"
+    adapter._item_observability = {}
+    state = adapter._new_item_observability("task")
+    launch = SimpleNamespace(setup=object())
+    state.update(agent_invoked=True, agent_launch=launch)
+
+    await adapter._finish_evidence_retention("task", "sandbox")
+    result = adapter.attach_item_observability(
+        deepswe_module.ItemResult(
+            item_id="task",
+            score=0.0,
+            is_correct=False,
+            metadata={"exclusion_reason": "infrastructure_transport"},
+        )
+    )
+
+    assert calls == [
+        ("rollout", "sandbox", launch),
+        ("evidence", "sandbox", "task"),
+    ]
+    assert result.score == 0.0
+    assert result.metadata["exclusion_reason"] == "infrastructure_transport"
+    assert result.agent_evidence_status == "retained"
+    assert result.agent_evidence_sha256 == "a" * 64
+    assert result.agent_evidence_size_bytes == 123
+    assert [
+        sample["sequence"] for sample in result.token_usage_samples["samples"]
+    ] == [1, 2]
+
+
+def test_evidence_failure_is_recorded_without_changing_deepswe_score() -> None:
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter._item_observability = {
+        "task": {
+            "agent_invoked": True,
+            "evidence": {
+                "status": "failed",
+                "path": None,
+                "sha256": None,
+                "size_bytes": None,
+                "error": "SHA-256 mismatch",
+                "token_usage_samples": None,
+            },
+        }
+    }
+    scored = deepswe_module.ItemResult(item_id="task", score=1.0, is_correct=True)
+
+    result = adapter.attach_item_observability(scored)
+
+    assert result.score == 1.0
+    assert result.is_correct is True
+    assert result.error is None
+    assert result.agent_evidence_status == "failed"
+    assert result.agent_evidence_error == "SHA-256 mismatch"
+
+
+def test_deepswe_finalizer_waits_for_evidence_before_sandbox_teardown() -> None:
+    source = inspect.getsource(DeepSWEAdapter._evaluate_item)
+
+    assert source.index("_finish_evidence_retention") < source.index(
+        "_cleanup_owned_task_containers"
+    )
+    assert source.index("_finish_evidence_retention") < source.index(
+        "terminate_sandbox"
+    )
 
 
 def test_infrastructure_exclusions_do_not_hide_live_cli_crashes() -> None:

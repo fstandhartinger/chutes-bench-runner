@@ -463,6 +463,7 @@ async def retain_agent_evidence(
     run_id: str | None,
     benchmark_name: str,
     item_id: str,
+    require_rollout: bool = False,
 ) -> dict[str, Any]:
     """Retain one item's evidence without ever raising into the score path."""
     settings = get_settings()
@@ -521,12 +522,10 @@ async def retain_agent_evidence(
                     f"{corrupt_path} (sandbox={sandbox_sha256}, local={local_sha256})"
                 )
 
-            os.replace(partial_path, final_path)
-            partial_path = None
             sample_error = None
             try:
                 token_usage_samples = await asyncio.to_thread(
-                    read_token_usage_samples, final_path
+                    read_token_usage_samples, partial_path
                 )
             except Exception as exc:
                 sample_error = f"retained bundle token-series parse failed: {exc}"
@@ -536,6 +535,14 @@ async def retain_agent_evidence(
                     "error": sample_error,
                     "samples": [],
                 }
+            if require_rollout and not token_usage_samples.get("rollouts"):
+                raise RuntimeError(
+                    "evidence bundle contains no agent rollout JSONL; refusing "
+                    "to retain a plausible but unauditable archive"
+                )
+
+            os.replace(partial_path, final_path)
+            partial_path = None
             return {
                 "status": "retained",
                 "path": str(final_path),
