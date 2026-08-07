@@ -9,11 +9,12 @@ Uses the oolongbench/oolong-synth dataset from HuggingFace.
 This adapter loads the dataset once (cached on disk) and fetches items on demand,
 avoiding large in-memory caches for 100% runs.
 """
-import asyncio
 import ast
+import asyncio
 import os
 import re
 import time
+from datetime import date
 from typing import Any, AsyncIterator, Optional
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
@@ -24,6 +25,53 @@ logger = get_logger(__name__)
 
 # Total items in the oolong-synth test split (from dataset info)
 OOLONG_SYNTH_TOTAL_ITEMS = 5200
+OOLONG_SYNTH_REPO = "oolongbench/oolong-synth"
+# Pin the corrected 2026-06-20 release. Loading mutable `main` makes an item ID
+# name different text/answers after an upstream edit, which invalidates paired
+# runs and repeats even though every local run still looks deterministic.
+OOLONG_SYNTH_REVISION = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+OOLONG_SYNTH_SPLIT = "test"
+OOLONG_SYNTH_TEST_SHARDS = 41
+# At the pinned revision, shards 0..33 contain 127 rows and shards 34..40
+# contain 126. Keeping this mapping beside the immutable revision lets small
+# explicit samples range-read only their Parquet row groups instead of
+# downloading the full ~10 GB compressed test split before the first item.
+OOLONG_SYNTH_LARGE_SHARD_COUNT = 34
+OOLONG_SYNTH_LARGE_SHARD_ROWS = 127
+OOLONG_SYNTH_SMALL_SHARD_ROWS = 126
+
+
+_DATE_GOLD = re.compile(
+    r"^\s*\[?\s*datetime\.date\(\s*(\d{4})\s*,\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\)\s*\]?\s*$"
+)
+
+
+def _answer_type_name(answer_type: Any) -> str:
+    """Return the enum member used by the published OOLONG dataset.
+
+    The live dataset stores values such as ``ANSWER_TYPE.NUMERIC``. Older
+    adapter tests used ``NUMERIC``. Accept both spellings, but never silently
+    treat a numeric/date answer as a generic exact-match string.
+    """
+    return str(answer_type or "").rsplit(".", 1)[-1].upper()
+
+
+def _test_shard_location(item_index: int) -> tuple[int, int]:
+    """Map a global test row to its pinned Parquet shard and local row."""
+    if item_index < 0 or item_index >= OOLONG_SYNTH_TOTAL_ITEMS:
+        raise IndexError(item_index)
+    first_region = OOLONG_SYNTH_LARGE_SHARD_COUNT * OOLONG_SYNTH_LARGE_SHARD_ROWS
+    if item_index < first_region:
+        return (
+            item_index // OOLONG_SYNTH_LARGE_SHARD_ROWS,
+            item_index % OOLONG_SYNTH_LARGE_SHARD_ROWS,
+        )
+    remainder = item_index - first_region
+    return (
+        OOLONG_SYNTH_LARGE_SHARD_COUNT
+        + remainder // OOLONG_SYNTH_SMALL_SHARD_ROWS,
+        remainder % OOLONG_SYNTH_SMALL_SHARD_ROWS,
+    )
 
 
 def _normalize_answer(value: Any) -> str:
@@ -47,6 +95,10 @@ def _normalize_answer(value: Any) -> str:
             return str(value[0]).strip()
         return ", ".join(str(v).strip() for v in value)
     text = str(value).strip()
+    date_match = _DATE_GOLD.fullmatch(text)
+    if date_match:
+        year, month, day = (int(part) for part in date_match.groups())
+        return date(year, month, day).isoformat()
     # Cached items may already be the str() of a list.
     if len(text) >= 2 and text.startswith("[") and text.endswith("]"):
         try:
@@ -61,7 +113,7 @@ def _normalize_answer(value: Any) -> str:
 # Speaker/role labels a model prefixes an answer with when it has been reading a
 # dialogue transcript. Formatting, not content.
 _ROLE_PREFIX = re.compile(
-    r"^\s*(?:user|assistant|system|speaker|answer|final answer|a|q)\s*[:\-]\s*",
+    r"^\s*(?:user|assistant|system|speaker|answer|final answer|label|date|a|q)\s*[:\-]\s*",
     re.IGNORECASE,
 )
 # Wrapping decoration: quotes, backticks, markdown emphasis, brackets.
@@ -109,8 +161,10 @@ def _compute_numeric_score(expected: str, predicted: str) -> float:
     From RLM paper: "Numerical answers as score(ŷ)=0.75^|y-ŷ|"
     """
     try:
-        expected_num = float(expected)
-        predicted_num = float(predicted.strip())
+        # Released OOLONG-synth parses these count answers with int(), so a
+        # decimal-looking string such as "12.0" is not silently upgraded.
+        expected_num = int(expected)
+        predicted_num = int(predicted.strip())
         diff = abs(expected_num - predicted_num)
         return 0.75 ** diff
     except (ValueError, TypeError):
@@ -118,15 +172,69 @@ def _compute_numeric_score(expected: str, predicted: str) -> float:
 
 
 def _is_exact_match(expected: str, predicted: str) -> bool:
-    """Check for exact match (case-insensitive, stripped)."""
-    return expected.strip().lower() == predicted.strip().lower()
+    """Check the released scorer's stripped, case-sensitive exact match."""
+    return expected.strip() == predicted.strip()
+
+
+_COMPARISON_PHRASES = (
+    "same frequency as",
+    "same frequency",
+    "more common than",
+    "less common than",
+    "more common",
+    "less common",
+)
+
+
+def _comparison_relation(value: str) -> str:
+    """Canonicalize the relation exactly as OOLONG's released parser does."""
+    lowered = value.strip().lower()
+    for phrase in _COMPARISON_PHRASES:
+        if phrase in lowered:
+            if phrase.startswith("more common"):
+                return "more common"
+            if phrase.startswith("less common"):
+                return "less common"
+            return "same frequency"
+    return lowered
+
+
+def _parse_date(value: str) -> Optional[date]:
+    text = value.strip()
+    gold_match = _DATE_GOLD.fullmatch(text)
+    if gold_match:
+        year, month, day = (int(part) for part in gold_match.groups())
+        return date(year, month, day)
+    try:
+        from dateutil import parser as date_parser
+
+        return date_parser.parse(text, fuzzy=False).date()
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def score_answer(expected: str, predicted: str, answer_type: str) -> tuple[float, bool]:
-    """OOLONG's own metric: 0.75^|y-y'| for numerics, exact match otherwise."""
-    if answer_type == "NUMERIC":
+    """Apply the released OOLONG-synth metric and deterministic answer parser.
+
+    Numeric answers receive ``0.75 ** abs(gold - prediction)``. Dates are
+    parsed before comparison, comparison answers are reduced to the named
+    relation, and the remaining answer types use stripped, case-sensitive exact
+    match.
+    ``is_correct`` means exact credit; numeric near misses retain partial score
+    but are not mislabeled as correct.
+    """
+    kind = _answer_type_name(answer_type)
+    if kind == "NUMERIC":
         score = _compute_numeric_score(expected, predicted)
-        return score, score >= 0.75  # correct if within ~1 unit
+        return score, score == 1.0
+    if kind == "DATE":
+        expected_date = _parse_date(expected)
+        predicted_date = _parse_date(predicted)
+        correct = expected_date is not None and expected_date == predicted_date
+        return (1.0 if correct else 0.0), correct
+    if kind == "COMPARISON":
+        correct = _comparison_relation(expected) == _comparison_relation(predicted)
+        return (1.0 if correct else 0.0), correct
     correct = _is_exact_match(expected, predicted)
     return (1.0 if correct else 0.0), correct
 
@@ -209,6 +317,10 @@ class OolongAdapter(BenchmarkAdapter):
         """Load the dataset once so items can be fetched by index."""
         if self._preloaded:
             return
+        if self._target_item_ids and len(self._target_item_ids) <= self._cache_limit:
+            await asyncio.to_thread(self._preload_targeted_parquet_rows)
+            self._preloaded = True
+            return
         from datasets import load_dataset
 
         target_count = len(self._target_item_ids) if self._target_item_ids else None
@@ -220,10 +332,11 @@ class OolongAdapter(BenchmarkAdapter):
             )
             self._dataset = await asyncio.to_thread(
                 load_dataset,
-                "oolongbench/oolong-synth",
-                split="test",
+                OOLONG_SYNTH_REPO,
+                split=OOLONG_SYNTH_SPLIT,
                 token=hf_token,
                 streaming=True,
+                revision=OOLONG_SYNTH_REVISION,
             )
         else:
             logger.info(
@@ -232,12 +345,103 @@ class OolongAdapter(BenchmarkAdapter):
             )
             self._dataset = await asyncio.to_thread(
                 load_dataset,
-                "oolongbench/oolong-synth",
-                split="test",
+                OOLONG_SYNTH_REPO,
+                split=OOLONG_SYNTH_SPLIT,
                 token=hf_token,
                 keep_in_memory=False,
+                revision=OOLONG_SYNTH_REVISION,
             )
         self._preloaded = True
+
+    @staticmethod
+    def _parquet_url(shard: int) -> str:
+        return (
+            f"https://huggingface.co/datasets/{OOLONG_SYNTH_REPO}/resolve/"
+            f"{OOLONG_SYNTH_REVISION}/data/test-{shard:05d}-of-"
+            f"{OOLONG_SYNTH_TEST_SHARDS:05d}.parquet"
+        )
+
+    def _preload_targeted_parquet_rows(self) -> None:
+        """Range-read only row groups containing the explicitly selected rows.
+
+        `datasets.load_dataset` materializes every shard even for two item IDs;
+        the pinned test split is roughly 10 GB compressed. Parquet row groups
+        retain the exact source bytes while keeping this small benchmark sample
+        practical. No viewer API or mutable branch is involved.
+        """
+        import fsspec
+        import pyarrow.parquet as pq
+
+        targets_by_shard: dict[int, dict[int, int]] = {}
+        for item_index in sorted(self._target_item_ids or set()):
+            shard, local_row = _test_shard_location(item_index)
+            targets_by_shard.setdefault(shard, {})[local_row] = item_index
+
+        columns = [
+            "context_window_text",
+            "question",
+            "answer",
+            "answer_type",
+            "task",
+            "task_group",
+            "context_len",
+            "dataset",
+            "num_labels",
+            "context_window_id",
+        ]
+        filesystem = fsspec.filesystem("http", block_size=1024 * 1024)
+        for shard, local_targets in targets_by_shard.items():
+            url = self._parquet_url(shard)
+            with filesystem.open(
+                url,
+                "rb",
+                block_size=1024 * 1024,
+                cache_type="readahead",
+            ) as source:
+                parquet = pq.ParquetFile(source)
+                cursor = 0
+                remaining = dict(local_targets)
+                for row_group in range(parquet.num_row_groups):
+                    row_count = parquet.metadata.row_group(row_group).num_rows
+                    selected = {
+                        local_row: item_index
+                        for local_row, item_index in remaining.items()
+                        if cursor <= local_row < cursor + row_count
+                    }
+                    if selected:
+                        rows = parquet.read_row_group(
+                            row_group, columns=columns
+                        ).to_pylist()
+                        for local_row, item_index in selected.items():
+                            raw_item = rows[local_row - cursor]
+                            self._item_cache[str(item_index)] = {
+                                "id": str(item_index),
+                                "context_window_text": raw_item["context_window_text"],
+                                "question": raw_item["question"],
+                                "answer": _normalize_answer(raw_item["answer"]),
+                                "answer_type": raw_item.get("answer_type", ""),
+                                "task": raw_item.get("task", ""),
+                                "task_group": raw_item.get("task_group", ""),
+                                "context_len": raw_item.get("context_len", 0),
+                                "dataset": raw_item.get("dataset", ""),
+                                "num_labels": raw_item.get("num_labels", 0),
+                                "context_window_id": raw_item.get("context_window_id"),
+                                "dataset_repo": OOLONG_SYNTH_REPO,
+                                "dataset_revision": OOLONG_SYNTH_REVISION,
+                                "dataset_split": OOLONG_SYNTH_SPLIT,
+                                "dataset_transport": "pinned_parquet_range_read",
+                                "dataset_shard": shard,
+                                "dataset_shard_row": local_row,
+                            }
+                            remaining.pop(local_row)
+                    cursor += row_count
+                    if not remaining:
+                        break
+                if remaining:
+                    missing = sorted(remaining.values())
+                    raise RuntimeError(
+                        f"Pinned OOLONG shard {shard} did not contain item(s) {missing}"
+                    )
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         """Yield all item IDs."""
@@ -256,14 +460,11 @@ class OolongAdapter(BenchmarkAdapter):
         We avoid heavy dataset work here so the worker can record sampled items
         before preloading the dataset on demand.
         """
-        total_items = OOLONG_SYNTH_TOTAL_ITEMS
-
-        # Generate all item IDs
-        all_item_ids = [str(i) for i in range(total_items)]
-
-        # Get the subset we'll evaluate
-        items_to_evaluate = self.get_deterministic_subset(
-            all_item_ids, subset_pct, seed, subset_count
+        # Use the base selector so explicit item_ids work. The previous override
+        # bypassed that path, silently replacing requested paired items with a
+        # hash sample.
+        total_items, items_to_evaluate = await super().get_items_for_evaluation(
+            subset_pct, seed, subset_count
         )
 
         # Track target items for preloading and item access.
@@ -280,6 +481,9 @@ class OolongAdapter(BenchmarkAdapter):
             return cached
         if not self._preloaded:
             await self.preload()
+        cached = self._item_cache.get(item_id)
+        if cached is not None:
+            return cached
         if self._dataset is None:
             return None
 
@@ -313,6 +517,9 @@ class OolongAdapter(BenchmarkAdapter):
                         "context_len": raw_item.get("context_len", 0),
                         "dataset": raw_item.get("dataset", ""),
                         "num_labels": raw_item.get("num_labels", 0),
+                        "dataset_repo": OOLONG_SYNTH_REPO,
+                        "dataset_revision": OOLONG_SYNTH_REVISION,
+                        "dataset_split": OOLONG_SYNTH_SPLIT,
                     }
                     if self._cache_limit > 0:
                         if len(self._item_cache) >= self._cache_limit:
@@ -333,6 +540,9 @@ class OolongAdapter(BenchmarkAdapter):
                 "context_len": item.get("context_len", 0),
                 "dataset": item.get("dataset", ""),
                 "num_labels": item.get("num_labels", 0),
+                "dataset_repo": OOLONG_SYNTH_REPO,
+                "dataset_revision": OOLONG_SYNTH_REVISION,
+                "dataset_split": OOLONG_SYNTH_SPLIT,
             }
 
         item = await asyncio.to_thread(_load_item)
@@ -426,7 +636,9 @@ class OolongAdapter(BenchmarkAdapter):
                 "task_group": item["task_group"],
                 "answer_type": answer_type,
                 "context_len": item["context_len"],
-                "extracted_answer": extracted_answer,
+                "dataset_repo": item["dataset_repo"],
+                "dataset_revision": item["dataset_revision"],
+                "dataset_split": item["dataset_split"],
             }
 
             return ItemResult(
@@ -476,6 +688,8 @@ class OolongAdapter(BenchmarkAdapter):
         by_context_len: dict[str, list[ItemResult]] = {}
 
         for result in results:
+            if (result.metadata or {}).get("exclusion_reason"):
+                continue
             if result.score is not None:
                 scores.append(result.score)
             if result.metadata:
@@ -514,7 +728,7 @@ class OolongAdapter(BenchmarkAdapter):
             correct = sum(1 for r in type_results if r.is_correct)
             total = len(type_results)
             # For numeric, use average score instead
-            if answer_type == "NUMERIC":
+            if _answer_type_name(answer_type) == "NUMERIC":
                 avg_score = sum(r.score or 0.0 for r in type_results) / total if total > 0 else 0.0
                 metrics[f"avg_score_{answer_type}"] = avg_score
             else:
