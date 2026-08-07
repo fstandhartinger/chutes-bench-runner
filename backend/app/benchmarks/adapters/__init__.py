@@ -17,6 +17,7 @@ from app.benchmarks.adapters.terminal_bench import (
 )
 from app.benchmarks.adapters.tau_bench import TauBenchTelecomAdapter
 from app.benchmarks.adapters.swe_bench import SWEBenchProAdapter
+from app.benchmarks.adapters.swe_bench_verified import SWEBenchVerifiedAdapter
 from app.benchmarks.adapters.affine_envs import AffineEnvAdapter
 from app.benchmarks.adapters.aa_omniscience import AAOmniscienceAdapter
 from app.benchmarks.adapters.critpt import CritPtAdapter
@@ -46,6 +47,7 @@ __all__ = [
     "TerminalBenchHardAdapter",
     "TauBenchTelecomAdapter",
     "SWEBenchProAdapter",
+    "SWEBenchVerifiedAdapter",
     "AffineEnvAdapter",
     "AAOmniscienceAdapter",
     "CritPtAdapter",
@@ -58,7 +60,6 @@ __all__ = [
     "DeepResearchBenchAdapter",
     "DeepSWEAdapter",
 ]
-
 
 
 

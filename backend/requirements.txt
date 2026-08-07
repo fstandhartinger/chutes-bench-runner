@@ -23,6 +23,7 @@ langdetect>=1.0.9
 # Benchmarks (for dataset loading)
 datasets>=2.16.0
 huggingface-hub>=0.20.0
+swebench==4.1.0
 absl-py>=2.1.0
 h5py>=3.10.0
 immutabledict>=4.2.0

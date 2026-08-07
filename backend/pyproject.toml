@@ -38,6 +38,7 @@ benchmarks = [
     "absl-py>=2.1.0",
     "addict>=2.4.0",
     "datasets>=2.16.0",
+    "swebench==4.1.0",
     "deepdiff>=7.0.1",
     "docstring-parser>=0.16",
     "transformers>=4.36.0",
