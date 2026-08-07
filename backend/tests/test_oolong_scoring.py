@@ -155,3 +155,21 @@ async def test_explicit_agentic_item_ids_are_not_replaced_by_hash_sampling():
 )
 def test_pinned_test_shard_location(item_index, expected):
     assert _test_shard_location(item_index) == expected
+
+
+@pytest.mark.asyncio
+async def test_preload_reads_explicit_ids_before_worker_selection(monkeypatch):
+    adapter = OolongAdapter(client=object(), model_slug="test")
+    adapter.run_config = {"oolong_agentic": {"item_ids": ["803", "804"]}}
+    adapter.get_name = lambda: "oolong_agentic"
+    called = []
+
+    def targeted_preload():
+        called.append(set(adapter._target_item_ids or set()))
+
+    monkeypatch.setattr(adapter, "_preload_targeted_parquet_rows", targeted_preload)
+
+    await adapter.preload()
+
+    assert called == [{803, 804}]
+    assert adapter._preloaded is True

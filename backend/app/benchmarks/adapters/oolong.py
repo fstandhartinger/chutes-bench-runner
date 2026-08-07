@@ -317,6 +317,27 @@ class OolongAdapter(BenchmarkAdapter):
         """Load the dataset once so items can be fetched by index."""
         if self._preloaded:
             return
+        # The worker deliberately preloads before it calls
+        # get_items_for_evaluation(). Recover explicit paired IDs from the run
+        # config here as well, or a two-item run takes the full-dataset path.
+        if not self._target_item_ids:
+            config = getattr(self, "run_config", None) or {}
+            merged: dict[str, Any] = {}
+            for key in (self.get_name().rsplit("_", 1)[0], self.get_name()):
+                candidate = config.get(key) or {}
+                if isinstance(candidate, dict):
+                    merged.update(candidate)
+            requested = merged.get("item_ids")
+            if requested:
+                selected = {int(item_id) for item_id in requested}
+                invalid = sorted(
+                    item_id
+                    for item_id in selected
+                    if item_id < 0 or item_id >= OOLONG_SYNTH_TOTAL_ITEMS
+                )
+                if invalid:
+                    raise ValueError(f"Unknown OOLONG item IDs: {invalid}")
+                self._target_item_ids = selected
         if self._target_item_ids and len(self._target_item_ids) <= self._cache_limit:
             await asyncio.to_thread(self._preload_targeted_parquet_rows)
             self._preloaded = True
