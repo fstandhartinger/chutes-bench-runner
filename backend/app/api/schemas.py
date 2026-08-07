@@ -200,6 +200,12 @@ class ItemResultResponse(APIModel):
     latency_ms: Optional[int] = None
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
+    agent_evidence_status: Optional[str] = None
+    agent_evidence_path: Optional[str] = None
+    agent_evidence_sha256: Optional[str] = None
+    agent_evidence_size_bytes: Optional[int] = None
+    agent_evidence_error: Optional[str] = None
+    token_usage_samples: Optional[dict[str, Any]] = None
     error: Optional[str] = None
     test_code: Optional[str] = None
     item_metadata: Optional[dict[str, Any]] = None

@@ -463,6 +463,12 @@ class BenchmarkWorker:
                         latency_ms=result.latency_ms,
                         input_tokens=result.input_tokens,
                         output_tokens=result.output_tokens,
+                        agent_evidence_status=result.agent_evidence_status,
+                        agent_evidence_path=result.agent_evidence_path,
+                        agent_evidence_sha256=result.agent_evidence_sha256,
+                        agent_evidence_size_bytes=result.agent_evidence_size_bytes,
+                        agent_evidence_error=result.agent_evidence_error,
+                        token_usage_samples=result.token_usage_samples,
                         error=result.error,
                         test_code=result.test_code,
                         item_metadata=result.metadata,
@@ -1462,8 +1468,10 @@ class BenchmarkWorker:
             return None
 
         # Allow adapters to consume run-level config overrides.
+        adapter.run_id = run.id
+        adapter.run_benchmark_id = rb.id
         if isinstance(run.config, dict):
-            setattr(adapter, "run_config", run.config)
+            adapter.run_config = run.config
 
         # Check if setup is required
         if adapter.requires_setup():
@@ -1541,6 +1549,12 @@ class BenchmarkWorker:
                         latency_ms=row.latency_ms,
                         input_tokens=row.input_tokens,
                         output_tokens=row.output_tokens,
+                        agent_evidence_status=row.agent_evidence_status,
+                        agent_evidence_path=row.agent_evidence_path,
+                        agent_evidence_sha256=row.agent_evidence_sha256,
+                        agent_evidence_size_bytes=row.agent_evidence_size_bytes,
+                        agent_evidence_error=row.agent_evidence_error,
+                        token_usage_samples=row.token_usage_samples,
                         error=row.error,
                         test_code=row.test_code,
                         metadata=row.item_metadata,
@@ -1740,6 +1754,12 @@ class BenchmarkWorker:
                     except Exception as exc:
                         detail = str(exc) or exc.__class__.__name__
                         result = ItemResult(item_id=item_id, error=detail)
+
+                    # Terminal-style adapters retain evidence in their sandbox
+                    # finalizer. This second hook is what preserves it when the
+                    # worker, rather than the adapter, constructs the result
+                    # after an outer timeout or exception.
+                    result = adapter.attach_item_observability(result)
 
                     if result.metadata is None:
                         result.metadata = {}

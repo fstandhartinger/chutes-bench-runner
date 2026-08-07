@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Optional
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, JSON
+from sqlalchemy import JSON, BigInteger, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -127,6 +127,12 @@ class BenchmarkItemResult(Base):
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    agent_evidence_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    agent_evidence_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    agent_evidence_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    agent_evidence_size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    agent_evidence_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    token_usage_samples: Mapped[Optional[dict]] = mapped_column(JSON_TYPE, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     test_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     item_metadata: Mapped[Optional[dict]] = mapped_column(JSON_TYPE, nullable=True)

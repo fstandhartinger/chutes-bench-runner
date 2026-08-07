@@ -23,6 +23,12 @@ class ItemResult:
     latency_ms: Optional[int] = None
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
+    agent_evidence_status: Optional[str] = None
+    agent_evidence_path: Optional[str] = None
+    agent_evidence_sha256: Optional[str] = None
+    agent_evidence_size_bytes: Optional[int] = None
+    agent_evidence_error: Optional[str] = None
+    token_usage_samples: Optional[dict[str, Any]] = None
     error: Optional[str] = None
     test_code: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
@@ -72,6 +78,9 @@ class BenchmarkAdapter(ABC):
         self.judge_client = judge_client or client
         self.model_slug = model_slug
         self._items_cache: Optional[list[str]] = None
+        self.run_id: Optional[str] = None
+        self.run_benchmark_id: Optional[str] = None
+        self.run_config: dict[str, Any] = {}
 
     @abstractmethod
     def get_name(self) -> str:
@@ -148,6 +157,15 @@ class BenchmarkAdapter(ABC):
     async def cleanup(self) -> None:
         """Cleanup any resources allocated by the adapter."""
         return None
+
+    def attach_item_observability(self, result: ItemResult) -> ItemResult:
+        """Attach adapter-owned evidence collected during an item.
+
+        The worker calls this after normal returns, exceptions, and its outer
+        timeout. Most adapters have no out-of-band evidence, so the default is
+        intentionally a no-op.
+        """
+        return result
 
     async def get_items_for_evaluation(
         self,

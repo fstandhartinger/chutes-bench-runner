@@ -26,6 +26,7 @@ from app.benchmarks.adapters.terminal_bench_identity import (
     TERMINAL_BENCH_HARD,
     TerminalBenchSpec,
 )
+from app.benchmarks.agent_evidence import retain_agent_evidence
 from app.benchmarks.agent_usage import collect_agent_usage
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
@@ -193,6 +194,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []
+        self._item_observability: dict[str, dict[str, Any]] = {}
         self.sandy = SandyService()
 
     def get_name(self) -> str:
@@ -1144,6 +1146,115 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
     async def _collect_agent_usage(self, sandbox_id: str) -> dict:
         return await collect_agent_usage(self.sandy, sandbox_id)
 
+    def _new_item_observability(self, item_id: str) -> dict[str, Any]:
+        state = {
+            "agent_invoked": False,
+            "retention_task": None,
+            "evidence": {
+                "status": "not_available",
+                "path": None,
+                "sha256": None,
+                "size_bytes": None,
+                "error": "agent was not started for this item",
+                "token_usage_samples": None,
+            },
+        }
+        self._item_observability[item_id] = state
+        return state
+
+    def _start_evidence_retention(self, item_id: str, sandbox_id: str) -> None:
+        state = self._item_observability[item_id]
+        if state.get("retention_task") is not None:
+            return
+        state["evidence"] = {
+            "status": "pending",
+            "path": None,
+            "sha256": None,
+            "size_bytes": None,
+            "error": None,
+            "token_usage_samples": None,
+        }
+        state["retention_task"] = asyncio.create_task(
+            retain_agent_evidence(
+                self.sandy,
+                sandbox_id,
+                run_id=getattr(self, "run_id", None),
+                benchmark_name=self.get_name(),
+                item_id=item_id,
+            )
+        )
+
+    async def _finish_evidence_retention(self, item_id: str, sandbox_id: str) -> None:
+        """Finish evidence collection before teardown, isolated from scoring."""
+        state = self._item_observability.get(item_id)
+        if not state or not state.get("agent_invoked"):
+            return
+        if state.get("retention_task") is None:
+            # run_agent can fail or be canceled after Sandy launched the
+            # process but before it returned its event list. Stop that process
+            # before archiving so the retained files are a stable final prefix.
+            try:
+                await self.sandy.execute_command(
+                    sandbox_id,
+                    "if [ -f /workspace/.chutes/agent.pid ]; then "
+                    "kill -TERM $(cat /workspace/.chutes/agent.pid) 2>/dev/null || true; "
+                    "sleep 1; kill -KILL $(cat /workspace/.chutes/agent.pid) "
+                    "2>/dev/null || true; fi; "
+                    "test -f /workspace/.chutes/agent.done || "
+                    "echo 143 > /workspace/.chutes/agent.done",
+                    timeout_ms=10_000,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not stop agent before evidence retention",
+                    item_id=item_id,
+                    sandbox_id=sandbox_id,
+                    error=str(exc),
+                )
+            self._start_evidence_retention(item_id, sandbox_id)
+
+        task = state.get("retention_task")
+        try:
+            state["evidence"] = await task
+        except BaseException as exc:
+            # This hook runs from a sandbox finalizer, including after the
+            # worker cancels an item. Evidence may fail; the score path may not.
+            state["evidence"] = {
+                "status": "failed",
+                "path": None,
+                "sha256": None,
+                "size_bytes": None,
+                "error": f"retention task failed: {exc}",
+                "token_usage_samples": None,
+            }
+
+    def attach_item_observability(self, result: ItemResult) -> ItemResult:
+        state = self._item_observability.pop(result.item_id, None)
+        if not state:
+            return result
+        evidence = state["evidence"]
+        result.agent_evidence_status = evidence.get("status")
+        result.agent_evidence_path = evidence.get("path")
+        result.agent_evidence_sha256 = evidence.get("sha256")
+        result.agent_evidence_size_bytes = evidence.get("size_bytes")
+        result.agent_evidence_error = evidence.get("error")
+        result.token_usage_samples = evidence.get("token_usage_samples")
+        if result.metadata is None:
+            result.metadata = {}
+        result.metadata["agent_evidence"] = {
+            key: evidence.get(key)
+            for key in (
+                "status",
+                "path",
+                "sha256",
+                "size_bytes",
+                "error",
+                "sandbox_sources",
+                "retention_policy",
+            )
+        }
+        return result
+
     @staticmethod
     def _parse_harbor_reward(raw_reward: str) -> Optional[float]:
         """Parse the scalar reward emitted by a Harbor verifier."""
@@ -1223,6 +1334,12 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
         }
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
+        """Evaluate and attach evidence even when the scored result is a failure."""
+        self._new_item_observability(item_id)
+        result = await self._evaluate_item(item_id)
+        return self.attach_item_observability(result)
+
+    async def _evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single Terminal-Bench item."""
         if not self._items:
             await self.preload()
@@ -1388,6 +1505,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                         or os.getenv("TERMINAL_BENCH_AGENT")
                         or "codex"
                     )
+                    self._item_observability[item_id]["agent_invoked"] = True
                     agent_result = await self.sandy.run_agent(
                         sandbox_id,
                         agent=agent_name,
@@ -1462,6 +1580,12 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                                 ),
                             },
                         )
+
+                    # The agent is now proven stopped, so its rollout and
+                    # combined stdout/stderr are stable. Prepare/compress/
+                    # transfer while the verifier runs. The finalizer waits
+                    # before sandbox deletion; failure never changes scoring.
+                    self._start_evidence_retention(item_id, sandbox_id)
 
                     agent_events = agent_result.get("events") or []
                     agent_output = next(
@@ -1803,6 +1927,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                             sandbox_id, f"docker rmi -f {stale} 2>/dev/null || true"
                         )
             finally:
+                await self._finish_evidence_retention(item_id, sandbox_id)
                 await self.sandy.terminate_sandbox(sandbox_id)
 
         except Exception as e:

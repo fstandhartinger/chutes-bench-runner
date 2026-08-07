@@ -121,6 +121,12 @@ export interface ItemResult {
   latency_ms?: number;
   input_tokens?: number;
   output_tokens?: number;
+  agent_evidence_status?: string;
+  agent_evidence_path?: string;
+  agent_evidence_sha256?: string;
+  agent_evidence_size_bytes?: number;
+  agent_evidence_error?: string;
+  token_usage_samples?: Record<string, unknown>;
   error?: string;
   item_metadata?: Record<string, unknown>;
   test_code?: string;

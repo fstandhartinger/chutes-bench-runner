@@ -121,6 +121,21 @@ class Settings(BaseSettings):
     # Benchmark data cache
     bench_data_dir: str = "/tmp/chutes-bench-data"
 
+    # CLI-agent evidence. The production worker bind-mounts /var/lib/sandy/cache
+    # from the runner host, so this path survives worker and sandbox teardown.
+    # The caps are deliberately enforced in-process before allocating an
+    # artifact: an ENOSPC during scoring would itself become a false score zero.
+    agent_evidence_dir: str = "/var/lib/sandy/cache/chutes-bench-evidence"
+    agent_evidence_max_item_bytes: int = 64 * 1024 * 1024
+    agent_evidence_max_total_bytes: int = 5 * 1024 * 1024 * 1024
+    agent_evidence_max_age_days: int = 14
+    agent_evidence_min_free_bytes: int = 2 * 1024 * 1024 * 1024
+    agent_evidence_transfer_timeout_seconds: int = 180
+    # spawn_smoke.sh established that one large exec response is silently
+    # truncated. Keep this below Sandy's response cap and validate every chunk.
+    agent_evidence_chunk_bytes: int = 180_000
+    agent_evidence_chunk_concurrency: int = 4
+
     # K2 Vendor Verifier (K2VV)
     k2vv_dataset_url: str = "https://statics.moonshot.cn/k2vv/tool-calls.tar.gz"
     k2vv_reference_model: str = "kimi-k2-0905-preview"
