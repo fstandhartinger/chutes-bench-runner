@@ -8,11 +8,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-COPY pyproject.toml .
-COPY README.md .
-RUN pip install --no-cache-dir -e ".[benchmarks]"
-RUN pip install --no-cache-dir "docker>=7.1.0" "psycopg2-binary>=2.9.9"
+# Install the exact dependency set resolved from requirements.txt.  The
+# checksum manifest makes source/lock drift a build error instead of silently
+# invoking pip's resolver again.
+COPY requirements.txt requirements.lock requirements.lock.sha256 ./
+RUN sha256sum --check requirements.lock.sha256 \
+    && pip install --no-cache-dir --require-hashes -r requirements.lock
 
 ARG BENCH_RUNNER_GIT_SHA=""
 ENV BENCH_RUNNER_GIT_SHA=${BENCH_RUNNER_GIT_SHA}
@@ -23,7 +24,6 @@ COPY . .
 
 # Run migrations and start server
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
-
 
 
 
