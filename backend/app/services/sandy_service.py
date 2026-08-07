@@ -36,6 +36,7 @@ class SandyService:
     async def create_sandbox(
         self,
         enable_docker_socket: bool = False,
+        enable_shared_cache: bool = True,
         priority: int = 3,  # LOW priority for batch benchmark jobs
         preemptable: bool = True,  # Can be terminated under memory pressure
         requires_agent: bool = False,
@@ -47,6 +48,8 @@ class SandyService:
             enable_docker_socket: If True, the sandbox will have access to the Docker socket.
                                   This is required for benchmarks that need to run Docker commands
                                   (e.g., Terminal-Bench, SWE-Bench). Disabled by default for security.
+            enable_shared_cache: If False, the sandbox is created without Sandy's host cache
+                                 bind mount. Use this for integrity-sensitive benchmark agents.
             priority: Sandbox priority level (0=CRITICAL, 1=HIGH, 2=NORMAL, 3=LOW).
                       Defaults to 3 (LOW) for batch benchmark jobs.
             preemptable: If True, sandbox can be terminated under memory pressure.
@@ -86,6 +89,8 @@ class SandyService:
             payload["timeoutMinutes"] = int(timeout_minutes)
         if enable_docker_socket:
             payload["enableDockerSocket"] = True
+        if not enable_shared_cache:
+            payload["enableSharedCache"] = False
         if (enable_docker_socket or requires_agent) and self.docker_upstream:
             payload["upstream"] = self.docker_upstream
         for attempt in range(1, 4):

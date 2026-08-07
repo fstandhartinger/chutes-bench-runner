@@ -1134,7 +1134,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
         sandbox_id: str,
         container_name: str,
     ) -> dict[str, Any]:
-        """Mask agent-readable host mounts and expose only task-scoped Docker exec."""
+        """Verify creation-time mount isolation and expose task-scoped Docker exec."""
         ns = f"s{sandbox_id[:12]}".lower()
         gateway_name = f"tbgw_{ns}"
         token = secrets.token_hex(32)
@@ -1143,6 +1143,11 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             client = docker.from_env()
             sandbox = sandbox_container(sandbox_id)
             task = client.containers.get(container_name)
+            for mount in sandbox.attrs.get("Mounts") or []:
+                if _mount_exposes_sensitive_host_path(mount):
+                    raise RuntimeError(
+                        "sandbox exposes the Docker socket or shared Sandy cache"
+                    )
             labels = (task.attrs.get("Config") or {}).get("Labels") or {}
             if labels.get("chutes.bench.sandbox_id") != sandbox_id:
                 raise RuntimeError("task container ownership does not match the sandbox")
@@ -1152,40 +1157,13 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                         "task container exposes the Docker socket or shared Sandy cache"
                     )
 
-            helper_image = worker_image_id()
-            mask_script = (
-                "mountpoint -q /var/run/docker.sock; "
-                "umount -l /var/run/docker.sock; "
-                "rm -f /var/run/docker.sock; "
-                "mountpoint -q /var/cache/sandy; "
-                "umount -l /var/cache/sandy; "
-                "mkdir -p /var/cache/sandy; "
-                "mount -t tmpfs -o ro,nosuid,nodev,noexec,size=4096 "
-                "tmpfs /var/cache/sandy"
-            )
-            client.containers.run(
-                helper_image,
-                command=["nsenter", "-t", "1", "-m", "--", "sh", "-ceu", mask_script],
-                # Helper execution must not inherit an ENTRYPOINT from a
-                # derived worker image; the command above is the trust boundary.
-                entrypoint="",
-                privileged=True,
-                pid_mode=f"container:{sandbox.id}",
-                network_disabled=True,
-                remove=True,
-                labels={
-                    "chutes.bench.sandbox_id": sandbox_id,
-                    "chutes.bench.role": "mount-quarantine",
-                },
-            )
-
             try:
                 stale = client.containers.get(gateway_name)
                 stale.remove(force=True)
             except docker.errors.NotFound:
                 pass
             gateway = client.containers.run(
-                helper_image,
+                worker_image_id(),
                 command=[
                     "python",
                     "/app/app/benchmarks/adapters/terminal_bench_gateway.py",
@@ -1254,8 +1232,9 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             "gateway_container_id": gateway_id,
             "task_container_id": task_container_id,
             "endpoint": endpoint,
-            "raw_socket_removed_before_agent": True,
-            "shared_cache_masked_before_agent": True,
+            "sandbox_mounts_verified": True,
+            "raw_socket_absent_at_creation": True,
+            "shared_cache_absent_at_creation": True,
         }
 
     async def _verify_agent_docker_boundary(
@@ -1271,14 +1250,15 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
         )
         command = (
             "echo SOCKET=$(test -S /var/run/docker.sock && echo PRESENT || echo ABSENT); "
-            "echo CACHE_FS=$(stat -f -c %T /var/cache/sandy 2>/dev/null || echo ERROR); "
+            "echo CACHE_MOUNT=$(mountpoint -q /var/cache/sandy && echo PRESENT || echo ABSENT); "
             "echo CACHE_FILES=$(find /var/cache/sandy -mindepth 1 -print -quit 2>/dev/null | wc -l); "
-            "if DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker run --rm "
-            f"curlimages/curl:8.10.1 -fsSL {shlex.quote(solution_url)} "
+            "if python3 -c \"import socket; s=socket.socket(socket.AF_UNIX); "
+            "s.settimeout(2); s.connect('/var/run/docker.sock')\" "
             ">/tmp/raw.out 2>/tmp/raw.err; "
             "then echo RAW_DOCKER=ESCAPED; else echo RAW_DOCKER=BLOCKED; fi; "
-            "if docker run --rm curlimages/curl:8.10.1 -fsSL "
-            f"{shlex.quote(solution_url)} >/tmp/run.out 2>/tmp/run.err; "
+            "if docker run --rm "
+            f"curlimages/curl:8.10.1 -fsSL {shlex.quote(solution_url)} "
+            ">/tmp/run.out 2>/tmp/run.err; "
             "then echo SPAWN=ESCAPED; else echo SPAWN=BLOCKED; fi; "
             "if docker exec chutes-bench-runner-worker-1 true >/tmp/other.out 2>/tmp/other.err; "
             "then echo OTHER_CONTAINER=ESCAPED; else echo OTHER_CONTAINER=BLOCKED; fi; "
@@ -1302,7 +1282,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
         stdout = (result.output or b"").decode("utf-8", errors="replace")
         required = (
             "SOCKET=ABSENT",
-            "CACHE_FS=tmpfs",
+            "CACHE_MOUNT=ABSENT",
             "CACHE_FILES=0",
             "RAW_DOCKER=BLOCKED",
             "SPAWN=BLOCKED",

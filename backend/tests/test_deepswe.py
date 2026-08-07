@@ -165,6 +165,8 @@ def test_agent_never_receives_raw_docker_socket_or_verifier_archive() -> None:
     verifier_source = inspect.getsource(DeepSWEAdapter._stage_and_run_verifier)
 
     assert "_start_task_gateway" in evaluate_source
+    assert "enable_docker_socket=False" in evaluate_source
+    assert "enable_shared_cache=False" in evaluate_source
     assert "_verify_agent_docker_boundary" in evaluate_source
     assert evaluate_source.index("_verify_agent_docker_boundary") < evaluate_source.index(
         "prepare_sandy_agent_launch"
@@ -344,7 +346,7 @@ async def test_docker_boundary_attempts_fresh_container_source_fetch(monkeypatch
     class ExecResult:
         exit_code = 0
         output = (
-            b"SOCKET=ABSENT\nCACHE_FS=tmpfs\nCACHE_FILES=0\n"
+            b"SOCKET=ABSENT\nCACHE_MOUNT=ABSENT\nCACHE_FILES=0\n"
             b"RAW_DOCKER=BLOCKED\nSPAWN=BLOCKED\n"
             b"OTHER_CONTAINER=BLOCKED\nTASK_PATH=WORKS\n"
         )

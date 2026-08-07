@@ -123,7 +123,7 @@ async def test_agent_position_docker_bypass_proof_requires_every_marker(
     output = "\n".join(
         [
             "SOCKET=ABSENT",
-            "CACHE_FS=tmpfs",
+            "CACHE_MOUNT=ABSENT",
             "CACHE_FILES=0",
             "RAW_DOCKER=BLOCKED",
             "SPAWN=BLOCKED",
@@ -144,7 +144,8 @@ async def test_agent_position_docker_bypass_proof_requires_every_marker(
 
     assert verdict["boundary_held"] is True
     command = sandbox.exec_run.call_args.args[0][2]
-    assert "/usr/bin/docker run --rm" in command
+    assert "socket.AF_UNIX" in command
+    assert "s.connect('/var/run/docker.sock')" in command
     assert "docker run --rm" in command
     assert "merge-diff-arc-agi-task/solution/solve.sh" in command
     assert "docker exec chutes-bench-runner-worker-1" in command
@@ -158,7 +159,7 @@ async def test_agent_position_docker_bypass_proof_fails_if_spawn_succeeds(
     output = "\n".join(
         [
             "SOCKET=ABSENT",
-            "CACHE_FS=tmpfs",
+            "CACHE_MOUNT=ABSENT",
             "CACHE_FILES=0",
             "RAW_DOCKER=BLOCKED",
             "SPAWN=ESCAPED",
@@ -305,6 +306,7 @@ async def test_gateway_helpers_ignore_worker_image_entrypoint(monkeypatch) -> No
         )
     )
     sandbox = SimpleNamespace(id="sandbox-container")
+    sandbox.attrs = {"Mounts": []}
     task = SimpleNamespace(
         id="task-container-id",
         attrs={
@@ -327,7 +329,7 @@ async def test_gateway_helpers_ignore_worker_image_entrypoint(monkeypatch) -> No
         task,
         terminal_bench.docker.errors.NotFound("absent"),
     ]
-    containers.run.side_effect = [SimpleNamespace(), gateway]
+    containers.run.return_value = gateway
     monkeypatch.setattr(
         terminal_bench.docker,
         "from_env",
@@ -338,6 +340,38 @@ async def test_gateway_helpers_ignore_worker_image_entrypoint(monkeypatch) -> No
 
     result = await adapter._start_task_gateway("sandbox", "task")
 
-    assert result["raw_socket_removed_before_agent"] is True
+    assert result["raw_socket_absent_at_creation"] is True
+    assert result["shared_cache_absent_at_creation"] is True
     assert containers.run.call_args_list[0].kwargs["entrypoint"] == ""
-    assert containers.run.call_args_list[1].kwargs["entrypoint"] == ""
+
+
+@pytest.mark.asyncio
+async def test_gateway_refuses_sandbox_with_sensitive_host_mount(monkeypatch) -> None:
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    sandbox = SimpleNamespace(
+        attrs={
+            "Mounts": [
+                {
+                    "Source": "/var/lib/sandy/cache",
+                    "Destination": "/var/cache/sandy",
+                }
+            ]
+        }
+    )
+    task = SimpleNamespace(id="task-container-id")
+    containers = MagicMock()
+    containers.get.return_value = task
+    monkeypatch.setattr(
+        terminal_bench.docker,
+        "from_env",
+        lambda: SimpleNamespace(containers=containers),
+    )
+    monkeypatch.setattr(terminal_bench, "sandbox_container", lambda _id: sandbox)
+
+    with pytest.raises(
+        RuntimeError,
+        match="sandbox exposes the Docker socket or shared Sandy cache",
+    ):
+        await adapter._start_task_gateway("sandbox", "task")
+
+    containers.run.assert_not_called()

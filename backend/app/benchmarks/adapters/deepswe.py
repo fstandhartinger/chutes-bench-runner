@@ -669,15 +669,16 @@ class DeepSWEAdapter(BenchmarkAdapter):
         """Attempt the fresh-container source-fetch bypass from the agent namespace."""
         command = (
             "echo SOCKET=$(test -S /var/run/docker.sock && echo PRESENT || echo ABSENT); "
-            "echo CACHE_FS=$(stat -f -c %T /var/cache/sandy 2>/dev/null || echo ERROR); "
+            "echo CACHE_MOUNT=$(mountpoint -q /var/cache/sandy && echo PRESENT || echo ABSENT); "
             "echo CACHE_FILES=$(find /var/cache/sandy -mindepth 1 -print -quit "
             "2>/dev/null | wc -l); "
-            "if DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker run --rm "
-            f"curlimages/curl:8.10.1 -fsSL {shlex.quote(DEEPSWE_SOURCE_PROBE_URL)} "
+            "if python3 -c \"import socket; s=socket.socket(socket.AF_UNIX); "
+            "s.settimeout(2); s.connect('/var/run/docker.sock')\" "
             ">/tmp/raw.out 2>/tmp/raw.err; then echo RAW_DOCKER=ESCAPED; "
             "else echo RAW_DOCKER=BLOCKED; fi; "
-            "if docker run --rm curlimages/curl:8.10.1 -fsSL "
-            f"{shlex.quote(DEEPSWE_SOURCE_PROBE_URL)} >/tmp/run.out 2>/tmp/run.err; "
+            "if docker run --rm "
+            f"curlimages/curl:8.10.1 -fsSL {shlex.quote(DEEPSWE_SOURCE_PROBE_URL)} "
+            ">/tmp/run.out 2>/tmp/run.err; "
             "then echo SPAWN=ESCAPED; else echo SPAWN=BLOCKED; fi; "
             "if docker exec chutes-bench-runner-worker-1 true >/tmp/other.out 2>/tmp/other.err; "
             "then echo OTHER_CONTAINER=ESCAPED; else echo OTHER_CONTAINER=BLOCKED; fi; "
@@ -697,7 +698,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
         stdout = (result.output or b"").decode("utf-8", errors="replace")
         required = (
             "SOCKET=ABSENT",
-            "CACHE_FS=tmpfs",
+            "CACHE_MOUNT=ABSENT",
             "CACHE_FILES=0",
             "RAW_DOCKER=BLOCKED",
             "SPAWN=BLOCKED",
@@ -1209,11 +1210,11 @@ class DeepSWEAdapter(BenchmarkAdapter):
             outer_timeout = self.get_item_timeout_seconds(item_id)
             sandbox_ttl_min = math.ceil((outer_timeout or 0) / 60)
             sandbox_id = await self.sandy.create_sandbox(
-                # Trusted setup ends by unmounting this socket from the entire
-                # sandbox namespace before any model process is launched. The
-                # outside boundary probe below proves that removal and attempts
-                # the exact fresh-container source-fetch bypass.
-                enable_docker_socket=True,
+                # Docker image/container setup is driven by this worker through
+                # the outside helpers. The future agent namespace never receives
+                # the host Docker socket or Sandy's cross-job cache.
+                enable_docker_socket=False,
+                enable_shared_cache=False,
                 requires_agent=True,
                 timeout_minutes=sandbox_ttl_min,
             )

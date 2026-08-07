@@ -407,13 +407,14 @@ Each benchmark adapter in `backend/app/benchmarks/adapters/` uses official datas
 **Implementation**: The `sandy_service.create_sandbox()` method accepts an
 `enable_docker_socket` parameter. SWE-Bench retains its existing socket model.
 Terminal-Bench uses the socket only during trusted pre-agent setup. Before the
-model starts, an outside worker helper removes the raw socket from the sandbox
-mount namespace, masks the shared Sandy cache with an empty read-only tmpfs,
-and installs a task-scoped gateway that permits `exec`, `ps`, `inspect`, and
-`logs` for one immutable task-container ID. Container creation, access to any
-other container, and task containers that mount the socket or shared cache are
-rejected. The item fails unless an outside-issued probe observes all of these
-properties from the agent namespace.
+model starts, an outside worker helper installs a task-scoped gateway that
+permits `exec`, `ps`, `inspect`, and `logs` for one immutable task-container ID.
+DeepSWE performs all trusted Docker setup from the worker and asks Sandy to
+create the agent sandbox without either the Docker socket or shared cache. The
+worker verifies the sandbox's actual Docker mounts before installing the
+gateway. Container creation, access to any other container, and task containers
+that mount the socket or shared cache are rejected. The item fails unless an
+outside-issued probe observes all of these properties from the agent namespace.
 
 Terminal-Bench task archives are partitioned in trusted worker memory before
 anything enters Sandy. Tests are transferred directly to the task container
