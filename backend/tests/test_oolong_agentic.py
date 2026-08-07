@@ -1,8 +1,10 @@
 import base64
 import hashlib
+from types import SimpleNamespace
 
 import pytest
 
+import app.benchmarks.adapters.oolong_agentic as oolong_agentic_module
 from app.benchmarks.adapters.oolong_agentic import (
     EVIDENCE_RETENTION_EXCLUSION_REASON,
     NETWORK_PROBE_EXCLUSION_REASON,
@@ -76,6 +78,15 @@ class _RuntimeSandy:
         }
 
 
+class _RetentionSandy:
+    def __init__(self):
+        self.commands = []
+
+    async def execute_command(self, sandbox_id, command, timeout_ms=None):
+        self.commands.append(command)
+        return {"exit_code": 0, "stdout": ""}
+
+
 class _CreateResponse:
     def raise_for_status(self):
         return None
@@ -144,6 +155,48 @@ async def test_baseline_preflight_does_not_require_rlm_dependencies():
 
     assert result["ready"] is True
     assert "IPython" not in adapter.sandy.command
+
+
+@pytest.mark.asyncio
+async def test_timeout_path_mirrors_rollout_before_evidence_archive(monkeypatch):
+    calls = []
+
+    async def retain_rollout(sandy, sandbox_id, launch):
+        calls.append(("rollout", sandbox_id, launch))
+
+    async def retain_evidence(sandy, sandbox_id, **kwargs):
+        calls.append(("evidence", sandbox_id, kwargs["item_id"]))
+        return {
+            "status": "retained",
+            "path": "/evidence.tar.gz",
+            "sha256": "a" * 64,
+            "size_bytes": 10,
+            "error": None,
+            "token_usage_samples": {"samples": [{"sequence": 1}]},
+        }
+
+    monkeypatch.setattr(
+        oolong_agentic_module, "retain_sandy_agent_rollout", retain_rollout
+    )
+    monkeypatch.setattr(oolong_agentic_module, "retain_agent_evidence", retain_evidence)
+    adapter = OolongAgenticAdapter.__new__(OolongAgenticAdapter)
+    adapter.sandy = _RetentionSandy()
+    adapter.run_id = "run"
+    adapter.get_name = lambda: "oolong_agentic"
+    adapter._item_observability = {}
+    state = adapter._new_item_observability("803")
+    launch = SimpleNamespace(setup=object())
+    state.update(agent_invoked=True, agent_launch=launch)
+
+    await adapter._finish_evidence_retention("803", "sandbox")
+
+    assert calls == [
+        ("rollout", "sandbox", launch),
+        ("evidence", "sandbox", "803"),
+    ]
+    assert state["rollout_retained"] is True
+    assert state["evidence"]["token_usage_samples"]["samples"]
+    assert state["evidence"]["rollout_retention_error"] is None
 
 
 @pytest.mark.asyncio

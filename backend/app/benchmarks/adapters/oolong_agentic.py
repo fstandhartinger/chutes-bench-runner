@@ -407,6 +407,9 @@ class OolongAgenticAdapter(OolongAdapter):
     def _new_item_observability(self, item_id: str) -> dict[str, Any]:
         state = {
             "agent_invoked": False,
+            "agent_launch": None,
+            "rollout_retained": False,
+            "rollout_retention_error": None,
             "retention_task": None,
             "evidence": {
                 "status": "not_available",
@@ -465,9 +468,29 @@ class OolongAgenticAdapter(OolongAdapter):
                     sandbox_id=sandbox_id,
                     error=str(exc),
                 )
+            agent_launch = state.get("agent_launch")
+            if agent_launch is not None and not state.get("rollout_retained"):
+                try:
+                    await retain_sandy_agent_rollout(
+                        self.sandy, sandbox_id, agent_launch
+                    )
+                    state["rollout_retained"] = True
+                except Exception as exc:
+                    state["rollout_retention_error"] = (
+                        str(exc) or exc.__class__.__name__
+                    )
+                    logger.warning(
+                        "Could not retain OOLONG rollout before evidence archive",
+                        item_id=item_id,
+                        sandbox_id=sandbox_id,
+                        error=state["rollout_retention_error"],
+                    )
             self._start_evidence_retention(item_id, sandbox_id)
         try:
             state["evidence"] = await state["retention_task"]
+            state["evidence"]["rollout_retention_error"] = state.get(
+                "rollout_retention_error"
+            )
         except BaseException as exc:
             state["evidence"] = {
                 "status": "failed",
@@ -501,6 +524,7 @@ class OolongAgenticAdapter(OolongAdapter):
                 "error",
                 "sandbox_sources",
                 "retention_policy",
+                "rollout_retention_error",
             )
         }
         if state.get("agent_invoked") and evidence.get("status") != "retained":
@@ -688,6 +712,7 @@ class OolongAgenticAdapter(OolongAdapter):
                         agent=agent_name,
                         model=self.model_slug,
                     )
+                    self._item_observability[item_id]["agent_launch"] = agent_launch
                 except Exception as exc:
                     return self._excluded_result(
                         item_id=item_id,
@@ -723,8 +748,12 @@ class OolongAgenticAdapter(OolongAdapter):
                     await retain_sandy_agent_rollout(
                         self.sandy, sandbox_id, agent_launch
                     )
+                    self._item_observability[item_id]["rollout_retained"] = True
                 except Exception as exc:
                     rollout_error = str(exc) or exc.__class__.__name__
+                    self._item_observability[item_id]["rollout_retention_error"] = (
+                        rollout_error
+                    )
                 agent_usage = await collect_agent_usage(self.sandy, sandbox_id)
                 usage_error = rollout_error
                 if usage_error is None:
