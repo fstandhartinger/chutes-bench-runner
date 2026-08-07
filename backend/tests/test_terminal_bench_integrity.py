@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.benchmarks.adapters import terminal_bench
 from app.benchmarks.adapters.terminal_bench import TerminalBench21Adapter
 from app.benchmarks.adapters.terminal_bench_gateway import (
     GatewayError,
@@ -290,3 +291,53 @@ def test_agent_wrapper_has_no_container_creation_operation() -> None:
     assert 'if operation != "exec"' in wrapper
     assert "the raw Docker socket is not mounted" in wrapper
     assert 'payload.update(token=CONFIG["token"], container=CONFIG["container_id"])' in wrapper
+
+
+@pytest.mark.asyncio
+async def test_gateway_helpers_ignore_worker_image_entrypoint(monkeypatch) -> None:
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    adapter.sandy = SimpleNamespace(
+        execute_command=AsyncMock(
+            side_effect=[
+                {"exit_code": 0},
+                {"exit_code": 0, "stdout": "200\n"},
+            ]
+        )
+    )
+    sandbox = SimpleNamespace(id="sandbox-container")
+    task = SimpleNamespace(
+        id="task-container-id",
+        attrs={
+            "Config": {"Labels": {"chutes.bench.sandbox_id": "sandbox"}},
+            "Mounts": [],
+        },
+    )
+    gateway = SimpleNamespace(
+        id="gateway-id",
+        attrs={
+            "NetworkSettings": {
+                "Networks": {"bridge": {"IPAddress": "172.17.0.9"}}
+            }
+        },
+        reload=MagicMock(),
+        remove=MagicMock(),
+    )
+    containers = MagicMock()
+    containers.get.side_effect = [
+        task,
+        terminal_bench.docker.errors.NotFound("absent"),
+    ]
+    containers.run.side_effect = [SimpleNamespace(), gateway]
+    monkeypatch.setattr(
+        terminal_bench.docker,
+        "from_env",
+        lambda: SimpleNamespace(containers=containers),
+    )
+    monkeypatch.setattr(terminal_bench, "sandbox_container", lambda _id: sandbox)
+    monkeypatch.setattr(terminal_bench, "worker_image_id", lambda: "worker-image")
+
+    result = await adapter._start_task_gateway("sandbox", "task")
+
+    assert result["raw_socket_removed_before_agent"] is True
+    assert containers.run.call_args_list[0].kwargs["entrypoint"] == ""
+    assert containers.run.call_args_list[1].kwargs["entrypoint"] == ""

@@ -1166,6 +1166,9 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             client.containers.run(
                 helper_image,
                 command=["nsenter", "-t", "1", "-m", "--", "sh", "-ceu", mask_script],
+                # Helper execution must not inherit an ENTRYPOINT from a
+                # derived worker image; the command above is the trust boundary.
+                entrypoint="",
                 privileged=True,
                 pid_mode=f"container:{sandbox.id}",
                 network_disabled=True,
@@ -1187,6 +1190,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                     "python",
                     "/app/app/benchmarks/adapters/terminal_bench_gateway.py",
                 ],
+                entrypoint="",
                 name=gateway_name,
                 detach=True,
                 network_mode="bridge",
