@@ -32,6 +32,7 @@ questions over dialogue, not needle retrieval, which is why this variant is
 built on OOLONG rather than on S-NIAH -- S-NIAH in a sandbox is a `grep`
 benchmark and would measure nothing.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -41,7 +42,7 @@ import os
 import re
 import shlex
 import time
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from app.benchmarks.adapters.oolong import (
@@ -86,7 +87,6 @@ NETWORK_SEAL_BROKEN_EXCLUSION_REASON = "integrity_network_seal_broken"
 NETWORK_PROBE_EXCLUSION_REASON = "infrastructure_network_probe"
 
 
-
 @register_adapter("oolong_agentic")
 class OolongAgenticAdapter(OolongAdapter):
     """OOLONG, answered by a CLI agent working over a file in a sandbox."""
@@ -107,7 +107,7 @@ class OolongAgenticAdapter(OolongAdapter):
         # bottleneck, not the model endpoint.
         return False
 
-    def get_item_timeout_seconds(self, item_id: Optional[str] = None) -> int:
+    def get_item_timeout_seconds(self, item_id: str | None = None) -> int:
         """Keep the worker's outer cap above the agent plus evidence transfer."""
         return (
             int(os.getenv("OOLONG_AGENTIC_MAX_SECONDS", "900"))
@@ -238,11 +238,11 @@ class OolongAgenticAdapter(OolongAdapter):
         return (
             "provider_host="
             + shlex.quote(provider_host)
-            + "; provider_addresses=$(getent ahosts \"$provider_host\" 2>/dev/null "
+            + '; provider_addresses=$(getent ahosts "$provider_host" 2>/dev/null '
             "| awk '{print $1}' | sort -u); "
-            "test -n \"$provider_addresses\" || exit 41; "
+            'test -n "$provider_addresses" || exit 41; '
             "for address in $provider_addresses; do "
-            "printf '%s %s\\n' \"$address\" \"$provider_host\"; done >> /etc/hosts; "
+            'printf \'%s %s\\n\' "$address" "$provider_host"; done >> /etc/hosts; '
             "printf '%b\\n' "
             + shlex.quote(f"\n# {self.SEAL_MARKER}\n{entries}\n")
             + " >> /etc/hosts; "
@@ -347,7 +347,7 @@ class OolongAgenticAdapter(OolongAdapter):
             f"echo ANSWER=$(test -e {ANSWER_PATH} && echo present || echo absent); "
             "echo MATCHES_BEGIN; "
             "for root in /workspace /root/.cache; do "
-            "[ ! -e \"$root\" ] || find \"$root\" -xdev "
+            '[ ! -e "$root" ] || find "$root" -xdev '
             "\\( -iname '*oolong*' -o -path '*datasets--oolongbench--oolong-synth*' \\) "
             "2>/dev/null; done | head -20; echo MATCHES_END",
         )
@@ -361,6 +361,47 @@ class OolongAgenticAdapter(OolongAdapter):
             "answer_path_absent": "ANSWER=absent" in stdout,
             "matches": matches,
             "stdout": stdout,
+        }
+
+    async def _probe_agent_runtime(
+        self, sandbox_id: str, agent_name: str
+    ) -> dict[str, Any]:
+        """Fail fast when an arm's executable runtime is incomplete.
+
+        Merely finding the ``chutescoder`` binary is insufficient for the RLM
+        arm: its persistent kernel is a Python sidecar and the CLI can otherwise
+        spend the whole item budget retrying a missing IPython dependency.  The
+        baseline deliberately does not require that sidecar.
+        """
+        commands = {
+            "prime-agent": "command -v prime-agent && prime-agent --version",
+            "codex": "command -v codex && codex --version",
+            "chutescoder-baseline": ("command -v chutescoder && chutescoder --version"),
+            "chutescoder": (
+                "command -v chutescoder && chutescoder --version && "
+                "PYTHONPATH=/opt/chutescoder/python python3 -c "
+                '"import IPython,dill,chutescoder_rlm; '
+                "print(IPython.__version__,dill.__version__,"
+                'chutescoder_rlm.__version__)"'
+            ),
+        }
+        command = commands.get(agent_name)
+        if command is None:
+            return {
+                "ready": False,
+                "agent": agent_name,
+                "error": f"Unsupported OOLONG agent arm: {agent_name}",
+            }
+        result = await self.sandy.execute_command(
+            sandbox_id, command, timeout_ms=30_000
+        )
+        return {
+            "ready": (result or {}).get("exit_code") == 0,
+            "agent": agent_name,
+            "exit_code": (result or {}).get("exit_code"),
+            "stdout": ((result or {}).get("stdout") or "").strip(),
+            "stderr": ((result or {}).get("stderr") or "").strip(),
+            "error": (result or {}).get("error"),
         }
 
     def _new_item_observability(self, item_id: str) -> dict[str, Any]:
@@ -482,9 +523,7 @@ class OolongAgenticAdapter(OolongAdapter):
             "context_len": item["context_len"],
             "dataset": item["dataset"],
             "dataset_repo": item.get("dataset_repo", OOLONG_SYNTH_REPO),
-            "dataset_revision": item.get(
-                "dataset_revision", OOLONG_SYNTH_REVISION
-            ),
+            "dataset_revision": item.get("dataset_revision", OOLONG_SYNTH_REVISION),
             "dataset_split": item.get("dataset_split", OOLONG_SYNTH_SPLIT),
             "dataset_transport": item.get("dataset_transport"),
             "dataset_shard": item.get("dataset_shard"),
@@ -503,8 +542,8 @@ class OolongAgenticAdapter(OolongAdapter):
         reason: str,
         error: str,
         start_time: float,
-        usage: Optional[dict[str, Any]] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        usage: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ItemResult:
         return ItemResult(
             item_id=item_id,
@@ -540,7 +579,7 @@ class OolongAgenticAdapter(OolongAdapter):
         agent_name = self._agent_name()
         prompt = self._build_prompt(item)
         start_time = time.time()
-        sandbox_id: Optional[str] = None
+        sandbox_id: str | None = None
         agent_max_seconds = int(os.getenv("OOLONG_AGENTIC_MAX_SECONDS", "900"))
 
         try:
@@ -593,7 +632,10 @@ class OolongAgenticAdapter(OolongAdapter):
                             f"pre-existing answer file was visible: {local_sources}"
                         ),
                         start_time=start_time,
-                        metadata={"corpus": corpus, "local_answer_sources": local_sources},
+                        metadata={
+                            "corpus": corpus,
+                            "local_answer_sources": local_sources,
+                        },
                     )
 
                 network_seal_before = await self._seal_network(sandbox_id)
@@ -618,6 +660,26 @@ class OolongAgenticAdapter(OolongAdapter):
                         },
                     )
 
+                runtime_preflight = await self._probe_agent_runtime(
+                    sandbox_id, agent_name
+                )
+                if not runtime_preflight.get("ready"):
+                    return self._excluded_result(
+                        item_id=item_id,
+                        item=item,
+                        prompt=prompt,
+                        agent_name=agent_name,
+                        reason=AGENT_SETUP_EXCLUSION_REASON,
+                        error=(f"Agent runtime preflight failed: {runtime_preflight}"),
+                        start_time=start_time,
+                        metadata={
+                            "corpus": corpus,
+                            "local_answer_sources": local_sources,
+                            "network_seal_before": network_seal_before,
+                            "agent_runtime_preflight": runtime_preflight,
+                        },
+                    )
+
                 try:
                     agent_launch = await prepare_sandy_agent_launch(
                         client=self.client,
@@ -639,6 +701,7 @@ class OolongAgenticAdapter(OolongAdapter):
                             "corpus": corpus,
                             "local_answer_sources": local_sources,
                             "network_seal_before": network_seal_before,
+                            "agent_runtime_preflight": runtime_preflight,
                         },
                     )
 
@@ -655,7 +718,7 @@ class OolongAgenticAdapter(OolongAdapter):
                 )
                 agent_summary = (agent_result or {}).get("summary") or {}
 
-                rollout_error: Optional[str] = None
+                rollout_error: str | None = None
                 try:
                     await retain_sandy_agent_rollout(
                         self.sandy, sandbox_id, agent_launch
@@ -680,6 +743,7 @@ class OolongAgenticAdapter(OolongAdapter):
                     "corpus": corpus,
                     "local_answer_sources": local_sources,
                     "network_seal_before": network_seal_before,
+                    "agent_runtime_preflight": runtime_preflight,
                 }
 
                 if not agent_summary:

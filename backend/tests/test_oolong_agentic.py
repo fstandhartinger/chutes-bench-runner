@@ -61,6 +61,21 @@ class _OpenRouterClient:
         return "https://openrouter.ai/api/v1"
 
 
+class _RuntimeSandy:
+    def __init__(self, exit_code=0, stdout=""):
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.command = None
+
+    async def execute_command(self, sandbox_id, command, timeout_ms=None):
+        self.command = command
+        return {
+            "exit_code": self.exit_code,
+            "stdout": self.stdout,
+            "stderr": "missing dependency" if self.exit_code else "",
+        }
+
+
 class _CreateResponse:
     def raise_for_status(self):
         return None
@@ -96,11 +111,46 @@ async def test_agent_sandbox_requests_agent_ready_pid_budget():
 
 
 @pytest.mark.asyncio
+async def test_rlm_runtime_preflight_imports_persistent_kernel_dependencies():
+    adapter = OolongAgenticAdapter.__new__(OolongAgenticAdapter)
+    adapter.sandy = _RuntimeSandy(
+        stdout="/usr/local/bin/chutescoder\n9.7.0 0.4.0 0.1.0"
+    )
+
+    result = await adapter._probe_agent_runtime("sandbox", "chutescoder")
+
+    assert result["ready"] is True
+    assert "import IPython,dill,chutescoder_rlm" in adapter.sandy.command
+    assert "PYTHONPATH=/opt/chutescoder/python" in adapter.sandy.command
+
+
+@pytest.mark.asyncio
+async def test_rlm_runtime_preflight_rejects_missing_ipython():
+    adapter = OolongAgenticAdapter.__new__(OolongAgenticAdapter)
+    adapter.sandy = _RuntimeSandy(exit_code=1)
+
+    result = await adapter._probe_agent_runtime("sandbox", "chutescoder")
+
+    assert result["ready"] is False
+    assert result["exit_code"] == 1
+
+
+@pytest.mark.asyncio
+async def test_baseline_preflight_does_not_require_rlm_dependencies():
+    adapter = OolongAgenticAdapter.__new__(OolongAgenticAdapter)
+    adapter.sandy = _RuntimeSandy(stdout="/usr/local/bin/chutescoder")
+
+    result = await adapter._probe_agent_runtime("sandbox", "chutescoder-baseline")
+
+    assert result["ready"] is True
+    assert "IPython" not in adapter.sandy.command
+
+
+@pytest.mark.asyncio
 async def test_network_seal_requires_hosts_entry_curl_and_failed_fetch():
     adapter = OolongAgenticAdapter.__new__(OolongAgenticAdapter)
     adapter.sandy = _SealSandy(
-        "HOSTS=1\nCURL=yes\nSOURCE_FETCH=000\n"
-        "PUBLIC_FETCH=000\nPROVIDER_FETCH=200"
+        "HOSTS=1\nCURL=yes\nSOURCE_FETCH=000\nPUBLIC_FETCH=000\nPROVIDER_FETCH=200"
     )
     adapter.client = _OpenRouterClient()
 
@@ -142,9 +192,12 @@ async def test_network_probe_cannot_fork_is_infrastructure_not_broken_seal():
 
     assert verdict["sealed"] is False
     assert verdict["probe_complete"] is False
-    assert adapter._network_probe_exclusion_reason(
-        verdict, NETWORK_SEAL_BROKEN_EXCLUSION_REASON
-    ) == NETWORK_PROBE_EXCLUSION_REASON
+    assert (
+        adapter._network_probe_exclusion_reason(
+            verdict, NETWORK_SEAL_BROKEN_EXCLUSION_REASON
+        )
+        == NETWORK_PROBE_EXCLUSION_REASON
+    )
 
 
 def test_complete_failed_network_probe_remains_integrity_exclusion():
@@ -154,9 +207,12 @@ def test_complete_failed_network_probe_remains_integrity_exclusion():
         "sealed": False,
     }
 
-    assert OolongAgenticAdapter._network_probe_exclusion_reason(
-        verdict, NETWORK_SEAL_BROKEN_EXCLUSION_REASON
-    ) == NETWORK_SEAL_BROKEN_EXCLUSION_REASON
+    assert (
+        OolongAgenticAdapter._network_probe_exclusion_reason(
+            verdict, NETWORK_SEAL_BROKEN_EXCLUSION_REASON
+        )
+        == NETWORK_SEAL_BROKEN_EXCLUSION_REASON
+    )
 
 
 def test_missing_evidence_excludes_item_without_changing_observed_score():
