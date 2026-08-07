@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 
-from app.benchmarks.agent_provider_config import build_openrouter_agent_setup
+from app.benchmarks.agent_provider_config import (
+    build_openrouter_agent_setup,
+    prepare_sandy_agent_launch,
+)
 from app.services.openrouter_client import OpenRouterClient
 from app.services.provider_preflight import ProviderPreflightError, preflight_provider
 
@@ -151,3 +154,26 @@ def test_openrouter_rejects_unsupported_sandy_agent() -> None:
             context_window=1_048_576,
             max_output_tokens=65_536,
         )
+
+
+@pytest.mark.asyncio
+async def test_openrouter_uses_prime_agents_native_provider_without_codex_config() -> None:
+    client = Mock()
+    client.provider = "openrouter"
+    client.get_api_key.return_value = "test-openrouter-key"
+
+    launch = await prepare_sandy_agent_launch(
+        client=client,
+        sandy=AsyncMock(),
+        sandbox_id="sandbox",
+        agent="prime-agent",
+        model="deepseek/deepseek-v4-flash",
+    )
+
+    assert launch.provider == "openrouter"
+    assert launch.setup is None
+    assert launch.api_base_url is None
+    assert launch.env_vars == {
+        "OPENROUTER_API_KEY": "test-openrouter-key",
+        "PRIME_AGENT_PROVIDER": "openrouter",
+    }

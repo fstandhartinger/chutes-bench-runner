@@ -1867,6 +1867,48 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                         )
                     agent_env_vars = dict(agent_launch.env_vars)
                     agent_provider_metadata = agent_launch.metadata
+                    if (
+                        agent_name == "prime-agent"
+                        and agent_launch.provider != "openrouter"
+                    ):
+                        prime_provider = str(
+                            _tb.get("provider")
+                            or os.getenv("TERMINAL_BENCH_PRIME_PROVIDER")
+                            or "chutes"
+                        ).strip().lower()
+                        agent_env_vars["PRIME_AGENT_PROVIDER"] = prime_provider
+                        if prime_provider == "openrouter":
+                            openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+                            if not openrouter_api_key:
+                                return ItemResult(
+                                    item_id=item_id,
+                                    error=(
+                                        "OPENROUTER_API_KEY is required for the "
+                                        "Prime Agent OpenRouter arm"
+                                    ),
+                                    metadata={
+                                        "task_id": item.get("task_id"),
+                                        "agent": agent_name,
+                                        "provider": prime_provider,
+                                    },
+                                )
+                            agent_env_vars = {
+                                "OPENROUTER_API_KEY": openrouter_api_key,
+                                "PRIME_AGENT_PROVIDER": prime_provider,
+                            }
+                        elif prime_provider != "chutes":
+                            return ItemResult(
+                                item_id=item_id,
+                                error=(
+                                    f"Unsupported Prime Agent provider: {prime_provider}; "
+                                    "expected chutes or openrouter"
+                                ),
+                                metadata={
+                                    "task_id": item.get("task_id"),
+                                    "agent": agent_name,
+                                    "provider": prime_provider,
+                                },
+                            )
                     self._item_observability[item_id]["agent_invoked"] = True
                     agent_result = await self.sandy.run_agent(
                         sandbox_id,

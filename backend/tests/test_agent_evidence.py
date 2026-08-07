@@ -234,6 +234,64 @@ def test_token_series_reports_malformed_rollout_lines(tmp_path: Path) -> None:
     assert result["malformed_lines"] == 1
 
 
+def test_token_series_reads_prime_agent_message_and_child_usage(tmp_path: Path) -> None:
+    path = tmp_path / "prime-evidence.tar.gz"
+    events = [
+        {
+            "type": "session",
+            "id": "root-session",
+            "timestamp": "2026-08-07T10:00:00Z",
+            "rlmDepth": 0,
+        },
+        {
+            "type": "message",
+            "timestamp": "2026-08-07T10:00:01Z",
+            "message": {
+                "role": "assistant",
+                "usage": {
+                    "input": 100,
+                    "output": 20,
+                    "cacheRead": 10,
+                    "cacheWrite": 5,
+                },
+            },
+        },
+        {
+            "type": "child_usage_attributed",
+            "timestamp": "2026-08-07T10:00:02Z",
+            "childUsage": {
+                "input": 50,
+                "output": 6,
+                "cacheRead": 2,
+                "cacheWrite": 0,
+            },
+        },
+    ]
+    with tarfile.open(path, mode="w:gz") as bundle:
+        payload = b"".join((json.dumps(event) + "\n").encode() for event in events)
+        info = tarfile.TarInfo(
+            "rollouts/prime-agent/sessions/sandbox/root-session.jsonl"
+        )
+        info.size = len(payload)
+        bundle.addfile(info, io.BytesIO(payload))
+
+    result = read_token_usage_samples(path)
+
+    assert result["complete"] is True
+    assert result["events_seen"] == 2
+    assert [sample["last_token_usage"]["input_tokens"] for sample in result["samples"]] == [
+        115,
+        52,
+    ]
+    assert result["samples"][-1]["total_token_usage"] == {
+        "input_tokens": 167,
+        "cached_input_tokens": 12,
+        "cache_write_input_tokens": 5,
+        "output_tokens": 26,
+        "total_tokens": 193,
+    }
+
+
 def test_retention_failure_metadata_does_not_change_score() -> None:
     adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
     adapter._item_observability = {

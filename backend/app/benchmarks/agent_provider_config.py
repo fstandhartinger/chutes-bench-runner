@@ -216,6 +216,20 @@ async def prepare_sandy_agent_launch(
             env_vars={"CHUTES_API_KEY": api_key},
         )
 
+    if agent == "prime-agent":
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY is required for OpenRouter benchmark runs")
+        # Upstream Prime Agent ships OpenRouter and its model catalog natively;
+        # unlike the Codex-family CLIs it needs no generated config home. Its
+        # session is already written under Sandy's evidence/accounting path.
+        return AgentProviderLaunch(
+            provider=provider,
+            env_vars={
+                "OPENROUTER_API_KEY": api_key,
+                "PRIME_AGENT_PROVIDER": "openrouter",
+            },
+        )
+
     setup = build_openrouter_agent_setup(
         agent=agent,
         model=model,

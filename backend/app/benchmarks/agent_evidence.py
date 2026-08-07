@@ -42,10 +42,12 @@ archive_path = "/tmp/chutes-bench-agent-evidence.tar.gz"
 sources = [
     ("/root/.chutescoder/sessions", "rollouts/chutescoder/sessions"),
     ("/root/.codex/sessions", "rollouts/codex/sessions"),
+    ("/workspace/.chutes/prime-agent-sessions", "rollouts/prime-agent/sessions"),
     ("/root/.chutescoder/config.toml", "config/chutescoder-config.toml"),
     ("/root/.chutescoder/model_catalog.json", "config/chutescoder-model-catalog.json"),
     ("/root/.codex/config.toml", "config/codex-config.toml"),
     ("/root/.codex/model_catalog.json", "config/codex-model-catalog.json"),
+    ("/workspace/.chutes/prime-agent/models.json", "config/prime-agent-models.json"),
     ("/workspace/.chutes/agent_output.log", "agent/combined-stdout-stderr.log"),
     ("/workspace/.chutes/agent.done", "agent/exit-code.txt"),
     ("/workspace/.chutes/agent_launch_debug.sh", "agent/launch-debug.sh"),
@@ -341,8 +343,11 @@ def read_token_usage_samples(path: Path) -> dict[str, Any]:
                 for member in bundle.getmembers()
                 if member.isfile()
                 and "/sessions/" in f"/{member.name}"
-                and Path(member.name).name.startswith("rollout-")
                 and member.name.endswith(".jsonl")
+                and (
+                    Path(member.name).name.startswith("rollout-")
+                    or member.name.startswith("rollouts/prime-agent/sessions/")
+                )
             ),
             key=lambda member: member.name,
         )
@@ -352,6 +357,13 @@ def read_token_usage_samples(path: Path) -> dict[str, Any]:
                 continue
             rollouts.append(member.name)
             rollout_sequence = 0
+            prime_totals = {
+                "input_tokens": 0,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            }
             for line_number, raw_line in enumerate(extracted, start=1):
                 try:
                     event = json.loads(raw_line)
@@ -360,6 +372,49 @@ def read_token_usage_samples(path: Path) -> dict[str, Any]:
                     continue
                 if not isinstance(event, dict):
                     malformed_lines += 1
+                    continue
+                if member.name.startswith("rollouts/prime-agent/sessions/"):
+                    usage = None
+                    event_kind = event.get("type")
+                    if event_kind == "message":
+                        message = event.get("message") or {}
+                        if message.get("role") == "assistant":
+                            usage = message.get("usage")
+                    elif event_kind == "child_usage_attributed":
+                        # The parent aggregate replaces an earlier message's
+                        # usage. The childUsage field is the exact new delta.
+                        usage = event.get("childUsage")
+                    if not isinstance(usage, dict):
+                        continue
+                    non_cached = int(usage.get("input") or 0)
+                    cache_read = int(usage.get("cacheRead") or 0)
+                    cache_write = int(usage.get("cacheWrite") or 0)
+                    output = int(usage.get("output") or 0)
+                    last_usage = {
+                        "input_tokens": non_cached + cache_read + cache_write,
+                        "cached_input_tokens": cache_read,
+                        "cache_write_input_tokens": cache_write,
+                        "output_tokens": output,
+                        "total_tokens": non_cached
+                        + cache_read
+                        + cache_write
+                        + output,
+                    }
+                    for key, value in last_usage.items():
+                        prime_totals[key] += value
+                    rollout_sequence += 1
+                    samples.append(
+                        {
+                            "timestamp": event.get("timestamp"),
+                            "rollout": member.name,
+                            "rollout_sequence": rollout_sequence,
+                            "line": line_number,
+                            "event_type": event_kind,
+                            "last_token_usage": last_usage,
+                            "total_token_usage": dict(prime_totals),
+                            "model_context_window": None,
+                        }
+                    )
                     continue
                 payload = event.get("payload") or {}
                 if payload.get("type") != "token_count":
