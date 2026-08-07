@@ -1,4 +1,5 @@
 """OpenRouter catalog, preflight, and Sandy agent configuration tests."""
+
 from __future__ import annotations
 
 import json
@@ -177,3 +178,37 @@ async def test_openrouter_uses_prime_agents_native_provider_without_codex_config
         "OPENROUTER_API_KEY": "test-openrouter-key",
         "PRIME_AGENT_PROVIDER": "openrouter",
     }
+
+
+@pytest.mark.asyncio
+async def test_context_limit_cannot_be_silently_ignored_by_non_openrouter_provider() -> None:
+    client = Mock()
+    client.provider = "chutes"
+    client.get_api_key.return_value = "test-chutes-key"
+
+    with pytest.raises(ValueError, match="requires provider='openrouter'"):
+        await prepare_sandy_agent_launch(
+            client=client,
+            sandy=AsyncMock(),
+            sandbox_id="sandbox",
+            agent="codex",
+            model=MODEL,
+            context_limit_tokens=48_000,
+        )
+
+
+@pytest.mark.asyncio
+async def test_context_limit_cannot_be_silently_ignored_by_prime_agent() -> None:
+    client = Mock()
+    client.provider = "openrouter"
+    client.get_api_key.return_value = "test-openrouter-key"
+
+    with pytest.raises(ValueError, match="not supported for prime-agent"):
+        await prepare_sandy_agent_launch(
+            client=client,
+            sandy=AsyncMock(),
+            sandbox_id="sandbox",
+            agent="prime-agent",
+            model=MODEL,
+            context_limit_tokens=48_000,
+        )

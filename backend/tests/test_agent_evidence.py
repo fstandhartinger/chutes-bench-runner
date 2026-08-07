@@ -15,6 +15,7 @@ import pytest
 from app.benchmarks.adapters.terminal_bench import TerminalBench21Adapter
 from app.benchmarks.agent_evidence import (
     _reserve_local_file,
+    read_rollout_metrics,
     read_token_usage_samples,
     retain_agent_evidence,
 )
@@ -54,9 +55,7 @@ def _bundle_bytes() -> bytes:
             ),
             ("rollouts/chutescoder/sessions/2026/08/07/rollout-child.jsonl", [second]),
         ):
-            payload = b"".join(
-                (json.dumps(event) + "\n").encode() for event in events
-            )
+            payload = b"".join((json.dumps(event) + "\n").encode() for event in events)
             info = tarfile.TarInfo(name)
             info.size = len(payload)
             bundle.addfile(info, io.BytesIO(payload))
@@ -132,9 +131,7 @@ async def test_retention_transfers_chunks_and_verifies_in_sandbox_hash(
 ) -> None:
     bundle = _bundle_bytes()
     sandy = _FakeSandy(bundle)
-    monkeypatch.setattr(
-        "app.benchmarks.agent_evidence.get_settings", lambda: _settings(tmp_path)
-    )
+    monkeypatch.setattr("app.benchmarks.agent_evidence.get_settings", lambda: _settings(tmp_path))
 
     result = await retain_agent_evidence(
         sandy,
@@ -156,6 +153,19 @@ async def test_retention_transfers_chunks_and_verifies_in_sandbox_hash(
         20,
     ]
     assert [sample["sequence"] for sample in series["samples"]] == [1, 2]
+    assert result["rollout_metrics"] == {
+        "schema_version": 1,
+        "complete": True,
+        "malformed_lines": 0,
+        "rollouts": [
+            "rollouts/chutescoder/sessions/2026/08/07/rollout-child.jsonl",
+            "rollouts/chutescoder/sessions/2026/08/07/rollout-parent.jsonl",
+        ],
+        "rollout_line_count": 2,
+        "compaction_events": 0,
+        "compaction_events_by_type": {},
+        "tool_calls_by_name": {},
+    }
 
 
 @pytest.mark.asyncio
@@ -163,9 +173,7 @@ async def test_hash_mismatch_is_quarantined_and_marked_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sandy = _FakeSandy(_bundle_bytes(), expected_sha256="0" * 64)
-    monkeypatch.setattr(
-        "app.benchmarks.agent_evidence.get_settings", lambda: _settings(tmp_path)
-    )
+    monkeypatch.setattr("app.benchmarks.agent_evidence.get_settings", lambda: _settings(tmp_path))
 
     result = await retain_agent_evidence(
         sandy,
@@ -188,9 +196,7 @@ async def test_truncated_chunk_is_detected_before_hash_verification(
 ) -> None:
     sandy = _FakeSandy(_bundle_bytes())
     sandy.truncate_offset = 97
-    monkeypatch.setattr(
-        "app.benchmarks.agent_evidence.get_settings", lambda: _settings(tmp_path)
-    )
+    monkeypatch.setattr("app.benchmarks.agent_evidence.get_settings", lambda: _settings(tmp_path))
 
     result = await retain_agent_evidence(
         sandy,
@@ -211,9 +217,7 @@ async def test_required_rollout_rejects_log_only_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sandy = _FakeSandy(_bundle_without_rollout())
-    monkeypatch.setattr(
-        "app.benchmarks.agent_evidence.get_settings", lambda: _settings(tmp_path)
-    )
+    monkeypatch.setattr("app.benchmarks.agent_evidence.get_settings", lambda: _settings(tmp_path))
 
     result = await retain_agent_evidence(
         sandy,
@@ -257,9 +261,7 @@ def test_token_series_reports_malformed_rollout_lines(tmp_path: Path) -> None:
     path = tmp_path / "evidence.tar.gz"
     with tarfile.open(path, mode="w:gz") as bundle:
         payload = b"not-json\n"
-        info = tarfile.TarInfo(
-            "rollouts/codex/sessions/2026/08/07/rollout-broken.jsonl"
-        )
+        info = tarfile.TarInfo("rollouts/codex/sessions/2026/08/07/rollout-broken.jsonl")
         info.size = len(payload)
         bundle.addfile(info, io.BytesIO(payload))
 
@@ -267,6 +269,58 @@ def test_token_series_reports_malformed_rollout_lines(tmp_path: Path) -> None:
 
     assert result["complete"] is False
     assert result["malformed_lines"] == 1
+
+
+def test_rollout_metrics_count_structured_compaction_and_tool_events(tmp_path: Path) -> None:
+    path = tmp_path / "structured-events.tar.gz"
+    events = [
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "user_message",
+                "message": "The system prompt discusses compaction at length.",
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {"type": "function_call", "name": "python"},
+        },
+        {
+            "type": "response_item",
+            "payload": {"type": "function_call", "name": "python"},
+        },
+        {
+            "type": "response_item",
+            "payload": {"type": "function_call", "name": "exec_command"},
+        },
+        {
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "name": "python"},
+        },
+        {"type": "event_msg", "payload": {"type": "context_compacted"}},
+        {
+            "type": "compacted",
+            "payload": {"message": "A persisted compaction summary is not an event."},
+        },
+    ]
+    with tarfile.open(path, mode="w:gz") as bundle:
+        payload = b"".join((json.dumps(event) + "\n").encode() for event in events)
+        info = tarfile.TarInfo("rollouts/chutescoder/sessions/2026/08/07/rollout-events.jsonl")
+        info.size = len(payload)
+        bundle.addfile(info, io.BytesIO(payload))
+
+    result = read_rollout_metrics(path)
+
+    assert result == {
+        "schema_version": 1,
+        "complete": True,
+        "malformed_lines": 0,
+        "rollouts": ["rollouts/chutescoder/sessions/2026/08/07/rollout-events.jsonl"],
+        "rollout_line_count": 7,
+        "compaction_events": 1,
+        "compaction_events_by_type": {"context_compacted": 1},
+        "tool_calls_by_name": {"exec_command": 1, "python": 2},
+    }
 
 
 def test_token_series_reads_prime_agent_message_and_child_usage(tmp_path: Path) -> None:
@@ -304,9 +358,7 @@ def test_token_series_reads_prime_agent_message_and_child_usage(tmp_path: Path) 
     ]
     with tarfile.open(path, mode="w:gz") as bundle:
         payload = b"".join((json.dumps(event) + "\n").encode() for event in events)
-        info = tarfile.TarInfo(
-            "rollouts/prime-agent/sessions/sandbox/root-session.jsonl"
-        )
+        info = tarfile.TarInfo("rollouts/prime-agent/sessions/sandbox/root-session.jsonl")
         info.size = len(payload)
         bundle.addfile(info, io.BytesIO(payload))
 

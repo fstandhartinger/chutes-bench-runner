@@ -6,6 +6,7 @@ transfer below deliberately uses small chunks, checks every decoded chunk's
 length, and verifies a SHA-256 that was computed inside the sandbox before the
 archive is made visible as retained evidence.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -107,11 +108,7 @@ def _artifact_path(
     item_component = _safe_component(item_id, fallback="item")
     sandbox_component = _safe_component(sandbox_id, fallback="sandbox")
     return (
-        root
-        / run_component
-        / benchmark_component
-        / item_component
-        / f"{sandbox_component}.tar.gz"
+        root / run_component / benchmark_component / item_component / f"{sandbox_component}.tar.gz"
     )
 
 
@@ -121,9 +118,7 @@ def _all_storage_files(root: Path) -> list[Path]:
     return [
         path
         for path in root.rglob("*")
-        if path.is_file()
-        and path.name != ".retention.lock"
-        and not path.name.endswith(".jsonl")
+        if path.is_file() and path.name != ".retention.lock" and not path.name.endswith(".jsonl")
     ]
 
 
@@ -193,16 +188,12 @@ def _reserve_local_file(
             (
                 path
                 for path in files
-                if not (
-                    path.name.endswith(".partial")
-                    and path.stat().st_mtime >= now - 3600
-                )
+                if not (path.name.endswith(".partial") and path.stat().st_mtime >= now - 3600)
             ),
             key=lambda path: path.stat().st_mtime,
         )
         while oldest_first and (
-            total_bytes + size_bytes > max_total_bytes
-            or free_bytes < min_free_bytes + size_bytes
+            total_bytes + size_bytes > max_total_bytes or free_bytes < min_free_bytes + size_bytes
         ):
             candidate = oldest_first.pop(0)
             removed = _unlink_for_pruning(root, candidate, "capacity_limit")
@@ -331,27 +322,82 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _rollout_members(bundle: tarfile.TarFile) -> list[tarfile.TarInfo]:
+    return sorted(
+        (
+            member
+            for member in bundle.getmembers()
+            if member.isfile()
+            and "/sessions/" in f"/{member.name}"
+            and member.name.endswith(".jsonl")
+            and (
+                Path(member.name).name.startswith("rollout-")
+                or member.name.startswith("rollouts/prime-agent/sessions/")
+            )
+        ),
+        key=lambda member: member.name,
+    )
+
+
+def read_rollout_metrics(path: Path) -> dict[str, Any]:
+    """Count structured rollout events without matching event text."""
+    rollout_line_count = 0
+    compaction_events = 0
+    compaction_events_by_type: dict[str, int] = {}
+    tool_calls_by_name: dict[str, int] = {}
+    malformed_lines = 0
+    rollouts: list[str] = []
+
+    with tarfile.open(path, mode="r:gz") as bundle:
+        for member in _rollout_members(bundle):
+            extracted = bundle.extractfile(member)
+            if extracted is None:
+                continue
+            rollouts.append(member.name)
+            for raw_line in extracted:
+                rollout_line_count += 1
+                try:
+                    event = json.loads(raw_line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    malformed_lines += 1
+                    continue
+                if not isinstance(event, dict):
+                    malformed_lines += 1
+                    continue
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                payload_type = payload.get("type")
+                if not isinstance(payload_type, str):
+                    continue
+                if "compact" in payload_type:
+                    compaction_events += 1
+                    compaction_events_by_type[payload_type] = (
+                        compaction_events_by_type.get(payload_type, 0) + 1
+                    )
+                tool_name = payload.get("name")
+                if payload_type.endswith("_call") and isinstance(tool_name, str):
+                    tool_calls_by_name[tool_name] = tool_calls_by_name.get(tool_name, 0) + 1
+
+    return {
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "complete": malformed_lines == 0,
+        "malformed_lines": malformed_lines,
+        "rollouts": rollouts,
+        "rollout_line_count": rollout_line_count,
+        "compaction_events": compaction_events,
+        "compaction_events_by_type": dict(sorted(compaction_events_by_type.items())),
+        "tool_calls_by_name": dict(sorted(tool_calls_by_name.items())),
+    }
+
+
 def read_token_usage_samples(path: Path) -> dict[str, Any]:
     """Read an ordered, source-attributed token-count series from a bundle."""
     samples: list[dict[str, Any]] = []
     rollouts: list[str] = []
     malformed_lines = 0
     with tarfile.open(path, mode="r:gz") as bundle:
-        members = sorted(
-            (
-                member
-                for member in bundle.getmembers()
-                if member.isfile()
-                and "/sessions/" in f"/{member.name}"
-                and member.name.endswith(".jsonl")
-                and (
-                    Path(member.name).name.startswith("rollout-")
-                    or member.name.startswith("rollouts/prime-agent/sessions/")
-                )
-            ),
-            key=lambda member: member.name,
-        )
-        for member in members:
+        for member in _rollout_members(bundle):
             extracted = bundle.extractfile(member)
             if extracted is None:
                 continue
@@ -395,10 +441,7 @@ def read_token_usage_samples(path: Path) -> dict[str, Any]:
                         "cached_input_tokens": cache_read,
                         "cache_write_input_tokens": cache_write,
                         "output_tokens": output,
-                        "total_tokens": non_cached
-                        + cache_read
-                        + cache_write
-                        + output,
+                        "total_tokens": non_cached + cache_read + cache_write + output,
                     }
                     for key, value in last_usage.items():
                         prime_totals[key] += value
@@ -522,25 +565,40 @@ async def retain_agent_evidence(
                     f"{corrupt_path} (sandbox={sandbox_sha256}, local={local_sha256})"
                 )
 
-            sample_error = None
+            parse_errors: list[str] = []
             try:
                 token_usage_samples = await asyncio.to_thread(
                     read_token_usage_samples, partial_path
                 )
             except Exception as exc:
-                sample_error = f"retained bundle token-series parse failed: {exc}"
+                parse_errors.append(f"retained bundle token-series parse failed: {exc}")
                 token_usage_samples = {
                     "schema_version": EVIDENCE_SCHEMA_VERSION,
                     "complete": False,
-                    "error": sample_error,
+                    "error": parse_errors[-1],
                     "samples": [],
                 }
-            if require_rollout and not token_usage_samples.get("rollouts"):
+            try:
+                rollout_metrics = await asyncio.to_thread(read_rollout_metrics, partial_path)
+            except Exception as exc:
+                parse_errors.append(f"retained bundle rollout-metrics parse failed: {exc}")
+                rollout_metrics = {
+                    "schema_version": EVIDENCE_SCHEMA_VERSION,
+                    "complete": False,
+                    "error": parse_errors[-1],
+                    "rollouts": [],
+                    "rollout_line_count": None,
+                    "compaction_events": None,
+                    "compaction_events_by_type": {},
+                    "tool_calls_by_name": {},
+                }
+            if require_rollout and not rollout_metrics.get("rollouts"):
                 raise RuntimeError(
                     "evidence bundle contains no agent rollout JSONL; refusing "
                     "to retain a plausible but unauditable archive"
                 )
 
+            parse_error = "; ".join(parse_errors) or None
             os.replace(partial_path, final_path)
             partial_path = None
             return {
@@ -548,8 +606,9 @@ async def retain_agent_evidence(
                 "path": str(final_path),
                 "sha256": local_sha256,
                 "size_bytes": size_bytes,
-                "error": sample_error,
+                "error": parse_error,
                 "token_usage_samples": token_usage_samples,
+                "rollout_metrics": rollout_metrics,
                 "sandbox_sources": metadata.get("sources") or [],
                 "retention_policy": {
                     "max_item_bytes": settings.agent_evidence_max_item_bytes,
@@ -577,4 +636,5 @@ async def retain_agent_evidence(
             "size_bytes": None,
             "error": error,
             "token_usage_samples": None,
+            "rollout_metrics": None,
         }

@@ -10,6 +10,15 @@ Select an arm with run config
 `{"deepswe": {"agent": "chutescoder"}}` (also accepts
 `chutescoder-baseline` and `codex`) or the `DEEPSWE_AGENT` environment variable.
 
+For an OpenRouter run, `config.deepswe.context_limit_tokens` caps the generated
+Codex-family agent config identically for all three arms. The cap is written to
+`model_context_window` and to both context-window fields in the generated model
+catalog; setting this knob with another provider fails explicitly because that
+path does not install a runner-controlled config. Each retained DeepSWE item
+stores a queryable `item_metadata.compaction_experiment` object containing the
+arm, requested/configured context, structured compaction-event count, rollout
+line count, tool-call counts by name, and item score.
+
 ## Pinned corpus
 
 - Official source: [`datacurve-ai/deep-swe`](https://github.com/datacurve-ai/deep-swe)

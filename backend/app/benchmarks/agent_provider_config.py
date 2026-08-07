@@ -5,6 +5,7 @@ immediately before launching a CLI.  For an alternate provider, bench-runner
 therefore gives the CLI a separate config home and writes a complete,
 secret-free config there.  Credentials remain environment-only.
 """
+
 from __future__ import annotations
 
 import base64
@@ -12,9 +13,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-OPENROUTER_CODEX_AGENTS = frozenset(
-    {"codex", "chutescoder", "chutescoder-baseline"}
-)
+OPENROUTER_CODEX_AGENTS = frozenset({"codex", "chutescoder", "chutescoder-baseline"})
 
 
 @dataclass(frozen=True)
@@ -23,6 +22,8 @@ class AgentProviderSetup:
 
     config_home: str
     default_config_home: str
+    context_window: int
+    max_output_tokens: int
     config_toml: str
     model_catalog_json: str
     env_vars: dict[str, str]
@@ -118,8 +119,7 @@ def build_openrouter_agent_setup(
     if agent not in OPENROUTER_CODEX_AGENTS:
         supported = ", ".join(sorted(OPENROUTER_CODEX_AGENTS))
         raise ValueError(
-            f"OpenRouter benchmark runs support these Sandy agents: {supported}; "
-            f"got {agent!r}"
+            f"OpenRouter benchmark runs support these Sandy agents: {supported}; got {agent!r}"
         )
     if not api_key:
         raise ValueError("OPENROUTER_API_KEY is required for OpenRouter benchmark runs")
@@ -142,7 +142,7 @@ web_search = "disabled"
 
 [model_providers.openrouter]
 name = "OpenRouter"
-base_url = {_toml_string(api_base_url.rstrip('/'))}
+base_url = {_toml_string(api_base_url.rstrip("/"))}
 env_key = "OPENROUTER_API_KEY"
 wire_api = "responses"
 
@@ -183,6 +183,8 @@ package_path = "/opt/chutescoder/python"
     return AgentProviderSetup(
         config_home=config_home,
         default_config_home=default_home,
+        context_window=context_window,
+        max_output_tokens=max_output_tokens,
         config_toml=config,
         model_catalog_json=_model_catalog(model, context_window),
         env_vars=env_vars,
@@ -194,6 +196,8 @@ def sanitized_provider_metadata(setup: AgentProviderSetup) -> dict[str, Any]:
     return {
         "config_home": setup.config_home,
         "wire_api": "responses",
+        "context_window": setup.context_window,
+        "max_output_tokens": setup.max_output_tokens,
     }
 
 
@@ -204,11 +208,17 @@ async def prepare_sandy_agent_launch(
     sandbox_id: str,
     agent: str,
     model: str,
+    context_limit_tokens: int | None = None,
 ) -> AgentProviderLaunch:
     """Prepare Chutes or OpenRouter credentials/config for a Sandy CLI."""
     provider = str(getattr(client, "provider", "chutes") or "chutes")
     api_key = client.get_api_key() or ""
     if provider != "openrouter":
+        if context_limit_tokens is not None:
+            raise ValueError(
+                "A Sandy agent context limit requires provider='openrouter'; "
+                f"provider {provider!r} does not install a runner-controlled agent config"
+            )
         if not api_key:
             raise ValueError(f"No API key is configured for provider {provider}")
         return AgentProviderLaunch(
@@ -217,6 +227,11 @@ async def prepare_sandy_agent_launch(
         )
 
     if agent == "prime-agent":
+        if context_limit_tokens is not None:
+            raise ValueError(
+                "A Sandy agent context limit is not supported for prime-agent; "
+                "its native provider config is not runner-controlled"
+            )
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY is required for OpenRouter benchmark runs")
         # Upstream Prime Agent ships OpenRouter and its model catalog natively;
@@ -230,12 +245,18 @@ async def prepare_sandy_agent_launch(
             },
         )
 
+    provider_context_window = (await client.get_model_context_length(model)) or 0
+    context_window = (
+        min(provider_context_window, context_limit_tokens)
+        if context_limit_tokens is not None
+        else provider_context_window
+    )
     setup = build_openrouter_agent_setup(
         agent=agent,
         model=model,
         api_base_url=client.get_api_base_url(),
         api_key=api_key,
-        context_window=(await client.get_model_context_length(model)) or 0,
+        context_window=context_window,
         max_output_tokens=(await client.get_model_max_output_length(model)) or 0,
     )
     installed = await sandy.execute_command(sandbox_id, setup.install_command())
@@ -262,8 +283,7 @@ async def retain_sandy_agent_rollout(
     if retained.get("exit_code") != 0:
         detail = retained.get("error") or retained.get("stderr") or "unknown error"
         raise RuntimeError(
-            "Could not retain the OpenRouter rollout for exact per-item token "
-            f"accounting: {detail}"
+            f"Could not retain the OpenRouter rollout for exact per-item token accounting: {detail}"
         )
 
 

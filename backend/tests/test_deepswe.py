@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import inspect
 import io
+import json
 import tarfile
+import tomllib
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -141,6 +144,60 @@ def test_sandy_cli_agent_arms_are_selectable(agent: str) -> None:
     assert adapter._agent_name() == agent
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent", ["chutescoder", "chutescoder-baseline", "codex"])
+async def test_context_limit_reaches_effective_config_for_every_arm(agent: str) -> None:
+    class Client:
+        provider = "openrouter"
+
+        @staticmethod
+        def get_api_key() -> str:
+            return "test-key"
+
+        @staticmethod
+        def get_api_base_url() -> str:
+            return "https://openrouter.ai/api/v1"
+
+        @staticmethod
+        async def get_model_context_length(_model: str) -> int:
+            return 1_048_576
+
+        @staticmethod
+        async def get_model_max_output_length(_model: str) -> int:
+            return 65_536
+
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter.client = Client()
+    adapter.sandy = AsyncMock()
+    adapter.sandy.execute_command.return_value = {"exit_code": 0}
+    adapter.model_slug = "deepseek/deepseek-v4-flash-0731"
+    adapter.run_config = {"deepswe": {"agent": agent, "context_limit_tokens": 48_000}}
+
+    launch = await adapter._prepare_agent_launch(
+        "sandbox",
+        adapter._agent_name(),
+        adapter._context_limit_tokens(),
+    )
+
+    assert "self._prepare_agent_launch(" in inspect.getsource(DeepSWEAdapter._evaluate_item)
+    assert launch.setup is not None
+    config = tomllib.loads(launch.setup.config_toml)
+    catalog = json.loads(launch.setup.model_catalog_json)
+    assert config["model_context_window"] == 48_000
+    assert catalog["models"][0]["context_window"] == 48_000
+    assert catalog["models"][0]["max_context_window"] == 48_000
+    assert launch.metadata["context_window"] == 48_000
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, 40_000.0, "40000"])
+def test_context_limit_rejects_values_that_cannot_cap_the_agent(value) -> None:
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter.run_config = {"deepswe": {"context_limit_tokens": value}}
+
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        adapter._context_limit_tokens()
+
+
 def test_item_timeout_covers_every_declared_phase(monkeypatch) -> None:
     adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
     adapter._items = [
@@ -170,7 +227,7 @@ def test_agent_never_receives_raw_docker_socket_or_verifier_archive() -> None:
     assert "enable_shared_cache=False" in evaluate_source
     assert "_verify_agent_docker_boundary" in evaluate_source
     assert evaluate_source.index("_verify_agent_docker_boundary") < evaluate_source.index(
-        "prepare_sandy_agent_launch"
+        "_prepare_agent_launch"
     )
     assert "_upload_archive" not in verifier_source
     assert "self.sandy.write_file" not in verifier_source
@@ -237,9 +294,7 @@ async def test_excluded_path_mirrors_rollout_before_evidence_archive(monkeypatch
     assert result.agent_evidence_status == "retained"
     assert result.agent_evidence_sha256 == "a" * 64
     assert result.agent_evidence_size_bytes == 123
-    assert [
-        sample["sequence"] for sample in result.token_usage_samples["samples"]
-    ] == [1, 2]
+    assert [sample["sequence"] for sample in result.token_usage_samples["samples"]] == [1, 2]
 
 
 def test_evidence_failure_is_recorded_without_changing_deepswe_score() -> None:
@@ -268,15 +323,57 @@ def test_evidence_failure_is_recorded_without_changing_deepswe_score() -> None:
     assert result.agent_evidence_error == "SHA-256 mismatch"
 
 
+@pytest.mark.parametrize("agent", ["chutescoder", "chutescoder-baseline", "codex"])
+def test_compaction_experiment_metrics_are_queryable_per_arm(agent: str) -> None:
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter._item_observability = {
+        "task": {
+            "agent": agent,
+            "context_limit_tokens": 48_000,
+            "configured_context_window": 48_000,
+            "evidence": {
+                "status": "retained",
+                "path": "/evidence/deepswe.tar.gz",
+                "sha256": "a" * 64,
+                "size_bytes": 123,
+                "error": None,
+                "token_usage_samples": None,
+                "rollout_metrics": {
+                    "complete": True,
+                    "compaction_events": 3,
+                    "compaction_events_by_type": {"context_compacted": 3},
+                    "rollout_line_count": 456,
+                    "tool_calls_by_name": {"python": 88},
+                },
+            },
+        }
+    }
+
+    result = adapter.attach_item_observability(
+        deepswe_module.ItemResult(item_id="task", score=1.0, is_correct=True)
+    )
+
+    assert result.metadata["compaction_experiment"] == {
+        "schema_version": 1,
+        "arm": agent,
+        "context_limit_tokens": 48_000,
+        "configured_context_window": 48_000,
+        "compaction_events": 3,
+        "compaction_events_by_type": {"context_compacted": 3},
+        "rollout_line_count": 456,
+        "tool_calls_by_name": {"python": 88},
+        "rollout_metrics_complete": True,
+        "score": 1.0,
+    }
+
+
 def test_deepswe_finalizer_waits_for_evidence_before_sandbox_teardown() -> None:
     source = inspect.getsource(DeepSWEAdapter._evaluate_item)
 
     assert source.index("_finish_evidence_retention") < source.index(
         "_cleanup_owned_task_containers"
     )
-    assert source.index("_finish_evidence_retention") < source.index(
-        "terminate_sandbox"
-    )
+    assert source.index("_finish_evidence_retention") < source.index("terminate_sandbox")
 
 
 def test_infrastructure_exclusions_do_not_hide_live_cli_crashes() -> None:

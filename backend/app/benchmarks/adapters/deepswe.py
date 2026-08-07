@@ -38,6 +38,7 @@ from app.benchmarks.adapters.terminal_bench import (
 )
 from app.benchmarks.agent_evidence import retain_agent_evidence
 from app.benchmarks.agent_provider_config import (
+    AgentProviderLaunch,
     prepare_sandy_agent_launch,
     retain_sandy_agent_rollout,
     validate_openrouter_agent_usage,
@@ -674,7 +675,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
             "echo CACHE_MOUNT=$(mountpoint -q /var/cache/sandy && echo PRESENT || echo ABSENT); "
             "echo CACHE_FILES=$(find /var/cache/sandy -mindepth 1 -print -quit "
             "2>/dev/null | wc -l); "
-            "if python3 -c \"import socket; s=socket.socket(socket.AF_UNIX); "
+            'if python3 -c "import socket; s=socket.socket(socket.AF_UNIX); '
             "s.settimeout(2); s.connect('/var/run/docker.sock')\" "
             ">/tmp/raw.out 2>/tmp/raw.err; then echo RAW_DOCKER=ESCAPED; "
             "else echo RAW_DOCKER=BLOCKED; fi; "
@@ -1131,8 +1132,36 @@ class DeepSWEAdapter(BenchmarkAdapter):
             or "codex"
         )
 
+    def _context_limit_tokens(self) -> int | None:
+        value = (
+            (getattr(self, "run_config", None) or {}).get("deepswe", {}).get("context_limit_tokens")
+        )
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError("config.deepswe.context_limit_tokens must be a positive integer")
+        return value
+
+    async def _prepare_agent_launch(
+        self,
+        sandbox_id: str,
+        agent_name: str,
+        context_limit_tokens: int | None,
+    ) -> AgentProviderLaunch:
+        return await prepare_sandy_agent_launch(
+            client=self.client,
+            sandy=self.sandy,
+            sandbox_id=sandbox_id,
+            agent=agent_name,
+            model=self.model_slug,
+            context_limit_tokens=context_limit_tokens,
+        )
+
     def _new_item_observability(self, item_id: str) -> dict[str, Any]:
         state = {
+            "agent": None,
+            "context_limit_tokens": None,
+            "configured_context_window": None,
             "agent_invoked": False,
             "agent_launch": None,
             "rollout_retained": False,
@@ -1145,6 +1174,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
                 "size_bytes": None,
                 "error": "agent was not started for this item",
                 "token_usage_samples": None,
+                "rollout_metrics": None,
             },
         }
         self._item_observability[item_id] = state
@@ -1161,6 +1191,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
             "size_bytes": None,
             "error": None,
             "token_usage_samples": None,
+            "rollout_metrics": None,
         }
         state["retention_task"] = asyncio.create_task(
             retain_agent_evidence(
@@ -1204,14 +1235,10 @@ class DeepSWEAdapter(BenchmarkAdapter):
             agent_launch = state.get("agent_launch")
             if agent_launch is not None and not state.get("rollout_retained"):
                 try:
-                    await retain_sandy_agent_rollout(
-                        self.sandy, sandbox_id, agent_launch
-                    )
+                    await retain_sandy_agent_rollout(self.sandy, sandbox_id, agent_launch)
                     state["rollout_retained"] = True
                 except Exception as exc:
-                    state["rollout_retention_error"] = (
-                        str(exc) or exc.__class__.__name__
-                    )
+                    state["rollout_retention_error"] = str(exc) or exc.__class__.__name__
                     logger.warning(
                         "Could not retain DeepSWE rollout before evidence archive",
                         item_id=item_id,
@@ -1221,9 +1248,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
             self._start_evidence_retention(item_id, sandbox_id)
         try:
             state["evidence"] = await state["retention_task"]
-            state["evidence"]["rollout_retention_error"] = state.get(
-                "rollout_retention_error"
-            )
+            state["evidence"]["rollout_retention_error"] = state.get("rollout_retention_error")
         except BaseException as exc:
             # This hook runs from the sandbox finalizer, including worker
             # cancellation. Evidence failure must not replace a valid score.
@@ -1234,6 +1259,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
                 "size_bytes": None,
                 "error": f"retention task failed: {exc}",
                 "token_usage_samples": None,
+                "rollout_metrics": None,
                 "rollout_retention_error": state.get("rollout_retention_error"),
             }
 
@@ -1250,6 +1276,19 @@ class DeepSWEAdapter(BenchmarkAdapter):
         result.token_usage_samples = evidence.get("token_usage_samples")
         if result.metadata is None:
             result.metadata = {}
+        rollout_metrics = evidence.get("rollout_metrics") or {}
+        result.metadata["compaction_experiment"] = {
+            "schema_version": 1,
+            "arm": state.get("agent") or result.metadata.get("agent"),
+            "context_limit_tokens": state.get("context_limit_tokens"),
+            "configured_context_window": state.get("configured_context_window"),
+            "compaction_events": rollout_metrics.get("compaction_events"),
+            "compaction_events_by_type": rollout_metrics.get("compaction_events_by_type"),
+            "rollout_line_count": rollout_metrics.get("rollout_line_count"),
+            "tool_calls_by_name": rollout_metrics.get("tool_calls_by_name"),
+            "rollout_metrics_complete": rollout_metrics.get("complete"),
+            "score": result.score,
+        }
         result.metadata["agent_evidence"] = {
             key: evidence.get(key)
             for key in (
@@ -1307,6 +1346,8 @@ class DeepSWEAdapter(BenchmarkAdapter):
             return ItemResult(item_id=item_id, error=f"Item {item_id} not found")
 
         agent_name = self._agent_name()
+        state = self._item_observability[item_id]
+        state["agent"] = agent_name
         instruction = item["instruction"]
         prompt = (
             "You are an interactive coding agent in a Sandy sandbox. A no-network "
@@ -1328,6 +1369,8 @@ class DeepSWEAdapter(BenchmarkAdapter):
         agent_usage: dict[str, Any] = {}
 
         try:
+            context_limit_tokens = self._context_limit_tokens()
+            state["context_limit_tokens"] = context_limit_tokens
             budget = self._item_budgets_seconds(item)
             outer_timeout = self.get_item_timeout_seconds(item_id)
             sandbox_ttl_min = math.ceil((outer_timeout or 0) / 60)
@@ -1494,16 +1537,16 @@ class DeepSWEAdapter(BenchmarkAdapter):
                     metadata={"agent": agent_name, "seal": seal},
                 )
 
-            agent_launch = await prepare_sandy_agent_launch(
-                client=self.client,
-                sandy=self.sandy,
-                sandbox_id=sandbox_id,
-                agent=agent_name,
-                model=self.model_slug,
+            agent_launch = await self._prepare_agent_launch(
+                sandbox_id,
+                agent_name,
+                context_limit_tokens,
             )
-            self._item_observability[item_id]["agent_launch"] = agent_launch
+            state["agent_launch"] = agent_launch
+            if agent_launch.setup is not None:
+                state["configured_context_window"] = agent_launch.setup.context_window
             agent_started_at = time.monotonic()
-            self._item_observability[item_id]["agent_invoked"] = True
+            state["agent_invoked"] = True
             agent_result = await self.sandy.run_agent(
                 sandbox_id,
                 agent=agent_name,
@@ -1564,12 +1607,10 @@ class DeepSWEAdapter(BenchmarkAdapter):
             usage_error: str | None = None
             try:
                 await retain_sandy_agent_rollout(self.sandy, sandbox_id, agent_launch)
-                self._item_observability[item_id]["rollout_retained"] = True
+                state["rollout_retained"] = True
             except Exception as exc:
                 usage_error = str(exc) or exc.__class__.__name__
-                self._item_observability[item_id]["rollout_retention_error"] = (
-                    usage_error
-                )
+                state["rollout_retention_error"] = usage_error
             agent_usage = await collect_agent_usage(self.sandy, sandbox_id)
             if usage_error is None:
                 try:
