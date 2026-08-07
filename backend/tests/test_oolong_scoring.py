@@ -166,10 +166,19 @@ async def test_preload_reads_explicit_ids_before_worker_selection(monkeypatch):
 
     def targeted_preload():
         called.append(set(adapter._target_item_ids or set()))
+        adapter._item_cache = {
+            "803": {"id": "803"},
+            "804": {"id": "804"},
+        }
 
     monkeypatch.setattr(adapter, "_preload_targeted_parquet_rows", targeted_preload)
 
     await adapter.preload()
+    total, selected = await adapter.get_items_for_evaluation(100, "paired", 2)
 
     assert called == [{803, 804}]
     assert adapter._preloaded is True
+    assert total == 5200
+    assert selected == ["803", "804"]
+    assert await adapter._get_item("803") == {"id": "803"}
+    assert await adapter._get_item("804") == {"id": "804"}

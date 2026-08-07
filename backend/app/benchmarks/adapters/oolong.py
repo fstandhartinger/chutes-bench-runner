@@ -488,9 +488,18 @@ class OolongAdapter(BenchmarkAdapter):
             subset_pct, seed, subset_count
         )
 
-        # Track target items for preloading and item access.
-        self._target_item_ids = {int(item_id) for item_id in items_to_evaluate}
-        self._item_cache.clear()
+        # Track target items for preloading and item access. The worker calls
+        # preload() *before* this selector, so keep an already loaded targeted
+        # cache when it contains this exact selection.
+        selected_targets = {int(item_id) for item_id in items_to_evaluate}
+        targeted_cache_ready = (
+            self._preloaded
+            and self._dataset is None
+            and all(str(item_id) in self._item_cache for item_id in selected_targets)
+        )
+        self._target_item_ids = selected_targets
+        if not targeted_cache_ready:
+            self._item_cache.clear()
         self._use_streaming = False
 
         return total_items, items_to_evaluate
