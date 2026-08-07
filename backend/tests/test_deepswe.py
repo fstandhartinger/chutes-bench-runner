@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 import tarfile
 from dataclasses import replace
 
 import pytest
 
+import app.benchmarks.adapters.deepswe as deepswe_module
 from app.benchmarks.adapters.deepswe import (
     DEEPSWE_AGENT_NOT_TERMINATED_EXCLUSION_REASON,
     DEEPSWE_VERIFIER_NOT_EXECUTED_EXCLUSION_REASON,
@@ -158,6 +160,20 @@ def test_item_timeout_covers_every_declared_phase(monkeypatch) -> None:
     assert timeout >= 5400
 
 
+def test_agent_never_receives_raw_docker_socket_or_verifier_archive() -> None:
+    evaluate_source = inspect.getsource(DeepSWEAdapter.evaluate_item)
+    verifier_source = inspect.getsource(DeepSWEAdapter._stage_and_run_verifier)
+
+    assert "_start_task_gateway" in evaluate_source
+    assert "_verify_agent_docker_boundary" in evaluate_source
+    assert evaluate_source.index("_verify_agent_docker_boundary") < evaluate_source.index(
+        "prepare_sandy_agent_launch"
+    )
+    assert "_upload_archive" not in verifier_source
+    assert "self.sandy.write_file" not in verifier_source
+    assert "docker.from_env" in verifier_source
+
+
 def test_infrastructure_exclusions_do_not_hide_live_cli_crashes() -> None:
     exclusion, note = classify_deepswe_agent_outcome({}, 5400, True)
     assert exclusion == "infrastructure_transport"
@@ -273,7 +289,7 @@ def test_invalid_or_infrastructure_reward_is_excluded(raw_reward: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_network_seal_requires_a_real_sandbox_fetch_probe() -> None:
+async def test_network_seal_requires_a_real_sandbox_fetch_probe(monkeypatch) -> None:
     class SandyStub:
         def __init__(self, sandbox_probe: str):
             self.sandbox_probe = sandbox_probe
@@ -281,11 +297,33 @@ async def test_network_seal_requires_a_real_sandbox_fetch_probe() -> None:
 
         async def execute_command(self, *_args, **_kwargs):
             self.calls += 1
-            if self.calls <= 2:
+            if self.calls == 1:
                 return {"exit_code": 0, "stdout": ""}
-            if self.calls == 3:
-                return {"exit_code": 0, "stdout": self.sandbox_probe}
-            return {"exit_code": 0, "stdout": "MODE=none\nHOSTS=1"}
+            return {"exit_code": 0, "stdout": self.sandbox_probe}
+
+    async def outside_exec(*_args, **_kwargs):
+        return {"exit_code": 0, "stdout": "1\n", "stderr": ""}
+
+    class Container:
+        attrs = {
+            "Config": {"Labels": {"chutes.bench.sandbox_id": "sandbox"}},
+            "HostConfig": {"NetworkMode": "none"},
+        }
+
+    class Containers:
+        @staticmethod
+        def get(_name):
+            return Container()
+
+    class Client:
+        containers = Containers()
+
+    monkeypatch.setattr(
+        deepswe_module.TerminalBenchAdapter,
+        "_docker_exec_outside",
+        outside_exec,
+    )
+    monkeypatch.setattr(deepswe_module.docker, "from_env", lambda: Client())
 
     adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
     adapter.sandy = SandyStub("HOSTS=1\nCURL=no")
@@ -299,3 +337,55 @@ async def test_network_seal_requires_a_real_sandbox_fetch_probe() -> None:
     adapter.sandy = SandyStub("HOSTS=1\nCURL=yes\nFETCH=000CURLFAIL")
     blocked = await adapter._seal_network("sandbox", "container")
     assert blocked["sealed"] is True
+
+
+@pytest.mark.asyncio
+async def test_docker_boundary_attempts_fresh_container_source_fetch(monkeypatch) -> None:
+    class ExecResult:
+        exit_code = 0
+        output = (
+            b"SOCKET=ABSENT\nCACHE_FS=tmpfs\nCACHE_FILES=0\n"
+            b"RAW_DOCKER=BLOCKED\nSPAWN=BLOCKED\n"
+            b"OTHER_CONTAINER=BLOCKED\nTASK_PATH=WORKS\n"
+        )
+
+    class Sandbox:
+        @staticmethod
+        def exec_run(argv, **_kwargs):
+            assert argv[:2] == ["sh", "-lc"]
+            assert "docker run --rm" in argv[2]
+            assert deepswe_module.DEEPSWE_SOURCE_PROBE_URL in argv[2]
+            return ExecResult()
+
+    monkeypatch.setattr(deepswe_module, "sandbox_container", lambda _id: Sandbox())
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+
+    held = await adapter._verify_agent_docker_boundary("sandbox", "task")
+
+    assert held["boundary_held"] is True
+    assert held["observed_from"] == "worker_docker_api_into_agent_namespace"
+
+    ExecResult.output = ExecResult.output.replace(b"SPAWN=BLOCKED", b"SPAWN=ESCAPED")
+    escaped = await adapter._verify_agent_docker_boundary("sandbox", "task")
+    assert escaped["boundary_held"] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_view_hash_scan_fails_on_heldout_bytes() -> None:
+    digest = "a" * 64
+
+    class SandyStub:
+        async def execute_command(self, *_args, **_kwargs):
+            return {
+                "exit_code": 0,
+                "stdout": (
+                    f"ANSWERS=0 ARCHIVES=0 CACHE_FILES=0\n{digest}  /tmp/copied-hidden-test\n"
+                ),
+            }
+
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter.sandy = SandyStub()
+    proof = await adapter._verify_workspace_clean("sandbox", [{"sha256": digest, "size": 123}])
+
+    assert proof["clean"] is False
+    assert proof["heldout_hash_matches"] == [f"{digest}  /tmp/copied-hidden-test"]

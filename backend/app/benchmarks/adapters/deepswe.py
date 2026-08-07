@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import copy
 import hashlib
 import io
@@ -25,11 +26,13 @@ from collections.abc import AsyncIterator
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import docker
 import httpx
 
 from app.benchmarks.adapters.deepswe_identity import DEEPSWE_V1_1, DeepSWESpec
 from app.benchmarks.adapters.terminal_bench import (
     BenchmarkIdentityError,
+    TerminalBenchAdapter,
     classify_agent_exit,
     classify_bare_failure,
 )
@@ -42,6 +45,7 @@ from app.benchmarks.agent_usage import collect_agent_usage
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
 from app.core.logging import get_logger
+from app.services.provenance_service import sandbox_container
 from app.services.sandy_service import SandyService
 
 logger = get_logger(__name__)
@@ -51,6 +55,10 @@ DEEPSWE_HARNESS = "sandy-cli-separate-verifier"
 DEEPSWE_AGENT_NOT_TERMINATED_EXCLUSION_REASON = "infrastructure_agent_not_terminated"
 DEEPSWE_USAGE_ACCOUNTING_EXCLUSION_REASON = "infrastructure_usage_accounting"
 DEEPSWE_VERIFIER_NOT_EXECUTED_EXCLUSION_REASON = "infrastructure_verifier_not_executed"
+DEEPSWE_SOURCE_PROBE_URL = (
+    "https://raw.githubusercontent.com/datacurve-ai/deep-swe/"
+    "435ee89ec2f2e2289f33b0da4f992f0b7b7266b9/README.md"
+)
 
 
 def classify_deepswe_agent_outcome(
@@ -497,24 +505,48 @@ class DeepSWEAdapter(BenchmarkAdapter):
         result = await self.sandy.execute_command(sandbox_id, command)
         return {"ok": (result or {}).get("exit_code") == 0, "result": result}
 
-    async def _verify_workspace_clean(self, sandbox_id: str) -> dict[str, Any]:
+    async def _verify_workspace_clean(
+        self,
+        sandbox_id: str,
+        heldout_hashes: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        expected_hashes = {entry["sha256"] for entry in (heldout_hashes or [])}
+        heldout_sizes = sorted({int(entry["size"]) for entry in (heldout_hashes or [])})
+        size_expr = " -o ".join(f"-size {size}c" for size in heldout_sizes)
+        hash_scan = (
+            f"find / -xdev -type f \\( {size_expr} \\) -exec sha256sum {{}} + 2>/dev/null || true"
+            if size_expr
+            else ":"
+        )
         result = await self.sandy.execute_command(
             sandbox_id,
             "answer_count=$(find /workspace/task/tests /workspace/task/solution "
             "-type f 2>/dev/null | wc -l); "
-            "archive_count=$(find /workspace -maxdepth 1 -type f "
+            "archive_count=$(find /workspace -type f "
             "\\( -name '*.tar' -o -name '*.b64' -o -name '*.tar.gz' \\) | wc -l); "
-            "echo ANSWERS=$answer_count ARCHIVES=$archive_count",
+            "cache_count=$(find /var/cache/sandy -mindepth 1 -type f 2>/dev/null | wc -l); "
+            "echo ANSWERS=$answer_count ARCHIVES=$archive_count CACHE_FILES=$cache_count; "
+            + hash_scan,
+            timeout_ms=300000,
         )
         stdout = ((result or {}).get("stdout") or "").strip()
+        found_hashes = []
+        for line in stdout.splitlines():
+            digest = line.strip().split(maxsplit=1)[0] if line.strip() else ""
+            if digest in expected_hashes:
+                found_hashes.append(line.strip())
         return {
             "clean": (
                 (result or {}).get("exit_code") == 0
                 and "ANSWERS=0" in stdout
                 and "ARCHIVES=0" in stdout
+                and (not heldout_hashes or "CACHE_FILES=0" in stdout)
+                and not found_hashes
             ),
             "stdout": stdout,
+            "heldout_hash_matches": found_hashes[:50],
             "result": result,
+            "observed_from": "agent_sandbox_namespace",
         }
 
     async def _verify_container_clean(
@@ -533,10 +565,10 @@ class DeepSWEAdapter(BenchmarkAdapter):
             else ":"
         )
         script = f"set -e; find /tests /solution -type f 2>/dev/null || true; {hash_scan}"
-        result = await self.sandy.execute_command(
-            sandbox_id,
-            f"docker exec {shlex.quote(container_name)} sh -c {shlex.quote(script)}",
-            timeout_ms=300000,
+        result = await TerminalBenchAdapter._docker_exec_outside(
+            self,
+            container_name,
+            ["sh", "-c", script],
         )
         found = []
         for line in ((result or {}).get("stdout") or "").splitlines():
@@ -555,6 +587,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
             "found_in_container": found[:50],
             "probe_exit_code": (result or {}).get("exit_code"),
             "probe_error": (result or {}).get("error") or (result or {}).get("stderr"),
+            "observed_from": "worker_docker_api_inside_task_container",
         }
 
     def _seal_script(self) -> str:
@@ -572,27 +605,40 @@ class DeepSWEAdapter(BenchmarkAdapter):
 
     async def _seal_network(self, sandbox_id: str, container_name: str) -> dict[str, Any]:
         await self.sandy.execute_command(sandbox_id, self._seal_script())
-        await self.sandy.execute_command(
-            sandbox_id,
-            f"docker exec {shlex.quote(container_name)} sh -c {shlex.quote(self._seal_script())}",
+        await TerminalBenchAdapter._docker_exec_outside(
+            self,
+            container_name,
+            ["sh", "-c", self._seal_script()],
         )
         sandbox_probe = await self.sandy.execute_command(
             sandbox_id,
             f"echo HOSTS=$(grep -c {shlex.quote(self.SEAL_MARKER)} /etc/hosts); "
             "if command -v curl >/dev/null 2>&1; then "
             "echo CURL=yes; echo FETCH=$(curl -s -m 8 -o /dev/null -w '%{http_code}' "
-            "https://raw.githubusercontent.com/datacurve-ai/deep-swe/main/README.md "
+            f"{shlex.quote(DEEPSWE_SOURCE_PROBE_URL)} "
             "|| echo CURLFAIL); else echo CURL=no; fi",
         )
-        container_probe = await self.sandy.execute_command(
-            sandbox_id,
-            f"echo MODE=$(docker inspect -f '{{{{.HostConfig.NetworkMode}}}}' "
-            f"{shlex.quote(container_name)}); "
-            f"echo HOSTS=$(docker exec {shlex.quote(container_name)} sh -c "
-            f"{shlex.quote(f'grep -c {shlex.quote(self.SEAL_MARKER)} /etc/hosts')})",
+        container_hosts = await TerminalBenchAdapter._docker_exec_outside(
+            self,
+            container_name,
+            ["sh", "-c", f"grep -c {shlex.quote(self.SEAL_MARKER)} /etc/hosts"],
+        )
+
+        def _network_mode() -> str:
+            container = docker.from_env().containers.get(container_name)
+            labels = (container.attrs.get("Config") or {}).get("Labels") or {}
+            if not labels.get("chutes.bench.sandbox_id"):
+                raise RuntimeError("task container is missing its sandbox ownership label")
+            return str((container.attrs.get("HostConfig") or {}).get("NetworkMode") or "")
+
+        try:
+            network_mode = await asyncio.to_thread(_network_mode)
+        except Exception as exc:
+            network_mode = f"ERROR:{exc}"
+        container_stdout = (
+            f"MODE={network_mode}\nHOSTS={((container_hosts or {}).get('stdout') or '').strip()}"
         )
         sandbox_stdout = ((sandbox_probe or {}).get("stdout") or "").strip()
-        container_stdout = ((container_probe or {}).get("stdout") or "").strip()
         sandbox_blocked = (
             (sandbox_probe or {}).get("exit_code") == 0
             and "HOSTS=0" not in sandbox_stdout
@@ -601,7 +647,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
             and "FETCH=200" not in sandbox_stdout
         )
         container_blocked = (
-            (container_probe or {}).get("exit_code") == 0
+            (container_hosts or {}).get("exit_code") == 0
             and "MODE=none" in container_stdout
             and "HOSTS=0" not in container_stdout
             and "HOSTS=" in container_stdout
@@ -613,6 +659,59 @@ class DeepSWEAdapter(BenchmarkAdapter):
             "sandbox_stdout": sandbox_stdout,
             "container_stdout": container_stdout,
             "hosts": list(self.BENCHMARK_SOURCE_HOSTS),
+        }
+
+    async def _verify_agent_docker_boundary(
+        self,
+        sandbox_id: str,
+        container_name: str,
+    ) -> dict[str, Any]:
+        """Attempt the fresh-container source-fetch bypass from the agent namespace."""
+        command = (
+            "echo SOCKET=$(test -S /var/run/docker.sock && echo PRESENT || echo ABSENT); "
+            "echo CACHE_FS=$(stat -f -c %T /var/cache/sandy 2>/dev/null || echo ERROR); "
+            "echo CACHE_FILES=$(find /var/cache/sandy -mindepth 1 -print -quit "
+            "2>/dev/null | wc -l); "
+            "if DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker run --rm "
+            f"curlimages/curl:8.10.1 -fsSL {shlex.quote(DEEPSWE_SOURCE_PROBE_URL)} "
+            ">/tmp/raw.out 2>/tmp/raw.err; then echo RAW_DOCKER=ESCAPED; "
+            "else echo RAW_DOCKER=BLOCKED; fi; "
+            "if docker run --rm curlimages/curl:8.10.1 -fsSL "
+            f"{shlex.quote(DEEPSWE_SOURCE_PROBE_URL)} >/tmp/run.out 2>/tmp/run.err; "
+            "then echo SPAWN=ESCAPED; else echo SPAWN=BLOCKED; fi; "
+            "if docker exec chutes-bench-runner-worker-1 true >/tmp/other.out 2>/tmp/other.err; "
+            "then echo OTHER_CONTAINER=ESCAPED; else echo OTHER_CONTAINER=BLOCKED; fi; "
+            f"if docker exec {shlex.quote(container_name)} true >/tmp/task.out 2>/tmp/task.err; "
+            "then echo TASK_PATH=WORKS; else echo TASK_PATH=BROKEN; fi; "
+            "echo RAW_SHA256=$(sha256sum /tmp/raw.out 2>/dev/null | cut -d' ' -f1); "
+            "echo SPAWN_SHA256=$(sha256sum /tmp/run.out 2>/dev/null | cut -d' ' -f1); "
+            "echo SPAWN_ERROR=$(tr '\\n' ' ' </tmp/run.err | head -c 240)"
+        )
+        sandbox = sandbox_container(sandbox_id)
+        result = await asyncio.to_thread(
+            sandbox.exec_run,
+            ["sh", "-lc", command],
+            stdout=True,
+            stderr=True,
+        )
+        stdout = (result.output or b"").decode("utf-8", errors="replace")
+        required = (
+            "SOCKET=ABSENT",
+            "CACHE_FS=tmpfs",
+            "CACHE_FILES=0",
+            "RAW_DOCKER=BLOCKED",
+            "SPAWN=BLOCKED",
+            "OTHER_CONTAINER=BLOCKED",
+            "TASK_PATH=WORKS",
+        )
+        return {
+            "probe": stdout.strip(),
+            "probe_exit_code": int(result.exit_code),
+            "required_markers": list(required),
+            "boundary_held": int(result.exit_code) == 0
+            and all(marker in stdout for marker in required),
+            "source_probe_url": DEEPSWE_SOURCE_PROBE_URL,
+            "observed_from": "worker_docker_api_into_agent_namespace",
         }
 
     async def _sandbox_alive(self, sandbox_id: str) -> bool | None:
@@ -702,30 +801,76 @@ class DeepSWEAdapter(BenchmarkAdapter):
 
     async def _reap_orphans(self, sandbox_id: str) -> None:
         """Remove only DeepSWE resources whose owning Sandy sandbox is gone."""
-        await self.sandy.execute_command(
-            sandbox_id,
-            "live=$(docker ps --format '{{.Names}}' | grep '^sandy_' | sed 's/^sandy_/s/'); "
-            "for container in $(docker ps -a --format '{{.Names}}' | grep '^deepswe_s'); do "
-            '  namespace=$(echo "$container" | sed -E '
-            "'s/^deepswe_(s[0-9a-f]+)_.*/\\1/'); "
-            '  if ! echo "$live" | grep -qx "$namespace"; then '
-            "    image=$(docker inspect -f '{{.Config.Image}}' \"$container\" 2>/dev/null || true); "
-            '    docker rm -f "$container" >/dev/null 2>&1 || true; '
-            '    case "$image" in public.ecr.aws/d3j8x8q7/swe-bench-202605:*-v1.1|deepswe_s*) '
-            '      docker rmi "$image" >/dev/null 2>&1 || true ;; esac; '
-            "  fi; "
-            "done; true",
-            timeout_ms=300000,
+
+        def _reap() -> None:
+            client = docker.from_env()
+            for container in client.containers.list(
+                all=True, filters={"label": "chutes.benchmark=deepswe"}
+            ):
+                labels = (container.attrs.get("Config") or {}).get("Labels") or {}
+                owner = labels.get("chutes.bench.sandbox_id")
+                if not owner or owner == sandbox_id:
+                    continue
+                try:
+                    sandbox_container(owner)
+                except Exception:
+                    container.remove(force=True)
+
+        await asyncio.to_thread(_reap)
+
+    async def _docker_exec_outside(
+        self,
+        container_name: str,
+        argv: list[str],
+        *,
+        workdir: str | None = None,
+        user: str = "",
+    ) -> dict[str, Any]:
+        return await TerminalBenchAdapter._docker_exec_outside(
+            self,
+            container_name,
+            argv,
+            workdir=workdir,
+            user=user,
+        )
+
+    async def _put_archive_outside(
+        self,
+        container_name: str,
+        destination: str,
+        archive_bytes: bytes,
+    ) -> dict[str, Any]:
+        return await TerminalBenchAdapter._put_archive_outside(
+            self,
+            container_name,
+            destination,
+            archive_bytes,
+        )
+
+    async def _put_file_outside(
+        self,
+        container_name: str,
+        destination: str,
+        content: bytes,
+        *,
+        mode: int = 0o644,
+    ) -> dict[str, Any]:
+        return await TerminalBenchAdapter._put_file_outside(
+            self,
+            container_name,
+            destination,
+            content,
+            mode=mode,
         )
 
     @staticmethod
-    def _resource_flags(item: dict[str, Any]) -> list[str]:
-        flags = []
+    def _resource_kwargs(item: dict[str, Any]) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
         if item.get("cpus"):
-            flags.extend(["--cpus", shlex.quote(str(item["cpus"]))])
+            kwargs["nano_cpus"] = int(float(item["cpus"]) * 1_000_000_000)
         if item.get("memory_mb"):
-            flags.extend(["--memory", f"{int(item['memory_mb'])}m"])
-        return flags
+            kwargs["mem_limit"] = f"{int(item['memory_mb'])}m"
+        return kwargs
 
     async def _start_agent_container(
         self,
@@ -735,46 +880,57 @@ class DeepSWEAdapter(BenchmarkAdapter):
         pull_timeout_sec: int,
     ) -> dict[str, Any]:
         image = item["docker_image"]
-        pull = await self.sandy.execute_command(
-            sandbox_id,
-            f"docker pull {shlex.quote(image)}",
-            timeout_ms=pull_timeout_sec * 1000,
-        )
-        if (pull or {}).get("exit_code") != 0:
-            return {"ok": False, "stage": "image_pull", "result": pull}
 
-        digest = await self.sandy.execute_command(
-            sandbox_id,
-            f"docker image inspect -f '{{{{index .RepoDigests 0}}}}' {shlex.quote(image)}",
+        def _pull_and_start() -> dict[str, Any]:
+            client = docker.from_env()
+            pulled = client.images.pull(image)
+            try:
+                stale = client.containers.get(container_name)
+                stale.remove(force=True)
+            except docker.errors.NotFound:
+                pass
+            container = client.containers.run(
+                pulled.id,
+                command=["sleep", "infinity"],
+                name=container_name,
+                detach=True,
+                network_mode="none",
+                working_dir="/app",
+                labels={
+                    "chutes.benchmark": "deepswe",
+                    "chutes.bench.sandbox_id": sandbox_id,
+                    "chutes.bench.role": "agent-task",
+                },
+                **self._resource_kwargs(item),
+            )
+            container.reload()
+            repo_digests = pulled.attrs.get("RepoDigests") or []
+            return {
+                "container_id": container.id,
+                "image_id": pulled.id,
+                "image_digest": str(repo_digests[0]) if repo_digests else pulled.id,
+                "network_mode": (container.attrs.get("HostConfig") or {}).get("NetworkMode"),
+            }
+
+        try:
+            started = await asyncio.wait_for(
+                asyncio.to_thread(_pull_and_start), timeout=max(1, pull_timeout_sec)
+            )
+        except TimeoutError:
+            return {"ok": False, "stage": "image_pull", "error": "image pull timed out"}
+        except Exception as exc:
+            return {"ok": False, "stage": "container_start", "error": str(exc)}
+        prepared = await TerminalBenchAdapter._docker_exec_outside(
+            self,
+            container_name,
+            ["mkdir", "-p", "/logs/agent"],
         )
-        command = " ".join(
-            [
-                "docker run -d",
-                "--name",
-                shlex.quote(container_name),
-                "--label",
-                "chutes.benchmark=deepswe",
-                "--network",
-                "none",
-                "--workdir",
-                "/app",
-                *self._resource_flags(item),
-                shlex.quote(image),
-                "sleep infinity",
-            ]
-        )
-        run = await self.sandy.execute_command(sandbox_id, command, timeout_ms=300000)
-        if (run or {}).get("exit_code") != 0:
-            return {"ok": False, "stage": "container_start", "result": run}
-        await self.sandy.execute_command(
-            sandbox_id,
-            f"docker exec {shlex.quote(container_name)} mkdir -p /logs/agent",
-        )
+        if prepared.get("exit_code") != 0:
+            return {"ok": False, "stage": "container_start", "result": prepared}
         return {
             "ok": True,
-            "pull": pull,
-            "run": run,
-            "image_digest": ((digest or {}).get("stdout") or "").strip(),
+            **started,
+            "observed_from": "worker_docker_api",
         }
 
     async def _collect_patch(
@@ -785,115 +941,133 @@ class DeepSWEAdapter(BenchmarkAdapter):
         timeout_sec: int,
     ) -> dict[str, Any]:
         command = item["collect_command"]
-        collect = await self.sandy.execute_command(
-            sandbox_id,
-            f"docker exec {shlex.quote(container_name)} bash -lc {shlex.quote(command)}",
-            timeout_ms=timeout_sec * 1000,
-        )
+        try:
+            collect = await asyncio.wait_for(
+                TerminalBenchAdapter._docker_exec_outside(
+                    self,
+                    container_name,
+                    ["bash", "-lc", command],
+                    workdir="/app",
+                ),
+                timeout=max(1, timeout_sec),
+            )
+        except TimeoutError:
+            collect = {"exit_code": -1, "error": "patch collection timed out"}
         copy_result: dict[str, Any] = {}
         fallback_result: dict[str, Any] = {}
+        patch_bytes = b""
         if (collect or {}).get("exit_code") == 0:
-            copy_result = await self.sandy.execute_command(
-                sandbox_id,
-                f"docker cp {shlex.quote(container_name)}:/logs/artifacts/model.patch "
-                "/workspace/model.patch",
+            copy_result = await TerminalBenchAdapter._docker_exec_outside(
+                self,
+                container_name,
+                ["base64", "-w0", "/logs/artifacts/model.patch"],
             )
+            if copy_result.get("exit_code") == 0:
+                try:
+                    patch_bytes = base64.b64decode(copy_result.get("stdout") or "", validate=True)
+                except ValueError:
+                    copy_result = {
+                        "exit_code": -1,
+                        "error": "model.patch transfer was not valid base64",
+                    }
         if (collect or {}).get("exit_code") != 0 or copy_result.get("exit_code") != 0:
             # A CLI that deletes .git, does not commit, or otherwise breaks its
             # own submission path receives a normal zero. Only transport loss
             # is excluded by the caller. Materialize the official no-patch
             # input so the pristine verifier can produce that zero.
-            fallback_result = await self.sandy.execute_command(
-                sandbox_id, ": > /workspace/model.patch"
-            )
-        return {"collect": collect, "copy": copy_result, "fallback": fallback_result}
+            fallback_result = {"exit_code": 0, "used_empty_patch": True}
+            patch_bytes = b""
+        return {
+            "collect": collect,
+            "copy": copy_result,
+            "fallback": fallback_result,
+            "_patch_bytes": patch_bytes,
+        }
 
     async def _stage_and_run_verifier(
         self,
         sandbox_id: str,
         item: dict[str, Any],
+        patch_bytes: bytes,
         verifier_container: str,
         verifier_image: str,
         build_timeout_sec: int,
         verifier_timeout_sec: int,
     ) -> dict[str, Any]:
-        staged = await self._upload_archive(
-            sandbox_id,
-            item["verifier_archive"],
-            basename="deepswe-verifier",
-            destination="/workspace/verifier",
-        )
-        if not staged.get("ok"):
-            return {"ok": False, "stage": "verifier_upload", "staged": staged}
-
-        verifier_probe = await self.sandy.execute_command(
-            sandbox_id,
-            "test -f /workspace/verifier/Dockerfile && "
-            "test -f /workspace/verifier/test.sh && "
-            "test ! -e /workspace/verifier/solution && "
-            "test $(find /workspace -maxdepth 1 -type f "
-            "\\( -name '*.tar' -o -name '*.b64' -o -name '*.tar.gz' \\) | wc -l) -eq 0",
-        )
-        if (verifier_probe or {}).get("exit_code") != 0:
+        def _build_and_start() -> dict[str, Any]:
+            client = docker.from_env()
+            built, _logs = client.images.build(
+                fileobj=io.BytesIO(item["verifier_archive"]),
+                custom_context=True,
+                tag=verifier_image,
+                network_mode="none",
+                rm=True,
+            )
+            try:
+                stale = client.containers.get(verifier_container)
+                stale.remove(force=True)
+            except docker.errors.NotFound:
+                pass
+            container = client.containers.run(
+                built.id,
+                command=["sleep", "infinity"],
+                name=verifier_container,
+                detach=True,
+                network_mode="none",
+                working_dir="/app",
+                labels={
+                    "chutes.benchmark": "deepswe",
+                    "chutes.bench.sandbox_id": sandbox_id,
+                    "chutes.bench.role": "heldout-verifier",
+                },
+                **self._resource_kwargs(item),
+            )
+            container.reload()
             return {
-                "ok": False,
-                "stage": "verifier_integrity",
-                "probe": verifier_probe,
+                "image_id": built.id,
+                "container_id": container.id,
+                "network_mode": (container.attrs.get("HostConfig") or {}).get("NetworkMode"),
             }
 
-        build = await self.sandy.execute_command(
-            sandbox_id,
-            f"docker build --network none -t {shlex.quote(verifier_image)} /workspace/verifier",
-            timeout_ms=build_timeout_sec * 1000,
-        )
-        if (build or {}).get("exit_code") != 0:
-            return {"ok": False, "stage": "verifier_build", "build": build}
-
-        run_command = " ".join(
-            [
-                "docker run -d",
-                "--name",
-                shlex.quote(verifier_container),
-                "--label",
-                "chutes.benchmark=deepswe",
-                "--network",
-                "none",
-                "--workdir",
-                "/app",
-                *self._resource_flags(item),
-                shlex.quote(verifier_image),
-                "sleep infinity",
-            ]
-        )
-        run = await self.sandy.execute_command(sandbox_id, run_command, timeout_ms=300000)
-        if (run or {}).get("exit_code") != 0:
-            return {"ok": False, "stage": "verifier_start", "run": run}
+        try:
+            build = await asyncio.wait_for(
+                asyncio.to_thread(_build_and_start), timeout=max(1, build_timeout_sec)
+            )
+        except TimeoutError:
+            return {"ok": False, "stage": "verifier_build", "error": "build timed out"}
+        except Exception as exc:
+            return {"ok": False, "stage": "verifier_build", "error": str(exc)}
 
         verifier_integrity_script = (
             "test -f /tests/test.sh && test ! -e /solution && "
             f'test "$(git -C /app rev-parse HEAD)" = "{item["base_commit_hash"]}"'
         )
-        separate_probe = await self.sandy.execute_command(
-            sandbox_id,
-            f"docker exec {shlex.quote(verifier_container)} sh -c "
-            f"{shlex.quote(verifier_integrity_script)} "
-            f"&& test \"$(docker inspect -f '{{{{.HostConfig.NetworkMode}}}}' "
-            f'{shlex.quote(verifier_container)})" = none',
+        separate_probe = await TerminalBenchAdapter._docker_exec_outside(
+            self,
+            verifier_container,
+            ["sh", "-c", verifier_integrity_script],
         )
-        if (separate_probe or {}).get("exit_code") != 0:
+        if (separate_probe or {}).get("exit_code") != 0 or build.get("network_mode") != "none":
             return {
                 "ok": False,
                 "stage": "verifier_integrity",
                 "probe": separate_probe,
+                "network_mode": build.get("network_mode"),
             }
 
-        prepare = await self.sandy.execute_command(
-            sandbox_id,
-            f"docker exec {shlex.quote(verifier_container)} mkdir -p "
-            "/logs/artifacts /logs/verifier && "
-            f"docker cp /workspace/model.patch {shlex.quote(verifier_container)}:"
-            "/logs/artifacts/model.patch",
+        prepare_dirs = await TerminalBenchAdapter._docker_exec_outside(
+            self,
+            verifier_container,
+            ["mkdir", "-p", "/logs/artifacts", "/logs/verifier"],
         )
+        prepare = await TerminalBenchAdapter._put_file_outside(
+            self,
+            verifier_container,
+            "/logs/artifacts/model.patch",
+            patch_bytes,
+        )
+        if prepare_dirs.get("exit_code") != 0:
+            prepare = prepare_dirs
         if (prepare or {}).get("exit_code") != 0:
             return {"ok": False, "stage": "verifier_transfer", "prepare": prepare}
 
@@ -905,35 +1079,42 @@ class DeepSWEAdapter(BenchmarkAdapter):
             f"printf '%s' {shlex.quote(test_command_marker)} > {marker_path} && "
             "exec bash /tests/test.sh"
         )
-        test = await self.sandy.execute_command(
-            sandbox_id,
-            f"docker exec -w /app {shlex.quote(verifier_container)} bash -c "
-            f"{shlex.quote(verifier_command)}",
-            timeout_ms=verifier_timeout_sec * 1000,
-        )
-        test_command_probe = await self.sandy.execute_command(
-            sandbox_id,
-            f"docker exec {shlex.quote(verifier_container)} sh -c "
-            f"{shlex.quote(f'cat {marker_path} 2>/dev/null || true')}",
+        try:
+            test = await asyncio.wait_for(
+                TerminalBenchAdapter._docker_exec_outside(
+                    self,
+                    verifier_container,
+                    ["bash", "-c", verifier_command],
+                    workdir="/app",
+                ),
+                timeout=max(1, verifier_timeout_sec),
+            )
+        except TimeoutError:
+            test = {"exit_code": -1, "error": "verifier timed out"}
+        test_command_probe = await TerminalBenchAdapter._docker_exec_outside(
+            self,
+            verifier_container,
+            ["sh", "-c", f"cat {marker_path} 2>/dev/null || true"],
         )
         test_command_executed = (
             (test_command_probe or {}).get("stdout") or ""
         ).strip() == test_command_marker
-        reward = await self.sandy.execute_command(
-            sandbox_id,
-            f"docker exec {shlex.quote(verifier_container)} sh -c "
-            + shlex.quote(
+        reward = await TerminalBenchAdapter._docker_exec_outside(
+            self,
+            verifier_container,
+            [
+                "sh",
+                "-c",
                 "if [ -f /logs/verifier/reward.json ]; then "
                 "cat /logs/verifier/reward.json; "
                 "elif [ -f /logs/verifier/reward.txt ]; then "
-                "cat /logs/verifier/reward.txt; else exit 1; fi"
-            ),
+                "cat /logs/verifier/reward.txt; else exit 1; fi",
+            ],
         )
         return {
             "ok": True,
-            "staged": staged,
+            "staged_in_agent_sandbox": False,
             "build": build,
-            "run": run,
             "separate_probe": separate_probe,
             "prepare": prepare,
             "test": test,
@@ -1028,7 +1209,12 @@ class DeepSWEAdapter(BenchmarkAdapter):
             outer_timeout = self.get_item_timeout_seconds(item_id)
             sandbox_ttl_min = math.ceil((outer_timeout or 0) / 60)
             sandbox_id = await self.sandy.create_sandbox(
+                # Trusted setup ends by unmounting this socket from the entire
+                # sandbox namespace before any model process is launched. The
+                # outside boundary probe below proves that removal and attempts
+                # the exact fresh-container source-fetch bypass.
                 enable_docker_socket=True,
+                requires_agent=True,
                 timeout_minutes=sandbox_ttl_min,
             )
             if not sandbox_id:
@@ -1113,6 +1299,65 @@ class DeepSWEAdapter(BenchmarkAdapter):
                         "agent": agent_name,
                         "workspace_clean": workspace_clean,
                         "container_clean": container_clean,
+                    },
+                )
+
+            try:
+                gateway = await TerminalBenchAdapter._start_task_gateway(
+                    self,
+                    sandbox_id,
+                    agent_container,
+                )
+            except Exception as exc:
+                return self._excluded_result(
+                    item=item,
+                    prompt=prompt,
+                    reason="integrity_docker_boundary_unproven",
+                    error=f"Refusing to score: task-scoped Docker gateway failed: {exc}",
+                    start_time=start_time,
+                    metadata={"agent": agent_name},
+                )
+
+            docker_boundary = await self._verify_agent_docker_boundary(
+                sandbox_id,
+                agent_container,
+            )
+            if not docker_boundary.get("boundary_held"):
+                return self._excluded_result(
+                    item=item,
+                    prompt=prompt,
+                    reason="integrity_docker_boundary_unproven",
+                    error=(
+                        "Refusing to score: the fresh-container benchmark-source "
+                        f"bypass was not blocked: {docker_boundary}"
+                    ),
+                    start_time=start_time,
+                    metadata={
+                        "agent": agent_name,
+                        "agent_docker_gateway": gateway,
+                        "docker_boundary": docker_boundary,
+                    },
+                )
+
+            agent_view_clean = await self._verify_workspace_clean(
+                sandbox_id,
+                item["heldout_hashes"],
+            )
+            if not agent_view_clean.get("clean"):
+                return self._excluded_result(
+                    item=item,
+                    prompt=prompt,
+                    reason="integrity_answer_key_unproven",
+                    error=(
+                        "Refusing to score: held-out DeepSWE material is reachable "
+                        f"from the final agent namespace: {agent_view_clean}"
+                    ),
+                    start_time=start_time,
+                    metadata={
+                        "agent": agent_name,
+                        "agent_docker_gateway": gateway,
+                        "docker_boundary": docker_boundary,
+                        "agent_view_clean": agent_view_clean,
                     },
                 )
 
@@ -1232,6 +1477,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
                 agent_container,
                 int(budget["collect"]),
             )
+            patch_bytes = collected.pop("_patch_bytes", b"")
             collection_transport_failed = any(
                 result.get("exit_code") == -1
                 for result in (
@@ -1259,15 +1505,33 @@ class DeepSWEAdapter(BenchmarkAdapter):
 
             # Stop the environment the agent controlled before verifier files
             # are uploaded or the pristine verifier container is built.
-            await self.sandy.execute_command(
-                sandbox_id,
-                f"docker stop {shlex.quote(agent_container)} >/dev/null 2>&1 || true",
-                timeout_ms=120000,
-            )
+            def _stop_agent_container() -> None:
+                container = docker.from_env().containers.get(agent_container)
+                labels = (container.attrs.get("Config") or {}).get("Labels") or {}
+                if labels.get("chutes.bench.sandbox_id") != sandbox_id:
+                    raise RuntimeError("agent task container ownership changed")
+                container.stop(timeout=30)
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(_stop_agent_container),
+                    timeout=120,
+                )
+            except Exception as exc:
+                return self._excluded_result(
+                    item=item,
+                    prompt=prompt,
+                    reason="integrity_agent_environment_not_stopped",
+                    error=f"Refusing to stage held-out verifier: {exc}",
+                    start_time=start_time,
+                    usage=agent_usage,
+                    metadata={"agent": agent_name, "docker_boundary": docker_boundary},
+                )
 
             verifier = await self._stage_and_run_verifier(
                 sandbox_id,
                 item,
+                patch_bytes,
                 verifier_container,
                 verifier_image,
                 int(budget["verifier_build"]),
@@ -1360,11 +1624,15 @@ class DeepSWEAdapter(BenchmarkAdapter):
                     "memory_mb": item.get("memory_mb"),
                     "storage_mb": item.get("storage_mb"),
                     "seal": seal,
+                    "agent_docker_gateway": gateway,
+                    "docker_boundary": docker_boundary,
                     "answer_key_holdout": {
                         "workspace": workspace_clean,
+                        "agent_view": agent_view_clean,
                         "container": container_clean,
                         "full_source_archive_uploaded": False,
                         "solution_uploaded": False,
+                        "verifier_uploaded_to_agent_sandbox": False,
                     },
                     "separate_verifier": True,
                     "dataset_repository": item["dataset_repository"],
@@ -1395,25 +1663,21 @@ class DeepSWEAdapter(BenchmarkAdapter):
             )
         finally:
             if sandbox_id:
-                names = [name for name in (verifier_container, agent_container) if name]
-                if names:
-                    await self.sandy.execute_command(
-                        sandbox_id,
-                        "docker rm -f "
-                        + " ".join(shlex.quote(name) for name in names)
-                        + " >/dev/null 2>&1 || true",
-                    )
-                if verifier_image:
-                    await self.sandy.execute_command(
-                        sandbox_id,
-                        f"docker rmi {shlex.quote(verifier_image)} >/dev/null 2>&1 || true",
-                    )
-                if image:
-                    # Do not force-remove a shared tag: another paired arm may
-                    # be using it. Docker removes it once no live/stopped task
-                    # container references it.
-                    await self.sandy.execute_command(
-                        sandbox_id,
-                        f"docker rmi {shlex.quote(image)} >/dev/null 2>&1 || true",
-                    )
+                await TerminalBenchAdapter._cleanup_owned_task_containers(
+                    self,
+                    sandbox_id,
+                )
+
+                def _remove_owned_images() -> None:
+                    client = docker.from_env()
+                    if verifier_image:
+                        with contextlib.suppress(Exception):
+                            client.images.remove(verifier_image, force=False)
+                    if image:
+                        # A shared source image is removed only when Docker proves
+                        # no concurrent task container still references it.
+                        with contextlib.suppress(Exception):
+                            client.images.remove(image, force=False)
+
+                await asyncio.to_thread(_remove_owned_images)
                 await self.sandy.terminate_sandbox(sandbox_id)
