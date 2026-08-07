@@ -513,6 +513,7 @@ export function BenchmarkRunner() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="chutes">Chutes (direct)</SelectItem>
+                  <SelectItem value="openrouter">OpenRouter</SelectItem>
                   <SelectItem value="janus">Janus Gateway</SelectItem>
                   <SelectItem value="rlm">Chutes RLM Gateway</SelectItem>
                   <SelectItem value="gremium-openai">Gremium (OpenAI)</SelectItem>
@@ -520,7 +521,8 @@ export function BenchmarkRunner() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-ink-400">
-                RLM runs use the recursive gateway; Gremium runs use the consensus router.
+                OpenRouter offloads exploratory runs; RLM uses the recursive gateway and
+                Gremium uses the consensus router.
               </p>
             </div>
 

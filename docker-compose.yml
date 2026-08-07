@@ -26,6 +26,7 @@ services:
     environment:
       DATABASE_URL: postgresql://bench:bench@db:5432/bench_runner
       CHUTES_API_KEY: ${CHUTES_API_KEY}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ADMIN_SECRET: ${ADMIN_SECRET:-devsecret}
     depends_on:
       db:
@@ -41,6 +42,7 @@ services:
     environment:
       DATABASE_URL: postgresql://bench:bench@db:5432/bench_runner
       CHUTES_API_KEY: ${CHUTES_API_KEY}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       WORKER_POLL_INTERVAL: 5
     depends_on:
       db:
@@ -66,7 +68,6 @@ services:
 
 volumes:
   postgres_data:
-
 
 
 

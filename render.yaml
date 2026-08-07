@@ -35,6 +35,8 @@ services:
         sync: false
       - key: CHUTES_API_KEY
         sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
       - key: ADMIN_SECRET
         sync: false
       - key: BENCH_SIGNING_PRIVATE_KEY

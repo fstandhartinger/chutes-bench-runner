@@ -28,6 +28,8 @@ from app.models.run import (
 )
 from app.services import auth_service
 from app.services.chutes_client import get_chutes_client
+from app.services.openrouter_client import get_openrouter_client
+from app.services.provider_preflight import preflight_provider
 from app.services.janus_client import get_janus_client
 from app.services.gremium_client import GremiumClient
 from app.services.rlm_client import RLMClient
@@ -191,6 +193,10 @@ def _is_fatal_item_error(error: Optional[str]) -> bool:
         return True
     if "invalid api key" in message or "invalid api-key" in message:
         return True
+    if "openrouter" in message and (
+        "token accounting" in message or "exact input and output token counts" in message
+    ):
+        return True
     return False
 
 
@@ -220,6 +226,10 @@ def _is_run_retryable(error: Optional[str]) -> bool:
     if "currently disabled" in message or ("chute" in message and "disabled" in message):
         return False
     if "sandy api key is not configured" in message:
+        return False
+    if "openrouter" in message and (
+        "token accounting" in message or "exact input and output token counts" in message
+    ):
         return False
     # --- Everything else is considered transient → retry ---
     return True
@@ -581,6 +591,8 @@ class BenchmarkWorker:
         logger.error("Run failed", run_id=run.id, error=message)
 
     async def _get_client_for_run(self, db: AsyncSession, run: BenchmarkRun) -> InferenceClient:
+        if run.provider == "openrouter":
+            return get_openrouter_client()
         if run.provider and run.provider.startswith("gremium"):
             return GremiumClient(
                 api_key=settings.gremium_api_key or settings.chutes_api_key,
@@ -1269,6 +1281,27 @@ class BenchmarkWorker:
                             status_code=status_code,
                             detail=detail,
                         )
+
+            if run.provider in {"chutes", "openrouter"}:
+                try:
+                    preflight = await preflight_provider(client, run.model_slug)
+                except Exception as exc:
+                    detail = str(exc) or exc.__class__.__name__
+                    message = (
+                        f"Provider preflight failed for {run.provider}/{run.model_slug}: "
+                        f"{detail}"
+                    )
+                    await self._fail_run_for_model_access(run, run_benchmarks, message)
+                    return
+                await self._safe_add_run_event(
+                    run.id,
+                    "provider_preflight_succeeded",
+                    message=(
+                        f"{run.provider} answered the one-token preflight with "
+                        "provider-reported usage"
+                    ),
+                    data={"provider": run.provider, **preflight},
+                )
 
             for rb in run_benchmarks:
                 # Check for cancellation

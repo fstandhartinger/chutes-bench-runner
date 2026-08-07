@@ -1,0 +1,268 @@
+"""Provider-specific config for Codex-family agents launched through Sandy.
+
+Sandy's installed agent runner generates a Chutes config in the default home
+immediately before launching a CLI.  For an alternate provider, bench-runner
+therefore gives the CLI a separate config home and writes a complete,
+secret-free config there.  Credentials remain environment-only.
+"""
+from __future__ import annotations
+
+import base64
+import json
+from dataclasses import dataclass
+from typing import Any
+
+OPENROUTER_CODEX_AGENTS = frozenset(
+    {"codex", "chutescoder", "chutescoder-baseline"}
+)
+
+
+@dataclass(frozen=True)
+class AgentProviderSetup:
+    """Files and environment needed for one provider-specific agent launch."""
+
+    config_home: str
+    default_config_home: str
+    config_toml: str
+    model_catalog_json: str
+    env_vars: dict[str, str]
+
+    def install_command(self) -> str:
+        """Return a shell-safe command containing no provider credential."""
+        config = base64.b64encode(self.config_toml.encode()).decode("ascii")
+        catalog = base64.b64encode(self.model_catalog_json.encode()).decode("ascii")
+        return (
+            f"mkdir -p {self.config_home} "
+            f"&& echo {config} | base64 -d > {self.config_home}/config.toml "
+            f"&& echo {catalog} | base64 -d > {self.config_home}/model_catalog.json"
+        )
+
+    def retain_command(self) -> str:
+        """Copy the completed rollout into Sandy's normal evidence locations."""
+        return (
+            f"mkdir -p {self.default_config_home}/sessions "
+            f"&& if test -d {self.config_home}/sessions; then "
+            f"cp -a {self.config_home}/sessions/. {self.default_config_home}/sessions/; fi "
+            f"&& cp {self.config_home}/config.toml {self.default_config_home}/config.toml "
+            f"&& cp {self.config_home}/model_catalog.json "
+            f"{self.default_config_home}/model_catalog.json"
+        )
+
+
+@dataclass(frozen=True)
+class AgentProviderLaunch:
+    """Prepared environment for a Sandy agent invocation."""
+
+    provider: str
+    env_vars: dict[str, str]
+    api_base_url: str | None = None
+    setup: AgentProviderSetup | None = None
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        value: dict[str, Any] = {"provider": self.provider}
+        if self.setup is not None:
+            value.update(sanitized_provider_metadata(self.setup))
+        return value
+
+
+def _toml_string(value: str) -> str:
+    # A JSON string is also a valid TOML basic string and handles quotes and
+    # backslashes without interpolating them into a shell command.
+    return json.dumps(value)
+
+
+def _model_catalog(model: str, context_window: int) -> str:
+    return json.dumps(
+        {
+            "models": [
+                {
+                    "slug": model,
+                    "display_name": model,
+                    "description": None,
+                    "supported_reasoning_levels": [],
+                    "shell_type": "default",
+                    "visibility": "none",
+                    "supported_in_api": True,
+                    "priority": 99,
+                    "availability_nux": None,
+                    "upgrade": None,
+                    "support_verbosity": False,
+                    "default_verbosity": None,
+                    "apply_patch_tool_type": None,
+                    "truncation_policy": {"mode": "bytes", "limit": 10000},
+                    "supports_parallel_tool_calls": False,
+                    "context_window": context_window,
+                    "max_context_window": context_window,
+                    "effective_context_window_percent": 95,
+                    "experimental_supported_tools": [],
+                    "multi_agent_version": "v2",
+                    "base_instructions": "",
+                }
+            ]
+        },
+        indent=2,
+    )
+
+
+def build_openrouter_agent_setup(
+    *,
+    agent: str,
+    model: str,
+    api_base_url: str,
+    api_key: str,
+    context_window: int,
+    max_output_tokens: int,
+) -> AgentProviderSetup:
+    """Build a secret-free Codex config plus environment-only credentials."""
+    if agent not in OPENROUTER_CODEX_AGENTS:
+        supported = ", ".join(sorted(OPENROUTER_CODEX_AGENTS))
+        raise ValueError(
+            f"OpenRouter benchmark runs support these Sandy agents: {supported}; "
+            f"got {agent!r}"
+        )
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY is required for OpenRouter benchmark runs")
+    if context_window <= 0 or max_output_tokens <= 0:
+        raise ValueError("OpenRouter model context and output limits must be positive")
+
+    is_chutescoder = agent in {"chutescoder", "chutescoder-baseline"}
+    default_home = "/root/.chutescoder" if is_chutescoder else "/root/.codex"
+    config_home = f"{default_home}-openrouter"
+    catalog_path = f"{config_home}/model_catalog.json"
+    config = f"""# Generated by chutes-bench-runner for an OpenRouter benchmark run.
+# Credentials are deliberately environment-only and are never written here.
+model_catalog_json = {_toml_string(catalog_path)}
+model_provider = "openrouter"
+model = {_toml_string(model)}
+model_reasoning_effort = "medium"
+model_context_window = {context_window}
+model_max_output_tokens = {max_output_tokens}
+web_search = "disabled"
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = {_toml_string(api_base_url.rstrip('/'))}
+env_key = "OPENROUTER_API_KEY"
+wire_api = "responses"
+
+[notice]
+hide_full_access_warning = true
+
+[features]
+view_image_tool = true
+multi_agent_v2 = true
+
+[experimental]
+rmcp_client = true
+"""
+    if agent == "chutescoder-baseline":
+        config += """
+[rlm]
+enabled = false
+"""
+    elif agent == "chutescoder":
+        config += """
+[rlm]
+enabled = true
+python = "python3"
+package_path = "/opt/chutescoder/python"
+"""
+
+    env_vars: dict[str, str] = {
+        "OPENROUTER_API_KEY": api_key,
+        "OPENAI_API_KEY": api_key,
+        "MY_PROVIDER_API_KEY": api_key,
+        "OPENAI_BASE_URL": api_base_url.rstrip("/"),
+        "CODEX_HOME": config_home,
+        "CODEX_SQLITE_HOME": config_home,
+    }
+    if is_chutescoder:
+        env_vars["CHUTESCODER_HOME"] = config_home
+
+    return AgentProviderSetup(
+        config_home=config_home,
+        default_config_home=default_home,
+        config_toml=config,
+        model_catalog_json=_model_catalog(model, context_window),
+        env_vars=env_vars,
+    )
+
+
+def sanitized_provider_metadata(setup: AgentProviderSetup) -> dict[str, Any]:
+    """Expose useful launch metadata without returning environment secrets."""
+    return {
+        "config_home": setup.config_home,
+        "wire_api": "responses",
+    }
+
+
+async def prepare_sandy_agent_launch(
+    *,
+    client: Any,
+    sandy: Any,
+    sandbox_id: str,
+    agent: str,
+    model: str,
+) -> AgentProviderLaunch:
+    """Prepare Chutes or OpenRouter credentials/config for a Sandy CLI."""
+    provider = str(getattr(client, "provider", "chutes") or "chutes")
+    api_key = client.get_api_key() or ""
+    if provider != "openrouter":
+        if not api_key:
+            raise ValueError(f"No API key is configured for provider {provider}")
+        return AgentProviderLaunch(
+            provider=provider,
+            env_vars={"CHUTES_API_KEY": api_key},
+        )
+
+    setup = build_openrouter_agent_setup(
+        agent=agent,
+        model=model,
+        api_base_url=client.get_api_base_url(),
+        api_key=api_key,
+        context_window=(await client.get_model_context_length(model)) or 0,
+        max_output_tokens=(await client.get_model_max_output_length(model)) or 0,
+    )
+    installed = await sandy.execute_command(sandbox_id, setup.install_command())
+    if installed.get("exit_code") != 0:
+        detail = installed.get("error") or installed.get("stderr") or "unknown error"
+        raise RuntimeError(f"Failed to install sandbox-local OpenRouter agent config: {detail}")
+    return AgentProviderLaunch(
+        provider=provider,
+        env_vars=dict(setup.env_vars),
+        api_base_url=client.get_api_base_url(),
+        setup=setup,
+    )
+
+
+async def retain_sandy_agent_rollout(
+    sandy: Any,
+    sandbox_id: str,
+    launch: AgentProviderLaunch,
+) -> None:
+    """Expose alternate-home rollouts to existing accounting and evidence."""
+    if launch.setup is None:
+        return
+    retained = await sandy.execute_command(sandbox_id, launch.setup.retain_command())
+    if retained.get("exit_code") != 0:
+        detail = retained.get("error") or retained.get("stderr") or "unknown error"
+        raise RuntimeError(
+            "Could not retain the OpenRouter rollout for exact per-item token "
+            f"accounting: {detail}"
+        )
+
+
+def validate_openrouter_agent_usage(
+    launch: AgentProviderLaunch,
+    usage: dict[str, Any],
+) -> None:
+    """Make missing OpenRouter per-item usage a hard, visible failure."""
+    if launch.provider != "openrouter":
+        return
+    if not isinstance(usage.get("input_tokens"), int) or not isinstance(
+        usage.get("output_tokens"), int
+    ):
+        raise RuntimeError(
+            "OpenRouter agent rollout did not contain exact input and output token counts"
+        )

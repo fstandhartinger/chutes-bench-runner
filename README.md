@@ -3,7 +3,7 @@
 > **PRODUCTION SERVICE**: This is a revenue-generating product. ALL bench-runner components are consolidated on a **dedicated server** at `88.99.58.39` (bench\_runner\_sandy): Sandy sandbox service (port 7331, 256GB RAM, 12 cores, max 200 sandboxes), 36 autoscaled workers (`SANDY_BASE_URL=http://host.docker.internal:7331` inside worker containers), the autoscaler systemd service, and the queue health monitor (Telegram alerts). Do NOT deploy general Sandy changes to this server. new\_sandy and old\_sandy no longer run any bench-runner workers, autoscaler, or queue monitor.
 
 Chutes Bench Runner is a web app + API for running reproducible benchmark suites against
-models hosted on Chutes. It provides a modern UI, API-triggered runs, detailed per-item
+models hosted on Chutes or OpenRouter. It provides a modern UI, API-triggered runs, detailed per-item
 results, and verifiable signed exports for sharing results.
 
 ## What this project includes
@@ -23,6 +23,7 @@ results, and verifiable signed exports for sharing results.
 - **API-triggered runs** using bearer API keys
 - **Detailed per-item results** with prompts, responses, latency, and judge output
 - **Token usage + cost breakdown** using Chutes pricing metadata
+- **Provider pre-flight** with exact usage validation before any benchmark item runs
 - **Signed exports** (CSV, PDF, and signed ZIP with JSON + signature)
 - **Verification endpoint + UI** for signed ZIP files
 - **Queue + ETA** estimation for running and queued jobs
@@ -87,6 +88,25 @@ curl -X POST "https://chutes-bench-runner-api-v2.onrender.com/api/runs/api" \
     "selected_benchmarks": ["mmlu_pro"]
   }'
 ```
+
+To offload an exploratory run to OpenRouter, configure `OPENROUTER_API_KEY`
+in both the API and worker environments and select the OpenRouter model/provider:
+
+```bash
+curl -X POST "https://chutes-bench-runner-api-v2.onrender.com/api/runs/api" \
+  -H "Authorization: Bearer <CHUTES_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_id": "deepseek/deepseek-v4-flash-0731",
+    "provider": "openrouter",
+    "subset_count": 1,
+    "selected_benchmarks": ["terminal_bench_2_1"],
+    "config": {"terminal_bench_2_1": {"agent": "codex"}}
+  }'
+```
+
+The bearer key still authenticates the bench-runner request; inference for
+this arm uses only the server-side `OPENROUTER_API_KEY`.
 
 ### Export results
 ```bash
@@ -184,6 +204,7 @@ DATABASE_URL=postgresql://<user>:<password>@94.130.222.43:5432/chutes_bench_runn
 ```
 
 Optional but recommended:
+- `OPENROUTER_API_KEY` (enables the OpenRouter model/provider arm)
 - `HF_TOKEN` (for gated datasets)
 - `SANDY_BASE_URL`, `SANDY_API_KEY` (sandboxed benchmarks)
 - `SANDY_DOCKER_UPSTREAM` (route Docker-socket benchmarks to a Docker-backed Sandy upstream)

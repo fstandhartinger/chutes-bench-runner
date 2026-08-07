@@ -18,10 +18,19 @@ IDP_INFERENCE_URL = "https://idp.chutes.ai/v1"
 
 
 class InferenceHTTPError(RuntimeError):
-    """Raised when Chutes returns a non-2xx response."""
+    """Raised when an OpenAI-compatible inference provider returns non-2xx."""
 
-    def __init__(self, status_code: int, response_text: str, request_id: Optional[str] = None):
-        message = f"HTTP {status_code} from Chutes: {response_text.strip() or 'Empty response body'}"
+    def __init__(
+        self,
+        status_code: int,
+        response_text: str,
+        request_id: Optional[str] = None,
+        provider_name: str = "Chutes",
+    ):
+        message = (
+            f"HTTP {status_code} from {provider_name}: "
+            f"{response_text.strip() or 'Empty response body'}"
+        )
         if request_id:
             message = f"{message} (request_id={request_id})"
         super().__init__(message)
@@ -101,6 +110,7 @@ class ChutesClient:
     """
 
     provider = "chutes"
+    provider_display_name = "Chutes"
 
     def __init__(
         self,
@@ -564,7 +574,8 @@ class ChutesClient:
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             detail = str(exc) or repr(exc)
             raise InferenceNetworkError(
-                f"Network error contacting Chutes ({exc.__class__.__name__}): {detail}"
+                f"Network error contacting {self.provider_display_name} "
+                f"({exc.__class__.__name__}): {detail}"
             ) from exc
 
         if response.status_code >= 400:
@@ -585,6 +596,7 @@ class ChutesClient:
                 status_code=response.status_code,
                 response_text=_truncate_text(response.text or ""),
                 request_id=request_id,
+                provider_name=self.provider_display_name,
             )
 
         try:
@@ -593,6 +605,7 @@ class ChutesClient:
             raise InferenceHTTPError(
                 status_code=response.status_code,
                 response_text=f"Invalid JSON response: {_truncate_text(response.text or '')}",
+                provider_name=self.provider_display_name,
             ) from exc
 
         logger.debug(
@@ -610,7 +623,9 @@ class ChutesClient:
         if isinstance(response.get("error"), dict):
             error_payload = response.get("error") or {}
             error_message = error_payload.get("message") or str(error_payload)
-            metadata["response_error"] = f"Chutes error: {error_message}"
+            metadata["response_error"] = (
+                f"{self.provider_display_name} error: {error_message}"
+            )
             if error_payload.get("type"):
                 metadata["response_error_type"] = error_payload.get("type")
             if error_payload.get("code"):
@@ -652,7 +667,8 @@ class ChutesClient:
 
         if not text:
             metadata["response_error"] = (
-                "Empty response content from Chutes (content and reasoning are missing)"
+                f"Empty response content from {self.provider_display_name} "
+                "(content and reasoning are missing)"
             )
 
         return text or "", metadata

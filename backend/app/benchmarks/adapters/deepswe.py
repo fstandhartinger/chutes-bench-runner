@@ -33,10 +33,14 @@ from app.benchmarks.adapters.terminal_bench import (
     classify_agent_exit,
     classify_bare_failure,
 )
+from app.benchmarks.agent_provider_config import (
+    prepare_sandy_agent_launch,
+    retain_sandy_agent_rollout,
+    validate_openrouter_agent_usage,
+)
 from app.benchmarks.agent_usage import collect_agent_usage
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -983,8 +987,13 @@ class DeepSWEAdapter(BenchmarkAdapter):
                     metadata={"agent": agent_name, "seal": seal},
                 )
 
-            settings = get_settings()
-            api_key = self.client.get_api_key() or settings.chutes_api_key
+            agent_launch = await prepare_sandy_agent_launch(
+                client=self.client,
+                sandy=self.sandy,
+                sandbox_id=sandbox_id,
+                agent=agent_name,
+                model=self.model_slug,
+            )
             agent_result = await self.sandy.run_agent(
                 sandbox_id,
                 agent=agent_name,
@@ -992,10 +1001,13 @@ class DeepSWEAdapter(BenchmarkAdapter):
                 prompt=prompt + f"\nTask container name: {agent_container}\n",
                 max_duration=int(budget["agent"]),
                 raw_prompt=True,
-                env_vars={"CHUTES_API_KEY": api_key},
+                api_base_url=agent_launch.api_base_url,
+                env_vars=agent_launch.env_vars,
             )
+            await retain_sandy_agent_rollout(self.sandy, sandbox_id, agent_launch)
             agent_usage = await collect_agent_usage(self.sandy, sandbox_id)
             agent_summary = (agent_result or {}).get("summary") or {}
+            validate_openrouter_agent_usage(agent_launch, agent_usage)
             sandbox_alive = await self._sandbox_alive(sandbox_id)
             exclusion_reason, exit_note = classify_deepswe_agent_outcome(
                 agent_summary, float(budget["agent"]), sandbox_alive
@@ -1136,6 +1148,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
                     "task_id": item["task_id"],
                     "language": item.get("language"),
                     "agent": agent_name,
+                    "agent_provider": agent_launch.metadata,
                     "harness": DEEPSWE_HARNESS,
                     "official_leaderboard_harness": "Pier + mini-SWE-agent on Modal",
                     "agent_summary": agent_summary,

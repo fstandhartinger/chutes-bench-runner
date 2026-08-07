@@ -6,6 +6,7 @@ from app.worker.runner import (
     _apply_error_score_defaults,
     _is_fatal_item_error,
     _is_retryable_item_error,
+    _is_run_retryable,
     _item_timeout_result,
 )
 
@@ -26,6 +27,15 @@ def test_disabled_chute_is_fatal_and_not_retryable() -> None:
     error = 'HTTP 503 from Chutes: {"detail":"This chute is currently disabled."}'
     assert _is_fatal_item_error(error) is True
     assert _is_retryable_item_error(error) is False
+
+
+def test_missing_openrouter_token_accounting_is_fatal_and_not_requeued() -> None:
+    error = (
+        "OpenRouter agent rollout did not contain exact input and output token counts"
+    )
+    assert _is_fatal_item_error(error) is True
+    assert _is_retryable_item_error(error) is False
+    assert _is_run_retryable(error) is False
 
 
 def test_sandy_connection_failures_are_fatal_and_retryable() -> None:

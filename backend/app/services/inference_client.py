@@ -1,4 +1,4 @@
-"""Inference client interface shared by Chutes and Gremium providers."""
+"""Inference client interface shared by the configured model providers."""
 from __future__ import annotations
 
 from typing import Any, Optional, Protocol

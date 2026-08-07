@@ -39,6 +39,11 @@ import os
 import time
 from typing import Any, Optional
 
+from app.benchmarks.agent_provider_config import (
+    prepare_sandy_agent_launch,
+    retain_sandy_agent_rollout,
+    validate_openrouter_agent_usage,
+)
 from app.benchmarks.agent_usage import collect_agent_usage
 from app.benchmarks.base import ItemResult
 from app.benchmarks.registry import register_adapter
@@ -157,6 +162,13 @@ class OolongAgenticAdapter(OolongAdapter):
                         metadata={"agent": agent_name},
                     )
 
+                agent_launch = await prepare_sandy_agent_launch(
+                    client=self.client,
+                    sandy=self.sandy,
+                    sandbox_id=sandbox_id,
+                    agent=agent_name,
+                    model=self.model_slug,
+                )
                 agent_result = await self.sandy.run_agent(
                     sandbox_id,
                     agent=agent_name,
@@ -164,9 +176,14 @@ class OolongAgenticAdapter(OolongAdapter):
                     prompt=prompt,
                     max_duration=int(os.getenv("OOLONG_AGENTIC_MAX_SECONDS", "900")),
                     raw_prompt=True,
-                    env_vars={"CHUTES_API_KEY": self.client.get_api_key()},
+                    api_base_url=agent_launch.api_base_url,
+                    env_vars=agent_launch.env_vars,
+                )
+                await retain_sandy_agent_rollout(
+                    self.sandy, sandbox_id, agent_launch
                 )
                 agent_usage = await collect_agent_usage(self.sandy, sandbox_id)
+                validate_openrouter_agent_usage(agent_launch, agent_usage)
                 agent_summary = (agent_result or {}).get("summary") or {}
 
                 read = await self.sandy.execute_command(
@@ -193,6 +210,7 @@ class OolongAgenticAdapter(OolongAdapter):
                     output_tokens=agent_usage.get("output_tokens"),
                     metadata={
                         "agent": agent_name,
+                        "agent_provider": agent_launch.metadata,
                         "agent_summary": agent_summary,
                         "agent_usage": agent_usage,
                         "task": item["task"],
@@ -225,6 +243,7 @@ class OolongAgenticAdapter(OolongAdapter):
                 output_tokens=agent_usage.get("output_tokens"),
                 metadata={
                     "agent": agent_name,
+                    "agent_provider": agent_launch.metadata,
                     "agent_summary": agent_summary,
                     "agent_usage": agent_usage,
                     "extracted_answer": extracted,

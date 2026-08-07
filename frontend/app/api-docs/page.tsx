@@ -62,6 +62,7 @@ export default function ApiDocsPage() {
               <li>
                 <span className="text-ink-100">provider</span>: optional inference provider.
                 Use <span className="text-ink-100">chutes</span> (default),
+                <span className="text-ink-100"> openrouter</span>,
                 <span className="text-ink-100"> rlm</span>,
                 <span className="text-ink-100"> gremium-openai</span>, or
                 <span className="text-ink-100"> gremium-anthropic</span>. For RLM runs,
@@ -70,6 +71,9 @@ export default function ApiDocsPage() {
                 For Gremium runs, use <span className="text-ink-100">gremium-consensus</span>
                 (OpenAI) or <span className="text-ink-100">gremium-consensus-anthropic</span>
                 as the model.
+                For OpenRouter use <span className="text-ink-100">
+                  deepseek/deepseek-v4-flash-0731
+                </span>.
               </li>
             </ul>
           </div>

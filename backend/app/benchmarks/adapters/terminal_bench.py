@@ -35,11 +35,15 @@ from app.benchmarks.adapters.terminal_bench_scoring import (
     TERMINAL_BENCH_2_1_SCORING_AUDIT_TASK_COUNT,
     terminal_bench_2_1_scoring_classification,
 )
+from app.benchmarks.agent_provider_config import (
+    prepare_sandy_agent_launch,
+    retain_sandy_agent_rollout,
+    validate_openrouter_agent_usage,
+)
 from app.benchmarks.agent_evidence import retain_agent_evidence
 from app.benchmarks.agent_usage import collect_agent_usage
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
-from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.sandy_service import SandyService
 
@@ -1824,12 +1828,6 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                         )
 
 
-                    settings = get_settings()
-                    agent_api_key = self.client.get_api_key() or settings.chutes_api_key
-                    agent_env_vars = {
-                        "CHUTES_API_KEY": agent_api_key,
-                    }
-
                     # Which Sandy CLI agent drives the task. Selectable so the
                     # same benchmark can be run as a paired A/B of harnesses on
                     # one model -- "codex" (upstream) vs "chutescoder" (the
@@ -1849,6 +1847,26 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                         or os.getenv("TERMINAL_BENCH_AGENT")
                         or "codex"
                     )
+                    try:
+                        agent_launch = await prepare_sandy_agent_launch(
+                            client=self.client,
+                            sandy=self.sandy,
+                            sandbox_id=sandbox_id,
+                            agent=agent_name,
+                            model=self.model_slug,
+                        )
+                    except (RuntimeError, ValueError) as exc:
+                        return ItemResult(
+                            item_id=item_id,
+                            error=str(exc),
+                            metadata={
+                                "task_id": item.get("task_id"),
+                                "agent": agent_name,
+                                "provider": getattr(self.client, "provider", "chutes"),
+                            },
+                        )
+                    agent_env_vars = dict(agent_launch.env_vars)
+                    agent_provider_metadata = agent_launch.metadata
                     self._item_observability[item_id]["agent_invoked"] = True
                     agent_result = await self.sandy.run_agent(
                         sandbox_id,
@@ -1857,10 +1875,23 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                         prompt=prompt + f"\nContainer name: {container_name}\n",
                         max_duration=max(60, int(agent_timeout / 1000)),
                         raw_prompt=True,
+                        api_base_url=agent_launch.api_base_url,
                         env_vars=agent_env_vars,
                     )
+                    usage_error: Optional[str] = None
+                    try:
+                        await retain_sandy_agent_rollout(
+                            self.sandy, sandbox_id, agent_launch
+                        )
+                    except RuntimeError as exc:
+                        usage_error = str(exc)
                     agent_usage = await self._collect_agent_usage(sandbox_id)
                     agent_summary = agent_result.get("summary") or {}
+                    if usage_error is None:
+                        try:
+                            validate_openrouter_agent_usage(agent_launch, agent_usage)
+                        except RuntimeError as exc:
+                            usage_error = str(exc)
 
                     sandbox_alive = await self._sandbox_alive(sandbox_id)
                     exclusion_reason, exit_note = classify_agent_exit(
@@ -1930,6 +1961,27 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                     # transfer while the verifier runs. The finalizer waits
                     # before sandbox deletion; failure never changes scoring.
                     self._start_evidence_retention(item_id, sandbox_id)
+
+                    if usage_error:
+                        return ItemResult(
+                            item_id=item_id,
+                            item_hash=self.compute_item_hash(item.get("task_id")),
+                            prompt=prompt,
+                            error=usage_error,
+                            latency_ms=int((time.time() - start_time) * 1000),
+                            input_tokens=agent_usage.get("input_tokens"),
+                            output_tokens=agent_usage.get("output_tokens"),
+                            metadata={
+                                "task_id": item.get("task_id"),
+                                "agent": agent_name,
+                                "agent_summary": agent_summary,
+                                "agent_usage": agent_usage,
+                                "agent_provider": agent_provider_metadata,
+                                "agent_termination": agent_termination,
+                                "holdout": holdout,
+                                "seal": seal,
+                            },
+                        )
 
                     agent_events = agent_result.get("events") or []
                     agent_output = next(
@@ -2225,6 +2277,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                             "task_id": item.get("task_id"),
                             "difficulty": item.get("difficulty"),
                             "agent": agent_name,
+                            "agent_provider": agent_provider_metadata,
                             "agent_usage": agent_usage,
                             "agent_termination": agent_termination,
                             # Recorded per item so a reviewer can confirm the

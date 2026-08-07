@@ -10,6 +10,7 @@ from app.core.logging import get_logger
 from app.models.model import Model
 from app.core.config import get_settings
 from app.services.chutes_client import get_chutes_client
+from app.services.openrouter_client import get_openrouter_client
 
 logger = get_logger(__name__)
 
@@ -76,8 +77,7 @@ async def sync_models(db: AsyncSession) -> int:
     
     if not unique_models:
         logger.warning("No models to sync")
-        return 0
-    
+
     # Use PostgreSQL upsert (INSERT ... ON CONFLICT UPDATE)
     for model_data in unique_models:
         slug = model_data.get("slug")
@@ -117,10 +117,23 @@ async def sync_models(db: AsyncSession) -> int:
         await ensure_gremium_models(db)
     if settings.enable_rlm_provider:
         await ensure_rlm_models(db)
+    openrouter_count = 0
+    if settings.openrouter_api_key:
+        try:
+            openrouter_count = await ensure_openrouter_models(db)
+        except Exception as exc:
+            # OpenRouter is an optional alternate provider. A catalog outage
+            # must not take the existing Chutes model sync down with it.
+            logger.warning("Failed to sync OpenRouter models", error=str(exc))
 
     await db.commit()
-    count = len(unique_models)
-    logger.info("Models synced", count=count)
+    count = len(unique_models) + openrouter_count
+    logger.info(
+        "Models synced",
+        count=count,
+        chutes_count=len(unique_models),
+        openrouter_count=openrouter_count,
+    )
     return count
 
 
@@ -244,3 +257,34 @@ async def ensure_rlm_models(db: AsyncSession) -> None:
             },
         )
         await db.execute(stmt)
+
+
+async def ensure_openrouter_models(db: AsyncSession) -> int:
+    """Upsert the configured OpenRouter benchmark target from its live catalog."""
+    models = await get_openrouter_client().list_models()
+    for entry in models:
+        stmt = pg_insert(Model).values(
+            slug=entry["slug"],
+            name=entry["name"],
+            tagline=entry.get("tagline"),
+            user=entry.get("user"),
+            logo=entry.get("logo"),
+            chute_id=None,
+            instance_count=entry.get("instance_count", 1),
+            is_active=True,
+            provider="openrouter",
+        ).on_conflict_do_update(
+            index_elements=["slug"],
+            set_={
+                "name": entry["name"],
+                "tagline": entry.get("tagline"),
+                "user": entry.get("user"),
+                "logo": entry.get("logo"),
+                "chute_id": None,
+                "instance_count": entry.get("instance_count", 1),
+                "is_active": True,
+                "provider": "openrouter",
+            },
+        )
+        await db.execute(stmt)
+    return len(models)

@@ -305,6 +305,75 @@ async def test_execute_run_fails_fast_on_zero_balance_probe(test_session, monkey
 
 
 @pytest.mark.asyncio
+async def test_openrouter_preflight_failure_fails_run_before_items(
+    test_session, monkeypatch
+) -> None:
+    model = Model(
+        slug="deepseek/deepseek-v4-flash-0731",
+        name="DeepSeek V4 Flash 0731",
+        provider="openrouter",
+        is_active=True,
+    )
+    benchmark = Benchmark(
+        name="mmlu_pro",
+        display_name="MMLU-Pro",
+        adapter_class="MMLUProAdapter",
+        is_enabled=True,
+        supports_subset=True,
+    )
+    test_session.add_all([model, benchmark])
+    await test_session.flush()
+    run = BenchmarkRun(
+        model_id=model.id,
+        model_slug=model.slug,
+        provider="openrouter",
+        subset_pct=100,
+        status=RunStatus.RUNNING.value,
+    )
+    test_session.add(run)
+    await test_session.flush()
+    run_benchmark = BenchmarkRunBenchmark(
+        run_id=run.id,
+        benchmark_id=benchmark.id,
+        benchmark_name=benchmark.name,
+        status=BenchmarkRunStatus.PENDING.value,
+    )
+    test_session.add(run_benchmark)
+    await test_session.commit()
+    await test_session.refresh(run)
+
+    worker = BenchmarkWorker()
+    test_session_maker = async_sessionmaker(
+        test_session.bind,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    monkeypatch.setattr("app.worker.runner.async_session_maker", test_session_maker)
+    fake_client = AsyncMock()
+    fake_client.provider = "openrouter"
+    fake_client.run_inference.side_effect = RuntimeError("provider unavailable")
+    fake_judge = AsyncMock()
+    monkeypatch.setattr(worker, "_get_client_for_run", AsyncMock(return_value=fake_client))
+    monkeypatch.setattr("app.worker.runner.get_chutes_client", lambda: fake_judge)
+    execute_benchmark = AsyncMock(side_effect=AssertionError("items must not run"))
+    monkeypatch.setattr(worker, "execute_benchmark", execute_benchmark)
+
+    await worker.execute_run(test_session, run)
+
+    async with test_session_maker() as verify_session:
+        refreshed_run = await verify_session.get(BenchmarkRun, run.id)
+        refreshed_rb = await verify_session.get(BenchmarkRunBenchmark, run_benchmark.id)
+        assert refreshed_run is not None
+        assert refreshed_rb is not None
+        assert refreshed_run.status == RunStatus.FAILED.value
+        assert "provider preflight failed" in (refreshed_run.error_message or "").lower()
+        assert refreshed_rb.status == BenchmarkRunStatus.FAILED.value
+    execute_benchmark.assert_not_awaited()
+    fake_client.close.assert_awaited_once()
+    fake_judge.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_persist_item_result_progress_retries_deadlock(test_session, monkeypatch) -> None:
     worker = BenchmarkWorker()
     test_session_maker = async_sessionmaker(

@@ -34,6 +34,7 @@
 ```
 DATABASE_URL=postgresql://bench_runner:<password>@94.130.222.43:5432/chutes_bench_runner?sslmode=require
 CHUTES_API_KEY=<system API key>
+OPENROUTER_API_KEY=<system OpenRouter API key; optional alternate provider>
 CHUTES_CLIENT_ID=<IDP client ID>
 CHUTES_CLIENT_SECRET=<IDP client secret>
 CHUTES_IDP_URL=https://auth.chutes.ai
@@ -150,6 +151,7 @@ Benchmark workers run on a dedicated Sandy host (internal) to avoid Render OOMs 
 **Requirements**:
 - `DATABASE_URL` (Hetzner Postgres connection string with `sslmode=require`)
 - `CHUTES_API_KEY`
+- `OPENROUTER_API_KEY` (required on API and worker for OpenRouter runs)
 - `CHUTES_CLIENT_ID`
 - `CHUTES_CLIENT_SECRET` (needed to refresh IDP tokens)
 - `HF_TOKEN` (for gated datasets like HLE/GPQA)
@@ -157,6 +159,12 @@ Benchmark workers run on a dedicated Sandy host (internal) to avoid Render OOMs 
 - `SANDY_DOCKER_UPSTREAM` (route Docker-socket benchmarks to a Docker-backed Sandy upstream)
 - `SANDY_VOLUME_ROOT` (host path for Sandy volumes, default `/var/lib/sandy/volumes`)
 - Optional: `WORKER_MAX_CONCURRENT`, `WORKER_ITEM_CONCURRENCY`, `WORKER_STALE_RUN_MINUTES`
+
+OpenRouter runs use `deepseek/deepseek-v4-flash-0731`. The worker executes a
+one-token Chat Completions pre-flight before the first item and requires
+provider-reported input/output counts. Terminal-Bench Codex-family agents use
+a sandbox-local Responses API config; credentials stay in the launch
+environment and are never written into retained config or rollout artifacts.
 
 **Setup Steps (Hetzner)**:
 1. Create a working directory:

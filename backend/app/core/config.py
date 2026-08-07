@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     chutes_inference_timeout_seconds: int = 300
     chutes_rate_limit_sleep_seconds: int = 30
 
+    # OpenRouter API. The key is optional at process startup so existing Chutes-
+    # only deployments keep working; OpenRouter runs fail their provider
+    # preflight before any benchmark item starts when it is absent.
+    openrouter_api_key: Optional[str] = None
+    openrouter_api_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model_slug: str = "deepseek/deepseek-v4-flash-0731"
+
     # Janus Gateway
     janus_gateway_base_url: str = "https://janus-gateway-bqou.onrender.com/v1"
     janus_gateway_api_key: Optional[str] = None

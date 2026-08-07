@@ -52,10 +52,12 @@ from app.services.export_service import generate_csv_export, generate_pdf_export
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.chutes_client import get_chutes_client
+from app.services.openrouter_client import get_openrouter_client
 from app.services.gremium_client import GremiumClient
 from app.services.rlm_client import RLMClient
 from app.services.model_service import (
     ensure_gremium_models,
+    ensure_openrouter_models,
     ensure_rlm_models,
     get_model_by_id,
     get_models,
@@ -169,6 +171,24 @@ async def list_models(
             await ensure_rlm_models(db)
             await db.commit()
         models = await get_models(db, search=search, provider=provider_filter, limit=limit, offset=offset)
+        return ModelsListResponse(
+            models=[ModelResponse.model_validate(m) for m in models],
+            total=len(models),
+        )
+    if provider_filter == "openrouter":
+        if settings.openrouter_api_key:
+            try:
+                await ensure_openrouter_models(db)
+                await db.commit()
+            except Exception as exc:
+                logger.warning("Failed to refresh OpenRouter models", error=str(exc))
+        models = await get_models(
+            db,
+            search=search,
+            provider=provider_filter,
+            limit=limit,
+            offset=offset,
+        )
         return ModelsListResponse(
             models=[ModelResponse.model_validate(m) for m in models],
             total=len(models),
@@ -367,7 +387,14 @@ async def create_benchmark_run(
             detail=settings.maintenance_message,
         )
     provider = request.provider or "chutes"
-    allowed_providers = {"chutes", "gremium-openai", "gremium-anthropic", "rlm", "janus"}
+    allowed_providers = {
+        "chutes",
+        "openrouter",
+        "gremium-openai",
+        "gremium-anthropic",
+        "rlm",
+        "janus",
+    }
     if provider not in allowed_providers:
         raise HTTPException(status_code=400, detail="Unsupported provider")
     if provider.startswith("gremium") and not settings.enable_gremium_provider:
@@ -391,7 +418,7 @@ async def create_benchmark_run(
     access_token = None
 
     session_id = http_request.cookies.get(auth_service.SESSION_COOKIE_NAME)
-    if session_id:
+    if session_id and provider == "chutes":
         session = await auth_service.get_session(db, session_id)
         if session:
             if not session.can_invoke_chutes():
@@ -435,6 +462,20 @@ async def create_benchmark_run(
         finally:
             if access_token:
                 await client.close()
+    elif provider == "openrouter":
+        openrouter_client = get_openrouter_client()
+        context_length = await openrouter_client.get_model_context_length(model.slug)
+        max_output_tokens = await openrouter_client.get_model_max_output_length(model.slug)
+        pricing = await openrouter_client.get_model_pricing(model.slug)
+        provider_metadata = {
+            "provider": provider,
+            "base_url": settings.openrouter_api_base_url,
+            "model": model.slug,
+            "context_length": context_length,
+            "max_output_tokens": max_output_tokens,
+            "pricing_input_per_million_usd": pricing[0] if pricing else None,
+            "pricing_output_per_million_usd": pricing[1] if pricing else None,
+        }
     elif provider == "janus":
         provider_metadata = {
             "provider": provider,
@@ -511,7 +552,14 @@ async def create_benchmark_run_with_api_key(
             detail=settings.maintenance_message,
         )
     provider = request.provider or "chutes"
-    allowed_providers = {"chutes", "gremium-openai", "gremium-anthropic", "rlm", "janus"}
+    allowed_providers = {
+        "chutes",
+        "openrouter",
+        "gremium-openai",
+        "gremium-anthropic",
+        "rlm",
+        "janus",
+    }
     if provider not in allowed_providers:
         raise HTTPException(status_code=400, detail="Unsupported provider")
     if provider.startswith("gremium") and not settings.enable_gremium_provider:
@@ -522,7 +570,11 @@ async def create_benchmark_run_with_api_key(
     provider_lookup = "chutes" if provider == "janus" else provider
     model = await resolve_model_identifier(db, request.model_id, provider=provider_lookup)
     if not model:
-        await sync_models(db)
+        if provider_lookup == "openrouter":
+            await ensure_openrouter_models(db)
+            await db.commit()
+        else:
+            await sync_models(db)
         model = await resolve_model_identifier(db, request.model_id, provider=provider_lookup)
     if not model:
         raise HTTPException(
@@ -560,6 +612,20 @@ async def create_benchmark_run_with_api_key(
                     )
         finally:
             await client.close()
+    elif provider == "openrouter":
+        openrouter_client = get_openrouter_client()
+        context_length = await openrouter_client.get_model_context_length(model.slug)
+        max_output_tokens = await openrouter_client.get_model_max_output_length(model.slug)
+        pricing = await openrouter_client.get_model_pricing(model.slug)
+        provider_metadata = {
+            "provider": provider,
+            "base_url": settings.openrouter_api_base_url,
+            "model": model.slug,
+            "context_length": context_length,
+            "max_output_tokens": max_output_tokens,
+            "pricing_input_per_million_usd": pricing[0] if pricing else None,
+            "pricing_output_per_million_usd": pricing[1] if pricing else None,
+        }
     elif provider == "janus":
         provider_metadata = {
             "provider": provider,
@@ -797,7 +863,11 @@ async def get_run_benchmark_details(
     total_cost_usd = None
     pricing_input = None
     pricing_output = None
-    client = get_chutes_client()
+    client = (
+        get_openrouter_client()
+        if run.provider == "openrouter"
+        else get_chutes_client()
+    )
     pricing = await client.get_model_pricing(
         run.model_slug,
         run.model.chute_id if run.model else None,
