@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
+import docker
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,21 +21,21 @@ from app.db.session import async_session_maker
 from app.models.benchmark import Benchmark
 from app.models.model import Model
 from app.models.run import (
+    BenchmarkItemResult,
     BenchmarkRun,
     BenchmarkRunBenchmark,
-    BenchmarkItemResult,
     BenchmarkRunStatus,
     RunStatus,
 )
 from app.services import auth_service
 from app.services.chutes_client import get_chutes_client
-from app.services.openrouter_client import get_openrouter_client
-from app.services.provider_preflight import preflight_provider
-from app.services.provenance_service import collect_worker_provenance
-from app.services.janus_client import get_janus_client
 from app.services.gremium_client import GremiumClient
-from app.services.rlm_client import RLMClient
 from app.services.inference_client import InferenceClient
+from app.services.janus_client import get_janus_client
+from app.services.openrouter_client import get_openrouter_client
+from app.services.provenance_service import collect_worker_provenance
+from app.services.provider_preflight import preflight_provider
+from app.services.rlm_client import RLMClient
 from app.services.run_service import (
     add_run_event,
     bind_run_provenance,
@@ -43,6 +44,7 @@ from app.services.run_service import (
     update_benchmark_status,
     update_run_status,
 )
+from app.services.sandy_service import SandyService
 from app.services.worker_service import record_worker_heartbeat
 from app.worker.watchdog import WATCHDOG_EXIT_CODE, LoopWatchdog
 
@@ -52,6 +54,7 @@ settings = get_settings()
 PROGRESS_PERSIST_INTERVAL = 5
 ITEM_TIMEOUT_EXCLUSION_REASON = "infrastructure_item_timeout"
 ITEM_TIMEOUT_ERROR_PREFIX = "Item evaluation timed out"
+TASK_SANDBOX_LABEL = "chutes.bench.sandbox_id"
 
 
 class _RunnerItemTimeoutError(TimeoutError):
@@ -364,6 +367,178 @@ class BenchmarkWorker:
             or socket.gethostname()
         )
         self.hostname = socket.gethostname()
+
+    async def reap_orphaned_task_resources(
+        self,
+        sandy: SandyService | None = None,
+    ) -> None:
+        """Reap task resources only after Sandy proves their sandbox is untracked."""
+
+        def _labelled_sandbox_ids() -> tuple[set[str], int, list[dict[str, str]]]:
+            client = docker.from_env()
+            containers = client.containers.list(
+                all=True,
+                filters={"label": TASK_SANDBOX_LABEL},
+            )
+            sandbox_ids: set[str] = set()
+            invalid: list[dict[str, str]] = []
+            for container in containers:
+                labels = (container.attrs.get("Config") or {}).get("Labels") or {}
+                sandbox_id = labels.get(TASK_SANDBOX_LABEL)
+                if isinstance(sandbox_id, str) and sandbox_id:
+                    sandbox_ids.add(sandbox_id)
+                    continue
+                invalid.append(
+                    {
+                        "container_id": str(getattr(container, "id", "") or "unknown"),
+                        "container_name": str(getattr(container, "name", "") or "unknown"),
+                        "reason": "ownership label has no non-empty sandbox id",
+                    }
+                )
+            return sandbox_ids, len(containers), invalid
+
+        owns_sandy = sandy is None
+        if sandy is None:
+            sandy = SandyService()
+
+        try:
+            try:
+                sandbox_ids, labelled_container_count, invalid = await asyncio.to_thread(
+                    _labelled_sandbox_ids
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Startup orphan reaper summary",
+                    scan_complete=False,
+                    failure_reason="docker_label_scan_failed",
+                    error=str(exc) or exc.__class__.__name__,
+                    labelled_containers_seen=None,
+                    labelled_sandbox_ids_seen=None,
+                    invalid_labelled_containers_skipped=None,
+                    tracked_sandbox_ids_skipped=None,
+                    tracked_sandbox_ids=None,
+                    unproven_sandbox_ids_skipped=None,
+                    unproven_sandbox_ids=None,
+                    orphaned_sandbox_ids_reaped=0,
+                    reaped_sandbox_ids=[],
+                    cleanup_failed_sandbox_ids=[],
+                )
+                return
+
+            for skipped in invalid:
+                logger.warning(
+                    "Startup orphan reaper skipped labelled container",
+                    **skipped,
+                )
+
+            tracked_ids: list[str] = []
+            unproven_ids: list[str] = []
+            reaped_ids: list[str] = []
+            cleanup_failed_ids: list[str] = []
+            cleaner: Any = None
+
+            for sandbox_id in sorted(sandbox_ids):
+                if self.watchdog is not None:
+                    self.watchdog.tick("startup_orphan_reaper")
+                try:
+                    tracked = await sandy.sandbox_exists(sandbox_id)
+                    check_error = getattr(sandy, "last_error", None)
+                except Exception as exc:
+                    tracked = None
+                    check_error = str(exc) or exc.__class__.__name__
+
+                if tracked is True:
+                    tracked_ids.append(sandbox_id)
+                    continue
+                if tracked is not False:
+                    unproven_ids.append(sandbox_id)
+                    logger.warning(
+                        "Startup orphan reaper could not prove sandbox is untracked; "
+                        "leaving resources alone",
+                        sandbox_id=sandbox_id,
+                        reason="sandy_tracking_status_unknown",
+                        error=(
+                            check_error
+                            or f"unexpected sandbox_exists result: {tracked!r}"
+                        ),
+                    )
+                    continue
+
+                try:
+                    if cleaner is None:
+                        from app.benchmarks.adapters.terminal_bench import (
+                            TerminalBenchAdapter,
+                        )
+
+                        cleaner = TerminalBenchAdapter.__new__(TerminalBenchAdapter)
+                    cleaned = await cleaner._cleanup_owned_task_containers(sandbox_id)
+                except Exception as exc:
+                    cleaned = False
+                    logger.warning(
+                        "Startup orphan reaper cleanup raised; resources may remain",
+                        sandbox_id=sandbox_id,
+                        error=str(exc) or exc.__class__.__name__,
+                    )
+
+                if cleaned:
+                    reaped_ids.append(sandbox_id)
+                else:
+                    cleanup_failed_ids.append(sandbox_id)
+                    logger.warning(
+                        "Startup orphan reaper could not verify resource cleanup",
+                        sandbox_id=sandbox_id,
+                        reason="owned_resource_cleanup_failed_or_incomplete",
+                    )
+
+            logger.info(
+                "Startup orphan reaper summary",
+                scan_complete=True,
+                labelled_containers_seen=labelled_container_count,
+                labelled_sandbox_ids_seen=len(sandbox_ids),
+                invalid_labelled_containers_skipped=len(invalid),
+                tracked_sandbox_ids_skipped=len(tracked_ids),
+                tracked_sandbox_ids=tracked_ids,
+                unproven_sandbox_ids_skipped=len(unproven_ids),
+                unproven_sandbox_ids=unproven_ids,
+                orphaned_sandbox_ids_reaped=len(reaped_ids),
+                reaped_sandbox_ids=reaped_ids,
+                cleanup_failed_sandbox_ids=cleanup_failed_ids,
+            )
+        finally:
+            if owns_sandy:
+                try:
+                    await sandy.close()
+                except Exception as exc:
+                    logger.warning(
+                        "Startup orphan reaper could not close Sandy client",
+                        error=str(exc) or exc.__class__.__name__,
+                    )
+
+    async def _run_startup_orphan_reaper(self) -> None:
+        """Keep every startup reaper failure outside the worker's boot path."""
+        try:
+            await self.reap_orphaned_task_resources()
+        except Exception as exc:
+            logger.exception(
+                "Startup orphan reaper failed; worker startup will continue",
+                error=str(exc) or exc.__class__.__name__,
+            )
+            logger.warning(
+                "Startup orphan reaper summary",
+                scan_complete=False,
+                failure_reason="unexpected_reaper_failure",
+                error=str(exc) or exc.__class__.__name__,
+                labelled_containers_seen=None,
+                labelled_sandbox_ids_seen=None,
+                invalid_labelled_containers_skipped=None,
+                tracked_sandbox_ids_skipped=None,
+                tracked_sandbox_ids=None,
+                unproven_sandbox_ids_skipped=None,
+                unproven_sandbox_ids=None,
+                orphaned_sandbox_ids_reaped=None,
+                reaped_sandbox_ids=None,
+                cleanup_failed_sandbox_ids=None,
+            )
 
     async def _is_run_canceled(self, run_id: str) -> bool:
         for attempt in range(3):
@@ -690,6 +865,7 @@ class BenchmarkWorker:
     async def start(self) -> None:
         """Start the worker loop."""
         self.running = True
+        await self._run_startup_orphan_reaper()
         logger.info("Worker started")
 
         while self.running:

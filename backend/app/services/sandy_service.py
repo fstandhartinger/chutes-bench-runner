@@ -1,7 +1,9 @@
 import asyncio
 import json
+from typing import Any, Dict, List, Optional
+
 import httpx
-from typing import Any, Optional, Dict, List
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
@@ -32,6 +34,10 @@ class SandyService:
             timeout=httpx.Timeout(90.0, connect=10.0),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
         )
+
+    async def close(self) -> None:
+        """Close the pooled Sandy HTTP client."""
+        await self._client.aclose()
 
     async def create_sandbox(
         self,

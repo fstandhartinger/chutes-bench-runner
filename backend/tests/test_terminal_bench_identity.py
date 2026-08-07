@@ -542,15 +542,46 @@ async def test_cancellation_cleanup_targets_only_matching_sandy_owner_and_id(
     decoy.attrs = {
         "Config": {"Labels": {"chutes.bench.sandbox_id": "different"}}
     }
-    image = SimpleNamespace(tags=["tbench_s123456781234_task:latest"])
+    image_tag = "tbench_s123456781234_task:latest"
+    image = SimpleNamespace(tags=[image_tag])
     network = MagicMock()
+    network.attrs = {"Labels": {"chutes.bench.sandbox_id": sandbox_id}}
+    removed_containers: set[int] = set()
+    removed_networks: set[int] = set()
+
+    def remove_owned(*, force: bool) -> None:
+        assert force is True
+        removed_containers.add(id(owned))
+
+    def list_containers(*, all: bool, filters: dict) -> list:
+        assert all is True
+        assert filters == {"label": f"chutes.bench.sandbox_id={sandbox_id}"}
+        return [
+            container
+            for container in (owned, decoy)
+            if id(container) not in removed_containers
+        ]
+
+    def remove_image(tag: str, *, force: bool) -> None:
+        assert force is True
+        image.tags.remove(tag)
+
+    def remove_network() -> None:
+        removed_networks.add(id(network))
+
+    def list_networks(*, filters: dict) -> list:
+        assert filters == {"label": f"chutes.bench.sandbox_id={sandbox_id}"}
+        return [] if id(network) in removed_networks else [network]
+
+    owned.remove.side_effect = remove_owned
+    network.remove.side_effect = remove_network
     client = SimpleNamespace(
-        containers=SimpleNamespace(list=MagicMock(return_value=[owned, decoy])),
+        containers=SimpleNamespace(list=MagicMock(side_effect=list_containers)),
         images=SimpleNamespace(
             list=MagicMock(return_value=[image]),
-            remove=MagicMock(),
+            remove=MagicMock(side_effect=remove_image),
         ),
-        networks=SimpleNamespace(list=MagicMock(return_value=[network])),
+        networks=SimpleNamespace(list=MagicMock(side_effect=list_networks)),
     )
     monkeypatch.setattr(
         "app.benchmarks.adapters.terminal_bench.docker.from_env",
@@ -559,13 +590,13 @@ async def test_cancellation_cleanup_targets_only_matching_sandy_owner_and_id(
 
     assert await adapter._cleanup_owned_task_containers(sandbox_id) is True
 
-    client.containers.list.assert_called_once_with(
+    client.containers.list.assert_any_call(
         all=True,
         filters={"label": f"chutes.bench.sandbox_id={sandbox_id}"},
     )
     owned.remove.assert_called_once_with(force=True)
     decoy.remove.assert_not_called()
-    client.images.remove.assert_called_once_with(image.tags[0], force=True)
+    client.images.remove.assert_called_once_with(image_tag, force=True)
     network.remove.assert_called_once_with()
 
 

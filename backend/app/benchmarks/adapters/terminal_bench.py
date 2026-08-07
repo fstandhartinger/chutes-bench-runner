@@ -934,34 +934,6 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                 target_path = f"{cwd.rstrip('/')}/{compose_path}"
             await self.sandy.write_file(sandbox_id, target_path, patched)
 
-    async def _reap_orphans(self, sandbox_id: str) -> None:
-        """Remove task containers/images whose sandbox is already gone.
-
-        Cleanup normally runs `compose down` *inside* the sandbox, so if the
-        sandbox dies first -- timeout, eviction, a failed item -- its task
-        containers and images are stranded on the shared host daemon with
-        nothing left to remove them. Observed five orphans accumulating across
-        a handful of runs on a host that sits at ~92% disk.
-
-        Safe because names are namespaced: anything whose `sN` prefix has no
-        live `sandy_N` container cannot belong to a running item.
-        """
-        await self.sandy.execute_command(
-            sandbox_id,
-            "live=$(docker ps --format '{{.Names}}' | grep '^sandy_' | sed 's/^sandy_/s/'); "
-            "for c in $(docker ps -a --format '{{.Names}}' | grep '^tbench_s'); do "
-            "  ns=$(echo \"$c\" | sed -E 's/^tbench_(s[0-9a-f]+)_.*/\\1/'); "
-            "  echo \"$live\" | grep -qx \"$ns\" || docker rm -f \"$c\" >/dev/null 2>&1; "
-            "done; "
-            "for c in $(docker ps -a --format '{{.Names}}' | grep '^tbgw_s'); do "
-            "  ns=$(echo \"$c\" | sed -E 's/^tbgw_(s[0-9a-f]+).*/\\1/'); "
-            "  echo \"$live\" | grep -qx \"$ns\" || docker rm -f \"$c\" >/dev/null 2>&1; "
-            "done; "
-            "for i in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^(client_s|tbench_s)'); do "
-            "  docker rmi \"$i\" >/dev/null 2>&1 || true; "
-            "done; true",
-        )
-
     async def _sandbox_identity(self, sandbox_id: str) -> Optional[tuple[str, str]]:
         """Read the exact Sandy id/owner labels from this sandbox container."""
         sandbox_name = f"sandy_{sandbox_id}"
@@ -1005,28 +977,95 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
         def _cleanup() -> bool:
             client = docker.from_env()
             filters = {"label": f"chutes.bench.sandbox_id={sandbox_id}"}
-            for container in client.containers.list(all=True, filters=filters):
+
+            def _owned_containers() -> list[Any]:
+                owned: list[Any] = []
+                for container in client.containers.list(all=True, filters=filters):
+                    labels = (container.attrs.get("Config") or {}).get("Labels") or {}
+                    if labels.get("chutes.bench.sandbox_id") == sandbox_id:
+                        owned.append(container)
+                return owned
+
+            namespace = f"s{sandbox_id[:12]}".lower()
+
+            def _owned_image_tags() -> list[str]:
+                tags: list[str] = []
+                for image in client.images.list():
+                    for tag in image.tags:
+                        repository = tag.rsplit(":", 1)[0]
+                        if (
+                            repository.startswith(f"tbench_{namespace}_")
+                            or repository == f"client_{namespace}"
+                        ):
+                            tags.append(tag)
+                return tags
+
+            network_filters = {"label": f"chutes.bench.sandbox_id={sandbox_id}"}
+
+            def _owned_networks() -> list[Any]:
+                owned: list[Any] = []
+                for network in client.networks.list(filters=network_filters):
+                    labels = network.attrs.get("Labels") or {}
+                    if labels.get("chutes.bench.sandbox_id") == sandbox_id:
+                        owned.append(network)
+                return owned
+
+            removal_errors: list[str] = []
+            for container in _owned_containers():
                 labels = (container.attrs.get("Config") or {}).get("Labels") or {}
                 if labels.get("chutes.bench.sandbox_id") != sandbox_id:
                     continue
-                container.remove(force=True)
+                try:
+                    container.remove(force=True)
+                except Exception as exc:
+                    identity = getattr(container, "name", None) or getattr(
+                        container, "id", "unknown"
+                    )
+                    removal_errors.append(
+                        f"container {identity}: {str(exc) or exc.__class__.__name__}"
+                    )
 
-            namespace = f"s{sandbox_id[:12]}".lower()
-            for image in client.images.list():
-                for tag in image.tags:
-                    repository = tag.rsplit(":", 1)[0]
-                    if repository.startswith(f"tbench_{namespace}_") or repository == f"client_{namespace}":
-                        try:
-                            client.images.remove(tag, force=True)
-                        except Exception:
-                            pass
-            for network in client.networks.list(
-                filters={"label": f"chutes.bench.sandbox_id={sandbox_id}"}
-            ):
+            for tag in _owned_image_tags():
+                try:
+                    client.images.remove(tag, force=True)
+                except Exception as exc:
+                    removal_errors.append(
+                        f"image {tag}: {str(exc) or exc.__class__.__name__}"
+                    )
+
+            for network in _owned_networks():
                 try:
                     network.remove()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    identity = getattr(network, "name", None) or getattr(
+                        network, "id", "unknown"
+                    )
+                    removal_errors.append(
+                        f"network {identity}: {str(exc) or exc.__class__.__name__}"
+                    )
+
+            remaining_containers = [
+                str(getattr(container, "name", None) or getattr(container, "id", "unknown"))
+                for container in _owned_containers()
+            ]
+            remaining_image_tags = _owned_image_tags()
+            remaining_networks = [
+                str(getattr(network, "name", None) or getattr(network, "id", "unknown"))
+                for network in _owned_networks()
+            ]
+            if (
+                removal_errors
+                or remaining_containers
+                or remaining_image_tags
+                or remaining_networks
+            ):
+                raise RuntimeError(
+                    "owned resource cleanup was incomplete: "
+                    f"removal_errors={removal_errors!r}, "
+                    f"remaining_containers={remaining_containers!r}, "
+                    f"remaining_image_tags={remaining_image_tags!r}, "
+                    f"remaining_networks={remaining_networks!r}"
+                )
             return True
 
         try:
@@ -2410,7 +2449,6 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             self._active_sandbox_ids.add(sandbox_id)
 
             try:
-                await self._reap_orphans(sandbox_id)
                 extracted = await self._extract_archive(
                     sandbox_id, partition["safe_archive"]
                 )

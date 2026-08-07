@@ -801,25 +801,6 @@ class DeepSWEAdapter(BenchmarkAdapter):
             "probe_exit": (probe or {}).get("exit_code"),
         }
 
-    async def _reap_orphans(self, sandbox_id: str) -> None:
-        """Remove only DeepSWE resources whose owning Sandy sandbox is gone."""
-
-        def _reap() -> None:
-            client = docker.from_env()
-            for container in client.containers.list(
-                all=True, filters={"label": "chutes.benchmark=deepswe"}
-            ):
-                labels = (container.attrs.get("Config") or {}).get("Labels") or {}
-                owner = labels.get("chutes.bench.sandbox_id")
-                if not owner or owner == sandbox_id:
-                    continue
-                try:
-                    sandbox_container(owner)
-                except Exception:
-                    container.remove(force=True)
-
-        await asyncio.to_thread(_reap)
-
     async def _docker_exec_outside(
         self,
         container_name: str,
@@ -1369,7 +1350,6 @@ class DeepSWEAdapter(BenchmarkAdapter):
                     metadata={"agent": agent_name},
                 )
 
-            await self._reap_orphans(sandbox_id)
             staged = await self._upload_archive(
                 sandbox_id,
                 item["agent_archive"],
