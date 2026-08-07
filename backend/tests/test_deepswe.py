@@ -9,9 +9,12 @@ from dataclasses import replace
 import pytest
 
 from app.benchmarks.adapters.deepswe import (
+    DEEPSWE_AGENT_NOT_TERMINATED_EXCLUSION_REASON,
+    DEEPSWE_VERIFIER_NOT_EXECUTED_EXCLUSION_REASON,
     DeepSWEAdapter,
     classify_deepswe_agent_outcome,
     classify_deepswe_exception,
+    classify_deepswe_verifier_outcome,
 )
 from app.benchmarks.adapters.deepswe_identity import DEEPSWE_V1_1
 from app.benchmarks.adapters.terminal_bench import BenchmarkIdentityError
@@ -127,7 +130,7 @@ def test_source_packaging_never_puts_answer_key_in_agent_archive() -> None:
     assert all(entry["size"] > 0 for entry in items[0]["heldout_hashes"])
 
 
-@pytest.mark.parametrize("agent", ["chutescoder", "chutescoder-baseline", "codex"])
+@pytest.mark.parametrize("agent", ["prime-agent", "chutescoder", "chutescoder-baseline", "codex"])
 def test_sandy_cli_agent_arms_are_selectable(agent: str) -> None:
     adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
     adapter.run_config = {"deepswe": {"agent": agent}}
@@ -177,3 +180,88 @@ def test_infrastructure_exclusions_do_not_hide_live_cli_crashes() -> None:
 def test_transport_exception_without_summary_is_excluded() -> None:
     assert classify_deepswe_exception("peer closed connection", None) == "infrastructure_transport"
     assert classify_deepswe_exception("agent assertion failed", {"exitCode": 1}) is None
+
+
+@pytest.mark.asyncio
+async def test_agent_must_be_proven_terminated_before_verifier_upload() -> None:
+    class SandyStub:
+        def __init__(self, stdout: str):
+            self.stdout = stdout
+
+        async def execute_command(self, *_args, **_kwargs):
+            return {"exit_code": 0, "stdout": self.stdout}
+
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter.sandy = SandyStub("PID=123 STATE=S RUNNING=yes DONE=missing")
+    running = await adapter._verify_agent_terminated("sandbox", {"type": "complete"})
+    assert running["terminated"] is False
+    assert DEEPSWE_AGENT_NOT_TERMINATED_EXCLUSION_REASON == ("infrastructure_agent_not_terminated")
+
+    adapter.sandy = SandyStub("PID=123 STATE=gone RUNNING=no DONE=0")
+    stopped = await adapter._verify_agent_terminated("sandbox", {"type": "complete"})
+    assert stopped["terminated"] is True
+
+    missing_completion = await adapter._verify_agent_terminated("sandbox", {"exitCode": 0})
+    assert missing_completion["terminated"] is False
+
+
+def test_verifier_requires_current_in_container_execution_proof() -> None:
+    reward, _, exclusion, _ = classify_deepswe_verifier_outcome(
+        {"exit_code": -1, "error": "transport closed"},
+        {"exit_code": 0, "stdout": '{"reward": 1}'},
+        test_command_executed=False,
+    )
+    assert reward is None
+    assert exclusion == DEEPSWE_VERIFIER_NOT_EXECUTED_EXCLUSION_REASON
+
+
+def test_valid_zero_is_scored_even_if_verifier_shell_exits_nonzero() -> None:
+    reward, metrics, exclusion, error = classify_deepswe_verifier_outcome(
+        {"exit_code": 1, "stderr": "tests failed"},
+        {"exit_code": 0, "stdout": '{"reward": 0, "passed": 2}'},
+        test_command_executed=True,
+    )
+    assert reward == 0.0
+    assert metrics["passed"] == 2
+    assert exclusion is None
+    assert error is None
+
+
+@pytest.mark.parametrize("raw_reward", ["-1", '{"reward": -1}', "not-json"])
+def test_invalid_or_infrastructure_reward_is_excluded(raw_reward: str) -> None:
+    reward, _, exclusion, _ = classify_deepswe_verifier_outcome(
+        {"exit_code": 6},
+        {"exit_code": 0, "stdout": raw_reward},
+        test_command_executed=True,
+    )
+    assert reward is None
+    assert exclusion == "infrastructure_verifier"
+
+
+@pytest.mark.asyncio
+async def test_network_seal_requires_a_real_sandbox_fetch_probe() -> None:
+    class SandyStub:
+        def __init__(self, sandbox_probe: str):
+            self.sandbox_probe = sandbox_probe
+            self.calls = 0
+
+        async def execute_command(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls <= 2:
+                return {"exit_code": 0, "stdout": ""}
+            if self.calls == 3:
+                return {"exit_code": 0, "stdout": self.sandbox_probe}
+            return {"exit_code": 0, "stdout": "MODE=none\nHOSTS=1"}
+
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter.sandy = SandyStub("HOSTS=1\nCURL=no")
+    no_probe = await adapter._seal_network("sandbox", "container")
+    assert no_probe["sealed"] is False
+
+    adapter.sandy = SandyStub("HOSTS=1\nCURL=yes\nFETCH=200")
+    fetched = await adapter._seal_network("sandbox", "container")
+    assert fetched["sealed"] is False
+
+    adapter.sandy = SandyStub("HOSTS=1\nCURL=yes\nFETCH=000CURLFAIL")
+    blocked = await adapter._seal_network("sandbox", "container")
+    assert blocked["sealed"] is True

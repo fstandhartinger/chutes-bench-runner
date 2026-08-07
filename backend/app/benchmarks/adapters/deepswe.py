@@ -48,6 +48,9 @@ logger = get_logger(__name__)
 
 DEEPSWE_ITEM_TIMEOUT_MARGIN_SECONDS = 15 * 60
 DEEPSWE_HARNESS = "sandy-cli-separate-verifier"
+DEEPSWE_AGENT_NOT_TERMINATED_EXCLUSION_REASON = "infrastructure_agent_not_terminated"
+DEEPSWE_USAGE_ACCOUNTING_EXCLUSION_REASON = "infrastructure_usage_accounting"
+DEEPSWE_VERIFIER_NOT_EXECUTED_EXCLUSION_REASON = "infrastructure_verifier_not_executed"
 
 
 def classify_deepswe_agent_outcome(
@@ -77,6 +80,42 @@ def classify_deepswe_exception(
 ) -> str | None:
     """Classify transport exceptions that never produced an agent summary."""
     return classify_bare_failure(error_text, agent_summary)
+
+
+def classify_deepswe_verifier_outcome(
+    test_result: dict | None,
+    reward_result: dict | None,
+    *,
+    test_command_executed: bool,
+) -> tuple[float | None, dict[str, Any], str | None, str | None]:
+    """Accept a scored failure while excluding an unproven verifier run.
+
+    DeepSWE's verifier normally exits zero even when tests fail and records the
+    binary outcome in reward.json.  The reward is the authority, not the test
+    shell's exit code: a valid zero must remain a scored zero.  Conversely, a
+    reward file is accepted only after an in-container sentinel proves that the
+    current verifier command started; this prevents a transport failure or a
+    stale artifact from becoming a plausible score.
+    """
+    if not test_command_executed:
+        detail = (
+            (test_result or {}).get("stderr")
+            or (test_result or {}).get("error")
+            or "DeepSWE verifier test command did not execute"
+        )
+        return None, {}, DEEPSWE_VERIFIER_NOT_EXECUTED_EXCLUSION_REASON, detail
+
+    reward, metrics = DeepSWEAdapter._parse_reward((reward_result or {}).get("stdout") or "")
+    if (reward_result or {}).get("exit_code") != 0 or reward not in (0.0, 1.0):
+        detail = (
+            (reward_result or {}).get("stderr")
+            or (reward_result or {}).get("error")
+            or (test_result or {}).get("stderr")
+            or (test_result or {}).get("error")
+            or "DeepSWE verifier did not produce a valid binary reward"
+        )
+        return None, metrics, "infrastructure_verifier", detail
+    return reward, metrics, None, None
 
 
 @register_adapter("deepswe")
@@ -579,6 +618,41 @@ class DeepSWEAdapter(BenchmarkAdapter):
     async def _sandbox_alive(self, sandbox_id: str) -> bool | None:
         return await self.sandy.sandbox_exists(sandbox_id)
 
+    async def _verify_agent_terminated(
+        self,
+        sandbox_id: str,
+        agent_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Prove the CLI is gone before held-out verifier files are uploaded.
+
+        Returning from Sandy's SSE request proves only that the stream ended.
+        If the stream breaks while the CLI remains alive, that process still
+        has the sandbox filesystem and Docker socket.  Uploading verifier files
+        at that point would expose the answer key to the arm under test.
+        """
+        probe = await self.sandy.execute_command(
+            sandbox_id,
+            "pid=$(cat /workspace/.chutes/agent.pid 2>/dev/null || true); "
+            "done_value=$(cat /workspace/.chutes/agent.done 2>/dev/null || true); "
+            'if [ -z "$pid" ]; then running=no; state=missing; '
+            'elif [ -r "/proc/$pid/stat" ]; then '
+            "state=$(cut -d' ' -f3 \"/proc/$pid/stat\" 2>/dev/null || echo unknown); "
+            'case "$state" in Z*) running=no;; *) running=yes;; esac; '
+            "else running=no; state=gone; fi; "
+            "echo PID=${pid:-missing} STATE=$state RUNNING=$running "
+            "DONE=${done_value:-missing}",
+        )
+        stdout = ((probe or {}).get("stdout") or "").strip()
+        completion_event = agent_summary.get("type") == "complete"
+        process_stopped = "RUNNING=no" in stdout
+        return {
+            "completion_event": completion_event,
+            "process_stopped": process_stopped,
+            "terminated": completion_event and process_stopped,
+            "probe": stdout,
+            "probe_exit": (probe or {}).get("exit_code"),
+        }
+
     async def _reap_orphans(self, sandbox_id: str) -> None:
         """Remove only DeepSWE resources whose owning Sandy sandbox is gone."""
         await self.sandy.execute_command(
@@ -776,11 +850,28 @@ class DeepSWEAdapter(BenchmarkAdapter):
         if (prepare or {}).get("exit_code") != 0:
             return {"ok": False, "stage": "verifier_transfer", "prepare": prepare}
 
+        test_command_marker = f"{sandbox_id}:{item['id']}:{time.time_ns()}"
+        marker_path = "/logs/verifier/.chutes-test-command-started"
+        verifier_command = (
+            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt "
+            f"{marker_path} && "
+            f"printf '%s' {shlex.quote(test_command_marker)} > {marker_path} && "
+            "exec bash /tests/test.sh"
+        )
         test = await self.sandy.execute_command(
             sandbox_id,
-            f"docker exec -w /app {shlex.quote(verifier_container)} bash /tests/test.sh",
+            f"docker exec -w /app {shlex.quote(verifier_container)} bash -c "
+            f"{shlex.quote(verifier_command)}",
             timeout_ms=verifier_timeout_sec * 1000,
         )
+        test_command_probe = await self.sandy.execute_command(
+            sandbox_id,
+            f"docker exec {shlex.quote(verifier_container)} sh -c "
+            f"{shlex.quote(f'cat {marker_path} 2>/dev/null || true')}",
+        )
+        test_command_executed = (
+            (test_command_probe or {}).get("stdout") or ""
+        ).strip() == test_command_marker
         reward = await self.sandy.execute_command(
             sandbox_id,
             f"docker exec {shlex.quote(verifier_container)} sh -c "
@@ -799,6 +890,8 @@ class DeepSWEAdapter(BenchmarkAdapter):
             "separate_probe": separate_probe,
             "prepare": prepare,
             "test": test,
+            "test_command_probe": test_command_probe,
+            "test_command_executed": test_command_executed,
             "reward": reward,
         }
 
@@ -1004,10 +1097,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
                 api_base_url=agent_launch.api_base_url,
                 env_vars=agent_launch.env_vars,
             )
-            await retain_sandy_agent_rollout(self.sandy, sandbox_id, agent_launch)
-            agent_usage = await collect_agent_usage(self.sandy, sandbox_id)
             agent_summary = (agent_result or {}).get("summary") or {}
-            validate_openrouter_agent_usage(agent_launch, agent_usage)
             sandbox_alive = await self._sandbox_alive(sandbox_id)
             exclusion_reason, exit_note = classify_deepswe_agent_outcome(
                 agent_summary, float(budget["agent"]), sandbox_alive
@@ -1024,6 +1114,55 @@ class DeepSWEAdapter(BenchmarkAdapter):
                         "agent": agent_name,
                         "agent_summary": agent_summary,
                         "sandbox_alive_at_exit": sandbox_alive,
+                        "seal": seal,
+                    },
+                )
+
+            agent_termination = await self._verify_agent_terminated(sandbox_id, agent_summary)
+            if not agent_termination.get("terminated"):
+                return self._excluded_result(
+                    item=item,
+                    prompt=prompt,
+                    reason=DEEPSWE_AGENT_NOT_TERMINATED_EXCLUSION_REASON,
+                    error=(
+                        "Agent completion could not be verified before held-out "
+                        "DeepSWE verifier files would be uploaded "
+                        f"(completion_event={agent_termination.get('completion_event')}, "
+                        f"probe={agent_termination.get('probe')!r})."
+                    ),
+                    start_time=start_time,
+                    metadata={
+                        "agent": agent_name,
+                        "agent_summary": agent_summary,
+                        "agent_termination": agent_termination,
+                        "seal": seal,
+                    },
+                )
+
+            usage_error: str | None = None
+            try:
+                await retain_sandy_agent_rollout(self.sandy, sandbox_id, agent_launch)
+            except RuntimeError as exc:
+                usage_error = str(exc)
+            agent_usage = await collect_agent_usage(self.sandy, sandbox_id)
+            if usage_error is None:
+                try:
+                    validate_openrouter_agent_usage(agent_launch, agent_usage)
+                except RuntimeError as exc:
+                    usage_error = str(exc)
+            if usage_error:
+                return self._excluded_result(
+                    item=item,
+                    prompt=prompt,
+                    reason=DEEPSWE_USAGE_ACCOUNTING_EXCLUSION_REASON,
+                    error=usage_error,
+                    start_time=start_time,
+                    usage=agent_usage,
+                    metadata={
+                        "agent": agent_name,
+                        "agent_summary": agent_summary,
+                        "agent_termination": agent_termination,
+                        "agent_usage": agent_usage,
                         "seal": seal,
                     },
                 )
@@ -1100,29 +1239,32 @@ class DeepSWEAdapter(BenchmarkAdapter):
 
             test_result = verifier.get("test") or {}
             reward_result = verifier.get("reward") or {}
-            reward, reward_metrics = self._parse_reward(reward_result.get("stdout") or "")
-            if (
-                test_result.get("exit_code") not in (0, None)
-                or reward_result.get("exit_code") != 0
-                or reward not in (0.0, 1.0)
-            ):
+            reward, reward_metrics, verifier_exclusion, verifier_error = (
+                classify_deepswe_verifier_outcome(
+                    test_result,
+                    reward_result,
+                    test_command_executed=bool(verifier.get("test_command_executed")),
+                )
+            )
+            if verifier_exclusion:
                 return self._excluded_result(
                     item=item,
                     prompt=prompt,
-                    reason="infrastructure_verifier",
-                    error=(
-                        "DeepSWE verifier did not produce a valid binary reward: "
-                        f"test={test_result}, reward={reward_result}"
-                    ),
+                    reason=verifier_exclusion,
+                    error=(f"{verifier_error}: test={test_result}, reward={reward_result}"),
                     start_time=start_time,
                     usage=agent_usage,
                     metadata={
                         "agent": agent_name,
                         "agent_summary": agent_summary,
+                        "agent_termination": agent_termination,
+                        "test_command_probe": verifier.get("test_command_probe"),
+                        "test_command_executed": verifier.get("test_command_executed"),
                         "reward_metrics": reward_metrics,
                     },
                 )
 
+            assert reward is not None
             latency_ms = int((time.time() - start_time) * 1000)
             return ItemResult(
                 item_id=item_id,
@@ -1152,6 +1294,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
                     "harness": DEEPSWE_HARNESS,
                     "official_leaderboard_harness": "Pier + mini-SWE-agent on Modal",
                     "agent_summary": agent_summary,
+                    "agent_termination": agent_termination,
                     "agent_usage": agent_usage,
                     "agent_exit_note": exit_note,
                     "agent_timeout_sec": budget["agent"],
@@ -1177,34 +1320,24 @@ class DeepSWEAdapter(BenchmarkAdapter):
                     "docker_image_digest": setup.get("image_digest"),
                     "base_commit_hash": item.get("base_commit_hash"),
                     "reward_metrics": reward_metrics,
+                    "test_command_executed": verifier.get("test_command_executed"),
                 },
             )
         except Exception as exc:
             logger.error("DeepSWE evaluation failed", item_id=item_id, error=str(exc))
-            exclusion_reason = classify_deepswe_exception(str(exc), agent_summary)
-            if exclusion_reason:
-                return self._excluded_result(
-                    item=item,
-                    prompt=prompt,
-                    reason=exclusion_reason,
-                    error=str(exc),
-                    start_time=start_time,
-                    usage=agent_usage,
-                    metadata={"agent": agent_name, "agent_summary": agent_summary},
-                )
-            return ItemResult(
-                item_id=item_id,
-                item_hash=self.compute_item_hash(item["task_id"]),
+            exclusion_reason = (
+                classify_deepswe_exception(str(exc), agent_summary) or "infrastructure_adapter"
+            )
+            return self._excluded_result(
+                item=item,
                 prompt=prompt,
+                reason=exclusion_reason,
                 error=str(exc),
-                input_tokens=agent_usage.get("input_tokens"),
-                output_tokens=agent_usage.get("output_tokens"),
+                start_time=start_time,
+                usage=agent_usage,
                 metadata={
-                    "task_id": item["task_id"],
                     "agent": agent_name,
-                    "harness": DEEPSWE_HARNESS,
                     "agent_summary": agent_summary,
-                    "agent_usage": agent_usage,
                 },
             )
         finally:
