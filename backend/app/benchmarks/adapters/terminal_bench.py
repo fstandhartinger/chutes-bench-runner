@@ -1185,8 +1185,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                 helper_image,
                 command=[
                     "python",
-                    "-m",
-                    "app.benchmarks.adapters.terminal_bench_gateway",
+                    "/app/app/benchmarks/adapters/terminal_bench_gateway.py",
                 ],
                 name=gateway_name,
                 detach=True,
