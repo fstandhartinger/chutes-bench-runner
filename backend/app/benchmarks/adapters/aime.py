@@ -1,8 +1,10 @@
 """AIME 2025 benchmark adapter."""
+
 import os
 import re
 import time
-from typing import Any, AsyncIterator, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
 from app.benchmarks.registry import register_adapter
@@ -11,12 +13,19 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+AIME_2025_DATASET = "opencompass/AIME2025"
+AIME_2025_REVISION = "a6ad95f611d72cf628a80b58bd0432ef6638f958"
+AIME_2025_EXAMS = ("AIME2025-I", "AIME2025-II")
+AIME_2025_TASK_IDS = tuple(
+    f"2025-{exam}-{problem:02d}" for exam in ("I", "II") for problem in range(1, 16)
+)
+
 
 @register_adapter("aime_2025")
 class AIME2025Adapter(BenchmarkAdapter):
     """
     AIME 2025 benchmark adapter.
-    
+
     American Invitational Mathematics Examination problems.
     """
 
@@ -33,7 +42,7 @@ class AIME2025Adapter(BenchmarkAdapter):
     def supports_parallel_items(self) -> bool:
         return True
 
-    def get_item_timeout_seconds(self, item_id: Optional[str] = None) -> Optional[int]:
+    def get_item_timeout_seconds(self, item_id: str | None = None) -> int | None:
         return 300
 
     async def get_total_items(self) -> int:
@@ -42,32 +51,59 @@ class AIME2025Adapter(BenchmarkAdapter):
         return len(self._items)
 
     async def preload(self) -> None:
-        """Load AIME 2025 dataset."""
+        """Load the two pinned 15-problem AIME 2025 exams."""
         if self._items:
             return
 
         try:
-            logger.info("Loading AIME/Competition Math dataset")
-            hf_token = os.environ.get("HF_TOKEN")
-            dataset = await load_dataset_with_retry(
-                "AI-MO/aimo-validation-aime",
-                split="train",
-                token=hf_token,
+            logger.info(
+                "Loading pinned AIME 2025 dataset",
+                dataset=AIME_2025_DATASET,
+                revision=AIME_2025_REVISION,
             )
-            
+            hf_token = os.environ.get("HF_TOKEN")
             self._items = []
-            for i, item in enumerate(dataset):
-                problem = str(item.get("problem") or item.get("question") or "")
-                answer = str(item.get("answer") or item.get("solution") or "")
-                if problem:
-                    self._items.append({
-                        "id": str(i),
-                        "problem": problem,
-                        "answer": answer,
-                        "level": item.get("level", item.get("type", "")),
-                    })
-            
-            logger.info(f"Loaded {len(self._items)} AIME items")
+            for exam_config in AIME_2025_EXAMS:
+                dataset = await load_dataset_with_retry(
+                    AIME_2025_DATASET,
+                    exam_config,
+                    split="test",
+                    revision=AIME_2025_REVISION,
+                    token=hf_token,
+                )
+                exam = exam_config.rsplit("-", 1)[-1]
+                if len(dataset) != 15:
+                    raise RuntimeError(
+                        f"{exam_config} identity mismatch at {AIME_2025_REVISION}: "
+                        f"expected 15 problems, loaded {len(dataset)}"
+                    )
+                for problem_number, item in enumerate(dataset, start=1):
+                    task_id = f"2025-{exam}-{problem_number:02d}"
+                    problem = str(item.get("question") or item.get("problem") or "")
+                    answer = str(item.get("answer") or item.get("solution") or "")
+                    if not problem or not answer:
+                        raise RuntimeError(
+                            f"{task_id} is missing its problem or answer at {AIME_2025_REVISION}"
+                        )
+                    self._items.append(
+                        {
+                            "id": str(len(self._items)),
+                            "task_id": task_id,
+                            "problem": problem,
+                            "answer": answer,
+                            "level": f"AIME 2025 {exam}",
+                            "dataset_repository": AIME_2025_DATASET,
+                            "dataset_revision": AIME_2025_REVISION,
+                        }
+                    )
+
+            loaded_ids = tuple(item["task_id"] for item in self._items)
+            if loaded_ids != AIME_2025_TASK_IDS:
+                raise RuntimeError(
+                    "AIME 2025 identity mismatch: expected the ordered 30-problem "
+                    f"I/II manifest, loaded {loaded_ids}"
+                )
+            logger.info("Loaded pinned AIME 2025 items", items=len(self._items))
         except Exception as e:
             logger.error("Failed to load AIME", error=str(e))
             self._items = []
@@ -90,7 +126,7 @@ class AIME2025Adapter(BenchmarkAdapter):
 
         prompt = (
             "Solve the following math competition problem. AIME answers are always integers from 0 to 999.\n"
-            "Provide your final answer as a single integer on a new line prefixed with \"ANSWER:\".\n\n"
+            'Provide your final answer as a single integer on a new line prefixed with "ANSWER:".\n\n'
             f"Problem: {item['problem']}\n\n"
             "Answer:"
         )
@@ -129,7 +165,9 @@ class AIME2025Adapter(BenchmarkAdapter):
                     model_answer = boxed_match.group(1)
 
             if not model_answer:
-                clean_text = re.sub(r"(?i)<think>.*?</think>", "", response_str, flags=re.DOTALL).strip()
+                clean_text = re.sub(
+                    r"(?i)<think>.*?</think>", "", response_str, flags=re.DOTALL
+                ).strip()
                 numbers = re.findall(r"\b\d+\b", clean_text)
                 if numbers:
                     model_answer = numbers[-1]
@@ -178,19 +216,16 @@ class AIME2025Adapter(BenchmarkAdapter):
                 "system_prompt": system_prompt,
             }
             return ItemResult(
-                item_id=item_id, 
-                prompt=prompt, 
-                response=res if res is not None else "", 
+                item_id=item_id,
+                prompt=prompt,
+                response=res if res is not None else "",
                 error=str(e),
                 metadata=item_metadata,
             )
 
     async def postprocess(self, results: list[ItemResult]) -> dict[str, Any]:
         scores = [result.score for result in results if result.score is not None]
-        if scores:
-            mean_score = sum(scores) / len(scores)
-        else:
-            mean_score = 0.0
+        mean_score = sum(scores) / len(scores) if scores else 0.0
         return {
             "aime_runs": 1,
             "aime_temperatures": [0.0],

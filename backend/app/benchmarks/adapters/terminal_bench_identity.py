@@ -7,7 +7,9 @@ provenance in docs/BENCHMARK_IDENTITY.md and a new expected-count assertion.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -220,62 +222,16 @@ TERMINAL_BENCH_2_TASK_IDS = (
 )
 
 
-# Source: NVIDIA-NeMo/Evaluator commit bd952253260e7077973aadf5fc656e425d2758e1,
-# `_TB_HARD_TASKS`. NVIDIA identifies this as the curated 47-task leaderboard
-# subset. Every ID is a `difficulty: hard` task at upstream Terminal-Bench v1
-# commit 74221fb; the only other hard-tagged task there, super-benchmark-upet,
-# is not part of this manifest. The legacy task repository moved to
-# harbor-framework/terminal-bench-1; harbor-framework/terminal-bench is now a
-# different repository and does not contain this commit.
-TERMINAL_BENCH_HARD_TASK_IDS = (
-    "aimo-airline-departures",
-    "blind-maze-explorer-5x5",
-    "cartpole-rl-training",
-    "causal-inference-r",
-    "chem-property-targeting",
-    "chem-rf",
-    "circuit-fibsqrt",
-    "cobol-modernization",
-    "configure-git-webserver",
-    "cross-entropy-method",
-    "extract-moves-from-video",
-    "feal-differential-cryptanalysis",
-    "feal-linear-cryptanalysis",
-    "form-filling",
-    "git-multibranch",
-    "gpt2-codegolf",
-    "install-windows-3.11",
-    "install-windows-xp",
-    "lean4-proof",
-    "make-doom-for-mips",
-    "make-mips-interpreter",
-    "mcmc-sampling-stan",
-    "model-extraction-relu-logits",
-    "movie-helper",
-    "neuron-to-jaxley-conversion",
-    "oom",
-    "organization-json-generator",
-    "parallel-particle-simulator",
-    "parallelize-graph",
-    "password-recovery",
-    "path-tracing",
-    "path-tracing-reverse",
-    "play-zork",
-    "play-zork-easy",
-    "polyglot-rust-c",
-    "prove-plus-comm",
-    "pytorch-model-cli",
-    "rare-mineral-allocation",
-    "recover-obfuscated-files",
-    "reverse-engineering",
-    "run-pdp11-code",
-    "stable-parallel-kmeans",
-    "swe-bench-astropy-1",
-    "swe-bench-astropy-2",
-    "train-fasttext",
-    "word2vec-from-scratch",
-    "write-compressor",
+# NVIDIA identifies `_TB_HARD_TASKS` as the curated 47-task leaderboard
+# subset. Keep its full provenance beside the IDs as reviewable data rather
+# than leaving the URLs and commits only in prose.
+TERMINAL_BENCH_HARD_MANIFEST_PATH = (
+    Path(__file__).with_name("manifests") / "terminal_bench_hard.json"
 )
+TERMINAL_BENCH_HARD_MANIFEST = json.loads(
+    TERMINAL_BENCH_HARD_MANIFEST_PATH.read_text(encoding="utf-8")
+)
+TERMINAL_BENCH_HARD_TASK_IDS = tuple(TERMINAL_BENCH_HARD_MANIFEST["task_ids"])
 
 
 TERMINAL_BENCH_1 = TerminalBenchSpec(
@@ -319,13 +275,13 @@ TERMINAL_BENCH_2_1 = TerminalBenchSpec(
 
 TERMINAL_BENCH_HARD = TerminalBenchSpec(
     display_name="Terminal-Bench Hard (47-task leaderboard subset)",
-    expected_count=47,
-    repository="harbor-framework/terminal-bench-1",
-    commit="74221fb0b6b5a7f88e53bed5726edaaf236348c9",
-    archive_sha256="3211a056b2951a9d3db7a7af7d1e89295f46774a8135fd67581e9ccc5b753836",
+    expected_count=TERMINAL_BENCH_HARD_MANIFEST["expected_count"],
+    repository=TERMINAL_BENCH_HARD_MANIFEST["task_source"]["repository"],
+    commit=TERMINAL_BENCH_HARD_MANIFEST["task_source"]["commit"],
+    archive_sha256=TERMINAL_BENCH_HARD_MANIFEST["task_source"]["archive_sha256"],
     task_root="tasks",
     task_format="legacy",
     task_ids=TERMINAL_BENCH_HARD_TASK_IDS,
-    manifest_repository="NVIDIA-NeMo/Evaluator",
-    manifest_commit="bd952253260e7077973aadf5fc656e425d2758e1",
+    manifest_repository=TERMINAL_BENCH_HARD_MANIFEST["manifest_source"]["repository"],
+    manifest_commit=TERMINAL_BENCH_HARD_MANIFEST["manifest_source"]["commit"],
 )

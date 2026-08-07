@@ -2,7 +2,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.benchmarks.adapters.aime import AIME2025Adapter
+from app.benchmarks.adapters.aime import (
+    AIME_2025_REVISION,
+    AIME_2025_TASK_IDS,
+    AIME2025Adapter,
+)
+from app.benchmarks.registry import get_adapter
 
 
 class DummyClient:
@@ -16,6 +21,19 @@ class DummyClient:
                 },
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_pinned_aime_2025_registry_loader_is_exact() -> None:
+    adapter = get_adapter("aime_2025", None, "identity-test")
+
+    assert isinstance(adapter, AIME2025Adapter)
+    await adapter.preload()
+
+    loaded = tuple(item["task_id"] for item in adapter._items)
+    assert len(loaded) == len(set(loaded)) == 30
+    assert loaded == AIME_2025_TASK_IDS
+    assert {item["dataset_revision"] for item in adapter._items} == {AIME_2025_REVISION}
 
 
 @pytest.mark.asyncio

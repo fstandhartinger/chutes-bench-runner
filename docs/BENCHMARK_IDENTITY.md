@@ -21,6 +21,11 @@ any of those identity checks disagree.
 
 The complete task-ID manifests used by the runnable adapters are checked into
 [`backend/app/benchmarks/adapters/terminal_bench_identity.py`](../backend/app/benchmarks/adapters/terminal_bench_identity.py).
+The Terminal-Bench Hard list and both of its immutable source URLs are also
+stored as standalone reviewable data in
+[`terminal_bench_hard.json`](../backend/app/benchmarks/adapters/manifests/terminal_bench_hard.json);
+the production identity module imports that file rather than duplicating its
+47 IDs in code.
 Numeric item IDs remain `0..N-1` in manifest order, so explicit `item_ids`
 selection continues to work. Each result also records both the task-content
 repository/commit and the manifest repository/commit.
@@ -167,9 +172,12 @@ can enumerate items:
 4. Task IDs are unique and exactly match the checked-in manifest in order.
 
 The test suite also downloads every unique pinned source into an empty cache
-and runs the production archive loader. This checks URL reachability, SHA-256,
-archive layout, metadata presence, exact membership, ordering, and expected
-count together, so a dead codeload pin cannot pass on manifest length alone.
+and runs the production archive loader. The dedicated Hard regression test
+constructs `terminal_bench_hard` through the adapter registry and calls its
+real `preload()` method before comparing the resulting ordered IDs to the JSON
+manifest. Together these checks cover URL reachability, SHA-256, archive
+layout, metadata presence, exact membership, ordering, and expected count, so
+a dead codeload pin cannot pass on manifest length alone.
 
 The existing incident-driven controls remain in both execution paths:
 

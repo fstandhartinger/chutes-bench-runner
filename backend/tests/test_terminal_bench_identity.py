@@ -33,6 +33,7 @@ from app.benchmarks.adapters.terminal_bench_identity import (
     TERMINAL_BENCH_2_0,
     TERMINAL_BENCH_2_1,
     TERMINAL_BENCH_HARD,
+    TERMINAL_BENCH_HARD_MANIFEST,
 )
 from app.benchmarks.adapters.terminal_bench_scoring import (
     FUNCTIONAL,
@@ -43,6 +44,7 @@ from app.benchmarks.adapters.terminal_bench_scoring import (
     terminal_bench_2_1_scoring_classification,
 )
 from app.benchmarks.base import ItemResult
+from app.benchmarks.registry import get_adapter
 
 
 def _source_archive(files: dict[str, bytes]) -> bytes:
@@ -247,6 +249,36 @@ def test_hard_manifest_is_the_reproduced_leaderboard_subset() -> None:
     assert TERMINAL_BENCH_HARD.manifest_commit == "bd952253260e7077973aadf5fc656e425d2758e1"
     assert TERMINAL_BENCH_HARD.task_ids[0] == "aimo-airline-departures"
     assert TERMINAL_BENCH_HARD.task_ids[-1] == "write-compressor"
+    assert TERMINAL_BENCH_HARD_MANIFEST["manifest_source"] == {
+        "repository": "NVIDIA-NeMo/Evaluator",
+        "commit": "bd952253260e7077973aadf5fc656e425d2758e1",
+        "url": (
+            "https://github.com/NVIDIA-NeMo/Evaluator/blob/"
+            "bd952253260e7077973aadf5fc656e425d2758e1/"
+            "src/nemo_evaluator/benchmarks/terminal_bench_hard.py"
+        ),
+        "symbol": "_TB_HARD_TASKS",
+    }
+
+
+@pytest.mark.asyncio
+async def test_terminal_bench_hard_registry_loader_matches_pinned_manifest(
+    tmp_path, monkeypatch
+) -> None:
+    """Run the exact registry/preload path used before worker enumeration."""
+    monkeypatch.setenv("TERMINAL_BENCH_DATASET_CACHE", str(tmp_path))
+    adapter = get_adapter("terminal_bench_hard", None, "identity-test")
+
+    assert isinstance(adapter, TerminalBenchHardAdapter)
+    await adapter.preload()
+
+    loaded = tuple(item["task_id"] for item in adapter._items)
+    expected = tuple(TERMINAL_BENCH_HARD_MANIFEST["task_ids"])
+    assert len(loaded) == TERMINAL_BENCH_HARD_MANIFEST["expected_count"] == 47
+    assert len(set(loaded)) == 47
+    assert sorted(set(expected) - set(loaded)) == []
+    assert sorted(set(loaded) - set(expected)) == []
+    assert loaded == expected
 
 
 @pytest.mark.asyncio
