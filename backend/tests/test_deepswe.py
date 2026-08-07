@@ -185,24 +185,58 @@ def test_transport_exception_without_summary_is_excluded() -> None:
 @pytest.mark.asyncio
 async def test_agent_must_be_proven_terminated_before_verifier_upload() -> None:
     class SandyStub:
-        def __init__(self, stdout: str):
-            self.stdout = stdout
+        def __init__(self, *stdout: str):
+            self.stdout = list(stdout)
+            self.calls = 0
 
         async def execute_command(self, *_args, **_kwargs):
-            return {"exit_code": 0, "stdout": self.stdout}
+            value = self.stdout[min(self.calls, len(self.stdout) - 1)]
+            self.calls += 1
+            return {"exit_code": 0, "stdout": value}
 
     adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
-    adapter.sandy = SandyStub("PID=123 STATE=S RUNNING=yes DONE=missing")
+    adapter.sandy = SandyStub("PID=123 STATE=S RUNNING=yes DONE_PRESENT=no DONE=missing")
     running = await adapter._verify_agent_terminated("sandbox", {"type": "complete"})
     assert running["terminated"] is False
     assert DEEPSWE_AGENT_NOT_TERMINATED_EXCLUSION_REASON == ("infrastructure_agent_not_terminated")
 
-    adapter.sandy = SandyStub("PID=123 STATE=gone RUNNING=no DONE=0")
+    adapter.sandy = SandyStub("PID=123 STATE=gone RUNNING=no DONE_PRESENT=yes DONE=0")
     stopped = await adapter._verify_agent_terminated("sandbox", {"type": "complete"})
     assert stopped["terminated"] is True
+    assert stopped["done_value"] == 0
 
     missing_completion = await adapter._verify_agent_terminated("sandbox", {"exitCode": 0})
     assert missing_completion["terminated"] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_termination_recovers_from_sandy_premature_complete() -> None:
+    class SandyStub:
+        def __init__(self):
+            self.responses = iter(
+                [
+                    "PID=123 STATE=S RUNNING=yes DONE_PRESENT=no DONE=missing",
+                    "PID=123 STATE=Z RUNNING=no DONE_PRESENT=yes DONE=0",
+                ]
+            )
+
+        async def execute_command(self, *_args, **_kwargs):
+            return {"exit_code": 0, "stdout": next(self.responses)}
+
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter.sandy = SandyStub()
+
+    recovered = await adapter._verify_agent_terminated(
+        "sandbox",
+        {"type": "complete", "exitCode": 1},
+        wait_timeout_seconds=1,
+        poll_interval_seconds=0,
+    )
+
+    assert recovered["terminated"] is True
+    assert recovered["attempts"] == 2
+    assert "RUNNING=yes" in recovered["initial_probe"]
+    assert recovered["done_value"] == 0
 
 
 def test_verifier_requires_current_in_container_execution_proof() -> None:

@@ -622,6 +622,9 @@ class DeepSWEAdapter(BenchmarkAdapter):
         self,
         sandbox_id: str,
         agent_summary: dict[str, Any],
+        *,
+        wait_timeout_seconds: float = 0,
+        poll_interval_seconds: float = 2,
     ) -> dict[str, Any]:
         """Prove the CLI is gone before held-out verifier files are uploaded.
 
@@ -629,26 +632,70 @@ class DeepSWEAdapter(BenchmarkAdapter):
         If the stream breaks while the CLI remains alive, that process still
         has the sandbox filesystem and Docker socket.  Uploading verifier files
         at that point would expose the answer key to the arm under test.
+
+        Sandy can also emit a synthetic ``complete`` after a transient failure
+        in its own process-status probe.  In that case the wrapper is still
+        running and ``agent.done`` has not been written.  Keep the source seal
+        in place and wait only for the unused portion of this item's declared
+        agent budget.  Never turn an unproven exit into a scored observation.
         """
-        probe = await self.sandy.execute_command(
-            sandbox_id,
-            "pid=$(cat /workspace/.chutes/agent.pid 2>/dev/null || true); "
-            "done_value=$(cat /workspace/.chutes/agent.done 2>/dev/null || true); "
-            'if [ -z "$pid" ]; then running=no; state=missing; '
-            'elif [ -r "/proc/$pid/stat" ]; then '
-            "state=$(cut -d' ' -f3 \"/proc/$pid/stat\" 2>/dev/null || echo unknown); "
-            'case "$state" in Z*) running=no;; *) running=yes;; esac; '
-            "else running=no; state=gone; fi; "
-            "echo PID=${pid:-missing} STATE=$state RUNNING=$running "
-            "DONE=${done_value:-missing}",
-        )
-        stdout = ((probe or {}).get("stdout") or "").strip()
         completion_event = agent_summary.get("type") == "complete"
-        process_stopped = "RUNNING=no" in stdout
+        deadline = time.monotonic() + max(0.0, wait_timeout_seconds)
+        attempts = 0
+        initial_probe = ""
+        stdout = ""
+        probe: dict[str, Any] = {}
+        process_stopped = False
+        done_recorded = False
+
+        while True:
+            attempts += 1
+            probe = await self.sandy.execute_command(
+                sandbox_id,
+                "pid=$(cat /workspace/.chutes/agent.pid 2>/dev/null || true); "
+                "if [ -f /workspace/.chutes/agent.done ]; then "
+                "done_present=yes; "
+                "done_value=$(cat /workspace/.chutes/agent.done 2>/dev/null || true); "
+                "else done_present=no; done_value=; fi; "
+                'if [ -z "$pid" ]; then running=no; state=missing; '
+                'elif [ -r "/proc/$pid/stat" ]; then '
+                "state=$(cut -d' ' -f3 \"/proc/$pid/stat\" 2>/dev/null || echo unknown); "
+                'case "$state" in Z*) running=no;; *) running=yes;; esac; '
+                "else running=no; state=gone; fi; "
+                "echo PID=${pid:-missing} STATE=$state RUNNING=$running "
+                "DONE_PRESENT=$done_present DONE=${done_value:-missing}",
+            )
+            stdout = ((probe or {}).get("stdout") or "").strip()
+            if attempts == 1:
+                initial_probe = stdout
+            process_stopped = "RUNNING=no" in stdout
+            done_recorded = "DONE_PRESENT=yes" in stdout
+            if completion_event and process_stopped and done_recorded:
+                break
+            remaining = deadline - time.monotonic()
+            if not completion_event or remaining <= 0:
+                break
+            await asyncio.sleep(min(max(0.0, poll_interval_seconds), remaining))
+
+        done_value: int | None = None
+        for field in stdout.split():
+            if field.startswith("DONE="):
+                candidate = field.removeprefix("DONE=")
+                if candidate.lstrip("-").isdigit():
+                    done_value = int(candidate)
+                break
         return {
             "completion_event": completion_event,
             "process_stopped": process_stopped,
-            "terminated": completion_event and process_stopped,
+            "done_recorded": done_recorded,
+            "done_value": done_value,
+            "terminated": completion_event and process_stopped and done_recorded,
+            "attempts": attempts,
+            "waited_seconds": max(
+                0.0,
+                wait_timeout_seconds - max(0.0, deadline - time.monotonic()),
+            ),
+            "initial_probe": initial_probe,
             "probe": stdout,
             "probe_exit": (probe or {}).get("exit_code"),
         }
@@ -1087,6 +1134,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
                 agent=agent_name,
                 model=self.model_slug,
             )
+            agent_started_at = time.monotonic()
             agent_result = await self.sandy.run_agent(
                 sandbox_id,
                 agent=agent_name,
@@ -1097,6 +1145,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
                 api_base_url=agent_launch.api_base_url,
                 env_vars=agent_launch.env_vars,
             )
+            agent_call_seconds = time.monotonic() - agent_started_at
             agent_summary = (agent_result or {}).get("summary") or {}
             sandbox_alive = await self._sandbox_alive(sandbox_id)
             exclusion_reason, exit_note = classify_deepswe_agent_outcome(
@@ -1118,7 +1167,11 @@ class DeepSWEAdapter(BenchmarkAdapter):
                     },
                 )
 
-            agent_termination = await self._verify_agent_terminated(sandbox_id, agent_summary)
+            agent_termination = await self._verify_agent_terminated(
+                sandbox_id,
+                agent_summary,
+                wait_timeout_seconds=max(0.0, float(budget["agent"]) - agent_call_seconds),
+            )
             if not agent_termination.get("terminated"):
                 return self._excluded_result(
                     item=item,
