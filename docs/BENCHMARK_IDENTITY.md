@@ -73,6 +73,13 @@ metadata. The release announcement describes it as a verified iteration of
 No official 2.1 Hugging Face repository was found. The official GitHub and
 Harbor Hub datasets are public and obtainable.
 
+The complete pinned-verifier audit that separates functional tasks from
+performance/resource-gated tasks is recorded in
+[`TERMINAL_BENCH_2_1_SCORING_AUDIT.md`](TERMINAL_BENCH_2_1_SCORING_AUDIT.md).
+It found 14 affected tasks out of 89 (15.7%). Standard runs remain unchanged;
+an explicit run-level option can produce a loudly labeled, non-standard
+capability-only score by excluding those tasks without modifying any verifier.
+
 ### Terminal-Bench 3.0 status
 
 An official public Harbor dataset named
@@ -178,3 +185,7 @@ The existing incident-driven controls remain in both execution paths:
 - explicit `item_ids` selection is still honored under the concrete adapter
   name, with immediate family defaults as a fallback (`terminal_bench` for
   `_1`, `_2`, and `_hard`; `terminal_bench_2` for `_2_0` and `_2_1`).
+- Terminal-Bench 2.1 scoring classification is attached after every normal,
+  error, or worker-timeout result without changing answer-key holdout,
+  container-clean verification, network sealing, timeout derivation, or
+  retained evidence.

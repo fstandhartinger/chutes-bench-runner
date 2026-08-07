@@ -26,6 +26,15 @@ from app.benchmarks.adapters.terminal_bench_identity import (
     TERMINAL_BENCH_HARD,
     TerminalBenchSpec,
 )
+from app.benchmarks.adapters.terminal_bench_scoring import (
+    FUNCTIONAL,
+    NON_FUNCTIONAL_SCORING_CLASSES,
+    PERFORMANCE_GATED,
+    RESOURCE_GATED,
+    TERMINAL_BENCH_2_1_SCORING_AUDIT_COMMIT,
+    TERMINAL_BENCH_2_1_SCORING_AUDIT_TASK_COUNT,
+    terminal_bench_2_1_scoring_classification,
+)
 from app.benchmarks.agent_evidence import retain_agent_evidence
 from app.benchmarks.agent_usage import collect_agent_usage
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
@@ -37,6 +46,7 @@ from app.services.sandy_service import SandyService
 logger = get_logger(__name__)
 
 TERMINAL_BENCH_ITEM_TIMEOUT_MARGIN_SECONDS = 15 * 60
+TERMINAL_BENCH_CAPABILITY_FILTER_OPTION = "exclude_performance_and_resource_gated_tasks"
 
 
 
@@ -196,6 +206,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
         self._items: list[dict[str, Any]] = []
         self._item_observability: dict[str, dict[str, Any]] = {}
         self._active_sandbox_ids: set[str] = set()
+        self._scoring_policy_report: Optional[dict[str, Any]] = None
         self.sandy = SandyService()
 
     def get_name(self) -> str:
@@ -262,6 +273,169 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
         if not self._items:
             await self.preload()
         return len(self._items)
+
+    def _terminal_bench_config(self) -> dict[str, Any]:
+        """Merge family and concrete run config without losing versioned keys."""
+        config = getattr(self, "run_config", None) or {}
+        merged: dict[str, Any] = {}
+        keys = (
+            "terminal_bench",
+            self.get_name().rsplit("_", 1)[0],
+            self.get_name(),
+        )
+        for key in dict.fromkeys(keys):
+            candidate = config.get(key) or {}
+            if isinstance(candidate, dict):
+                merged.update(candidate)
+        return merged
+
+    def _has_scoring_classification_audit(self) -> bool:
+        return self.benchmark_spec.commit == TERMINAL_BENCH_2_1_SCORING_AUDIT_COMMIT
+
+    def _classification_for_task(self, task_id: str) -> Optional[dict[str, Any]]:
+        if not self._has_scoring_classification_audit():
+            return None
+        return terminal_bench_2_1_scoring_classification(task_id)
+
+    def _build_scoring_policy_report(
+        self,
+        selected_before_exclusion: list[str],
+        *,
+        capability_filter_enabled: bool,
+    ) -> tuple[dict[str, Any], list[str]]:
+        items_by_id = {item["id"]: item for item in self._items}
+        class_counts = {
+            FUNCTIONAL: 0,
+            PERFORMANCE_GATED: 0,
+            RESOURCE_GATED: 0,
+        }
+        for item in self._items:
+            scoring_class = item.get("scoring_class")
+            if scoring_class in class_counts:
+                class_counts[scoring_class] += 1
+
+        selected_gated = [
+            item_id
+            for item_id in selected_before_exclusion
+            if items_by_id[item_id].get("scoring_class") in NON_FUNCTIONAL_SCORING_CLASSES
+        ]
+        excluded_ids = selected_gated if capability_filter_enabled else []
+        excluded_set = set(excluded_ids)
+        selected_after_exclusion = [
+            item_id for item_id in selected_before_exclusion if item_id not in excluded_set
+        ]
+
+        excluded_by_class = {
+            PERFORMANCE_GATED: sum(
+                items_by_id[item_id].get("scoring_class") == PERFORMANCE_GATED
+                for item_id in excluded_ids
+            ),
+            RESOURCE_GATED: sum(
+                items_by_id[item_id].get("scoring_class") == RESOURCE_GATED
+                for item_id in excluded_ids
+            ),
+        }
+        excluded_tasks = [
+            {
+                "item_id": item_id,
+                "task_id": items_by_id[item_id].get("task_id"),
+                "scoring_class": items_by_id[item_id].get("scoring_class"),
+                "reason": items_by_id[item_id].get("scoring_reason"),
+            }
+            for item_id in excluded_ids
+        ]
+        classified_gated_count = class_counts[PERFORMANCE_GATED] + class_counts[RESOURCE_GATED]
+        if capability_filter_enabled:
+            summary = (
+                "NON-STANDARD CAPABILITY-ONLY SCORE: excluded "
+                f"{len(excluded_ids)} of {len(selected_before_exclusion)} selected "
+                "tasks because their upstream verifiers gate on performance or "
+                "resources; verifier thresholds were not changed."
+            )
+        else:
+            summary = (
+                "STANDARD TASK SELECTION: excluded 0 tasks by scoring policy; "
+                f"the full {len(self._items)}-task benchmark contains "
+                f"{classified_gated_count} "
+                "performance/resource-gated tasks."
+            )
+
+        report = {
+            "audit_commit": TERMINAL_BENCH_2_1_SCORING_AUDIT_COMMIT,
+            "audit_applies": self._has_scoring_classification_audit(),
+            "mode": ("capability_only" if capability_filter_enabled else "standard"),
+            "standard_terminal_bench_score": not capability_filter_enabled,
+            "thresholds_relaxed": False,
+            "option": TERMINAL_BENCH_CAPABILITY_FILTER_OPTION,
+            "option_enabled": capability_filter_enabled,
+            "benchmark_task_count": len(self._items),
+            "scoring_class_counts": class_counts,
+            "classified_gated_task_count": classified_gated_count,
+            "selected_before_policy_exclusion": len(selected_before_exclusion),
+            "selected_after_policy_exclusion": len(selected_after_exclusion),
+            "selected_gated_task_count": len(selected_gated),
+            "excluded_task_count": len(excluded_ids),
+            "excluded_by_class": excluded_by_class,
+            "excluded_tasks": excluded_tasks,
+            "summary": summary,
+        }
+        return report, selected_after_exclusion
+
+    async def get_items_for_evaluation(
+        self,
+        subset_pct: int,
+        seed: str,
+        subset_count: Optional[int] = None,
+    ) -> tuple[int, list[str]]:
+        total_items, selected = await super().get_items_for_evaluation(
+            subset_pct,
+            seed,
+            subset_count,
+        )
+        option_value = self._terminal_bench_config().get(
+            TERMINAL_BENCH_CAPABILITY_FILTER_OPTION,
+            False,
+        )
+        if not isinstance(option_value, bool):
+            raise ValueError(f"{TERMINAL_BENCH_CAPABILITY_FILTER_OPTION} must be a JSON boolean")
+        if option_value and not self._has_scoring_classification_audit():
+            raise ValueError(
+                f"{TERMINAL_BENCH_CAPABILITY_FILTER_OPTION} is only available for "
+                "the audited Terminal-Bench 2.1 release"
+            )
+
+        if self._has_scoring_classification_audit():
+            report, filtered = self._build_scoring_policy_report(
+                selected,
+                capability_filter_enabled=option_value,
+            )
+            self._scoring_policy_report = report
+            if option_value:
+                logger.warning(
+                    "Terminal-Bench capability-only task filter enabled",
+                    benchmark=self.get_name(),
+                    excluded_tasks=report["excluded_task_count"],
+                    selected_before=report["selected_before_policy_exclusion"],
+                    selected_after=report["selected_after_policy_exclusion"],
+                    standard_terminal_bench_score=False,
+                )
+                if not filtered:
+                    task_ids = [entry["task_id"] for entry in report["excluded_tasks"]]
+                    raise ValueError(
+                        "Capability-only policy excluded every selected task "
+                        f"({', '.join(task_ids)}); no score can be computed"
+                    )
+            return total_items, filtered
+
+        self._scoring_policy_report = None
+        return total_items, selected
+
+    async def postprocess(self, results: list[ItemResult]) -> dict[str, Any]:
+        """Put the selection policy beside the score in run-level metrics."""
+        report = getattr(self, "_scoring_policy_report", None)
+        if report is None:
+            return {}
+        return {"terminal_bench_scoring_policy": copy.deepcopy(report)}
 
     async def preload(self) -> None:
         """Load an exact, pinned upstream release and assert its identity."""
@@ -432,7 +606,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             agent_timeout = (parsed.get("agent") or {}).get("timeout_sec")
             test_timeout = (parsed.get("verifier") or {}).get("timeout_sec")
 
-        return {
+        item = {
             "id": str(index),
             "task_id": task_id,
             "task_yaml": task_manifest,
@@ -451,6 +625,16 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             "manifest_repository": self.benchmark_spec.manifest_repository,
             "manifest_commit": self.benchmark_spec.manifest_commit,
         }
+        classification = self._classification_for_task(task_id)
+        if classification is not None:
+            item.update(
+                {
+                    "scoring_class": classification["scoring_class"],
+                    "scoring_reason": classification["reason"],
+                    "scoring_evidence": classification["evidence"],
+                }
+            )
+        return item
 
     def _assert_benchmark_identity(self) -> None:
         """Fail startup if count, ordering, uniqueness, or membership drifted."""
@@ -472,6 +656,23 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                 f"{self.get_name()} task manifest mismatch; "
                 f"missing={missing}, unexpected={unexpected}"
             )
+        if self._has_scoring_classification_audit():
+            if len(self._items) != TERMINAL_BENCH_2_1_SCORING_AUDIT_TASK_COUNT:
+                raise BenchmarkIdentityError(
+                    "Terminal-Bench 2.1 scoring audit is tied to "
+                    f"{TERMINAL_BENCH_2_1_SCORING_AUDIT_TASK_COUNT} tasks, "
+                    f"loaded {len(self._items)}"
+                )
+            invalid = [
+                item.get("task_id")
+                for item in self._items
+                if item.get("scoring_class") not in {FUNCTIONAL, PERFORMANCE_GATED, RESOURCE_GATED}
+            ]
+            if invalid:
+                raise BenchmarkIdentityError(
+                    "Terminal-Bench 2.1 scoring classification is missing or "
+                    f"invalid for: {', '.join(invalid)}"
+                )
 
     async def enumerate_items(self) -> AsyncIterator[str]:
         if not self._items:
@@ -1350,6 +1551,27 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             }
 
     def attach_item_observability(self, result: ItemResult) -> ItemResult:
+        # Classification is adapter-owned observability too.  Attach it before
+        # looking up evidence state so worker-created timeout/error results are
+        # classified even when the adapter did not return normally.
+        item = next(
+            (
+                candidate
+                for candidate in getattr(self, "_items", [])
+                if candidate.get("id") == result.item_id
+            ),
+            None,
+        )
+        if item is not None and item.get("scoring_class"):
+            if result.metadata is None:
+                result.metadata = {}
+            result.metadata["scoring_class"] = item["scoring_class"]
+            result.metadata["scoring_classification"] = {
+                "audit_commit": TERMINAL_BENCH_2_1_SCORING_AUDIT_COMMIT,
+                "reason": item.get("scoring_reason"),
+                "evidence": copy.deepcopy(item.get("scoring_evidence") or []),
+            }
+
         state = self._item_observability.pop(result.item_id, None)
         if not state:
             return result

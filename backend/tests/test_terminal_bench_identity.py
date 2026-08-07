@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import tarfile
+from collections import Counter
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
@@ -29,6 +30,15 @@ from app.benchmarks.adapters.terminal_bench_identity import (
     TERMINAL_BENCH_2_1,
     TERMINAL_BENCH_HARD,
 )
+from app.benchmarks.adapters.terminal_bench_scoring import (
+    FUNCTIONAL,
+    PERFORMANCE_GATED,
+    RESOURCE_GATED,
+    TERMINAL_BENCH_2_1_GATED_TASKS,
+    TERMINAL_BENCH_2_1_SCORING_AUDIT_COMMIT,
+    terminal_bench_2_1_scoring_classification,
+)
+from app.benchmarks.base import ItemResult
 
 
 def _source_archive(files: dict[str, bytes]) -> bytes:
@@ -54,6 +64,142 @@ def test_pinned_manifests_have_expected_counts_and_unique_ids() -> None:
     assert "super-benchmark-upet" not in TERMINAL_BENCH_HARD.task_ids
     with pytest.raises(ValueError, match="named release requires 89"):
         replace(TERMINAL_BENCH_2_1, task_ids=TERMINAL_BENCH_2_1.task_ids[:-1])
+
+
+def _audited_items() -> list[dict]:
+    items = []
+    for index, task_id in enumerate(TERMINAL_BENCH_2_1.task_ids):
+        classification = terminal_bench_2_1_scoring_classification(task_id)
+        items.append(
+            {
+                "id": str(index),
+                "task_id": task_id,
+                "scoring_class": classification["scoring_class"],
+                "scoring_reason": classification["reason"],
+                "scoring_evidence": classification["evidence"],
+            }
+        )
+    return items
+
+
+def test_terminal_bench_2_1_scoring_audit_covers_exact_release() -> None:
+    assert TERMINAL_BENCH_2_1.commit == TERMINAL_BENCH_2_1_SCORING_AUDIT_COMMIT
+    assert len(TERMINAL_BENCH_2_1.task_ids) == 89
+    assert set(TERMINAL_BENCH_2_1_GATED_TASKS) < set(TERMINAL_BENCH_2_1.task_ids)
+
+    classes = Counter(
+        terminal_bench_2_1_scoring_classification(task_id)["scoring_class"]
+        for task_id in TERMINAL_BENCH_2_1.task_ids
+    )
+    assert classes == {
+        FUNCTIONAL: 75,
+        PERFORMANCE_GATED: 4,
+        RESOURCE_GATED: 10,
+    }
+    assert {
+        task_id
+        for task_id, classification in TERMINAL_BENCH_2_1_GATED_TASKS.items()
+        if classification["scoring_class"] == PERFORMANCE_GATED
+    } == {
+        "largest-eigenval",
+        "portfolio-optimization",
+        "query-optimize",
+        "tune-mjcf",
+    }
+    assert {
+        task_id
+        for task_id, classification in TERMINAL_BENCH_2_1_GATED_TASKS.items()
+        if classification["scoring_class"] == RESOURCE_GATED
+    } == {
+        "circuit-fibsqrt",
+        "gpt2-codegolf",
+        "large-scale-text-editing",
+        "llm-inference-batching-scheduler",
+        "path-tracing",
+        "path-tracing-reverse",
+        "regex-chess",
+        "reshard-c4-data",
+        "train-fasttext",
+        "write-compressor",
+    }
+    for classification in TERMINAL_BENCH_2_1_GATED_TASKS.values():
+        assert classification["evidence"]
+        assert all(evidence["assertion"] for evidence in classification["evidence"])
+
+
+@pytest.mark.asyncio
+async def test_capability_filter_is_opt_in_and_reports_every_exclusion() -> None:
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    adapter._items = _audited_items()
+    adapter.run_config = {}
+
+    total, standard_items = await adapter.get_items_for_evaluation(100, "seed")
+    standard_metrics = await adapter.postprocess([])
+
+    assert total == 89
+    assert len(standard_items) == 89
+    standard_policy = standard_metrics["terminal_bench_scoring_policy"]
+    assert standard_policy["mode"] == "standard"
+    assert standard_policy["excluded_task_count"] == 0
+    assert standard_policy["classified_gated_task_count"] == 14
+    assert standard_policy["standard_terminal_bench_score"] is True
+
+    adapter.run_config = {
+        "terminal_bench_2_1": {
+            "exclude_performance_and_resource_gated_tasks": True,
+        }
+    }
+    total, capability_items = await adapter.get_items_for_evaluation(100, "seed")
+    capability_metrics = await adapter.postprocess([])
+
+    assert total == 89
+    assert len(capability_items) == 75
+    assert all(
+        adapter._items[int(item_id)]["scoring_class"] == FUNCTIONAL for item_id in capability_items
+    )
+    capability_policy = capability_metrics["terminal_bench_scoring_policy"]
+    assert capability_policy["mode"] == "capability_only"
+    assert capability_policy["standard_terminal_bench_score"] is False
+    assert capability_policy["thresholds_relaxed"] is False
+    assert capability_policy["excluded_task_count"] == 14
+    assert capability_policy["excluded_by_class"] == {
+        PERFORMANCE_GATED: 4,
+        RESOURCE_GATED: 10,
+    }
+    assert {entry["task_id"] for entry in capability_policy["excluded_tasks"]} == set(
+        TERMINAL_BENCH_2_1_GATED_TASKS
+    )
+    assert "NON-STANDARD CAPABILITY-ONLY SCORE" in capability_policy["summary"]
+
+
+@pytest.mark.asyncio
+async def test_capability_filter_never_silently_drops_entire_explicit_selection() -> None:
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    adapter._items = _audited_items()
+    largest_eigenval_id = str(TERMINAL_BENCH_2_1.task_ids.index("largest-eigenval"))
+    adapter.run_config = {
+        "terminal_bench_2_1": {
+            "item_ids": [largest_eigenval_id],
+            "exclude_performance_and_resource_gated_tasks": True,
+        }
+    }
+
+    with pytest.raises(ValueError, match="excluded every selected task.*largest-eigenval"):
+        await adapter.get_items_for_evaluation(100, "seed")
+
+
+def test_scoring_class_is_attached_even_to_worker_created_error_result() -> None:
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    adapter._items = _audited_items()
+    adapter._item_observability = {}
+    item_id = str(TERMINAL_BENCH_2_1.task_ids.index("largest-eigenval"))
+
+    result = adapter.attach_item_observability(ItemResult(item_id=item_id, error="worker timeout"))
+
+    assert result.metadata["scoring_class"] == PERFORMANCE_GATED
+    classification = result.metadata["scoring_classification"]
+    assert classification["audit_commit"] == TERMINAL_BENCH_2_1.commit
+    assert classification["evidence"][0]["assertion"] == "assert dt < ref_dt"
 
 
 def test_adapter_names_resolve_to_explicit_releases() -> None:
@@ -124,6 +270,24 @@ async def test_each_pinned_source_archive_is_reachable_and_loadable(
 
     assert len(adapter._items) == spec.expected_count
     assert tuple(item["task_id"] for item in adapter._items) == spec.task_ids
+    if spec.commit == TERMINAL_BENCH_2_1_SCORING_AUDIT_COMMIT:
+        assert Counter(item["scoring_class"] for item in adapter._items) == {
+            FUNCTIONAL: 75,
+            PERFORMANCE_GATED: 4,
+            RESOURCE_GATED: 10,
+        }
+        items_by_task = {item["task_id"]: item for item in adapter._items}
+        for task_id, classification in TERMINAL_BENCH_2_1_GATED_TASKS.items():
+            with tarfile.open(
+                fileobj=io.BytesIO(items_by_task[task_id]["archive"]), mode="r:"
+            ) as task_archive:
+                for evidence in classification["evidence"]:
+                    source = task_archive.extractfile(evidence["file"])
+                    assert source is not None
+                    lines = source.read().decode("utf-8").splitlines()
+                    source_line = lines[evidence["line"] - 1].strip()
+                    assertion = evidence["assertion"].split("  #", 1)[0]
+                    assert assertion in source_line
 
 
 def test_harbor_source_archive_is_packaged_in_manifest_order() -> None:
