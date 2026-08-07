@@ -116,6 +116,35 @@ TRANSPORT_FAILURE_MARKERS = (
     "sandbox not found",
 )
 
+# These are verifier-side connectivity failures, not failures of the agent's
+# solution. Keep this deliberately narrower than generic strings such as
+# "failed to download": a missing artifact or a bad URL can be a real task
+# failure, while these signatures state that the network path itself failed.
+VERIFIER_NETWORK_FAILURE_MARKERS = (
+    "curl: (5) could not resolve proxy",
+    "curl: (6) could not resolve host",
+    "curl: (7) failed to connect",
+    "curl: (28) connection timed out",
+    "temporary failure in name resolution",
+    "network is unreachable",
+    "no route to host",
+)
+
+VERIFIER_NETWORK_EXCLUSION_REASON = "infrastructure_verifier_network"
+VERIFIER_NOT_EXECUTED_EXCLUSION_REASON = "infrastructure_verifier_not_executed"
+AGENT_NOT_TERMINATED_EXCLUSION_REASON = "infrastructure_agent_not_terminated"
+
+
+def classify_verifier_network_failure(test_result: Optional[dict]) -> Optional[str]:
+    """Identify proof that verifier tooling could not reach the network."""
+    result = test_result or {}
+    text = "\n".join(
+        str(result.get(field) or "") for field in ("stdout", "stderr", "error")
+    ).lower()
+    if any(marker in text for marker in VERIFIER_NETWORK_FAILURE_MARKERS):
+        return VERIFIER_NETWORK_EXCLUSION_REASON
+    return None
+
 
 def classify_bare_failure(error_text: str, agent_summary: Optional[dict]) -> Optional[str]:
     """Exclusion reason for a failure that produced no agent summary.
@@ -988,16 +1017,116 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
         is running, and both are finished by the time this is called, so
         restoring egress here costs nothing and keeps the scorer working.
         """
+        # /etc/hosts is a bind mount in both Docker environments. `sed -i`
+        # writes a temporary file and renames it over the original; rename(2)
+        # cannot replace a mount point, so GNU sed exits 4 and leaves the seal
+        # intact. Stream the prefix back into the mounted inode instead.
         restore = (
-            "sed -i '/chutes-bench-runner: benchmark answer sources/,$d' /etc/hosts"
+            "tmp=/tmp/chutes-bench-hosts.$$; "
+            "awk '/^# chutes-bench-runner: benchmark answer sources$/{exit} "
+            "{print}' /etc/hosts > \"$tmp\" && cat \"$tmp\" > /etc/hosts; "
+            "status=$?; rm -f \"$tmp\"; exit $status"
         )
         result = await self.sandy.execute_command(sandbox_id, restore)
         container = await self.sandy.execute_command(
             sandbox_id, f"docker exec {container_name} sh -c {shlex.quote(restore)}"
         )
-        return {
+
+        # Do not infer anything from either restore exit code. The old exit 4
+        # appeared on passing and failing items alike. Assert the actual
+        # postcondition from inside both network namespaces: the blackhole
+        # entries are gone and the exact answer-source endpoint is reachable.
+        probe = (
+            "echo HOSTS=$(grep -c "
+            "'chutes-bench-runner: benchmark answer sources' /etc/hosts); "
+            "if command -v curl >/dev/null 2>&1; then "
+            "code=$(curl -sS --connect-timeout 8 --max-time 12 -o /dev/null "
+            "-w '%{http_code}' "
+            "https://raw.githubusercontent.com/harbor-framework/terminal-bench/main/README.md "
+            "2>/dev/null || true); "
+            "case \"$code\" in 2*|3*) echo NETWORK=OPEN;; "
+            "*) echo NETWORK=CLOSED:$code;; esac; "
+            "elif command -v wget >/dev/null 2>&1; then "
+            "if wget -q --spider -T 12 "
+            "https://raw.githubusercontent.com/harbor-framework/terminal-bench/main/README.md; "
+            "then echo NETWORK=OPEN; else echo NETWORK=CLOSED; fi; "
+            "elif command -v bash >/dev/null 2>&1; then "
+            "if bash -c 'exec 3<>/dev/tcp/raw.githubusercontent.com/443' "
+            "2>/dev/null; then echo NETWORK=OPEN; else echo NETWORK=CLOSED; fi; "
+            "else echo NETWORK=UNVERIFIABLE; fi"
+        )
+        sandbox_probe = await self.sandy.execute_command(
+            sandbox_id, probe, timeout_ms=20000
+        )
+        container_probe = await self.sandy.execute_command(
+            sandbox_id,
+            f"docker exec {container_name} sh -c {shlex.quote(probe)}",
+            timeout_ms=20000,
+        )
+
+        def _judge(probe_result: Optional[dict]) -> tuple[bool, bool, str]:
+            out = ((probe_result or {}).get("stdout") or "").strip()
+            hosts_removed = "HOSTS=0" in out
+            network_open = "NETWORK=OPEN" in out
+            return hosts_removed, network_open, out
+
+        sandbox_hosts_removed, sandbox_connected, sandbox_stdout = _judge(
+            sandbox_probe
+        )
+        container_hosts_removed, container_connected, container_stdout = _judge(
+            container_probe
+        )
+        verdict = {
             "sandbox_exit": (result or {}).get("exit_code"),
             "container_exit": (container or {}).get("exit_code"),
+            "sandbox_hosts_removed": sandbox_hosts_removed,
+            "sandbox_connected": sandbox_connected,
+            "sandbox_stdout": sandbox_stdout,
+            "container_hosts_removed": container_hosts_removed,
+            "container_connected": container_connected,
+            "container_stdout": container_stdout,
+        }
+        verdict["restored"] = all(
+            (
+                sandbox_hosts_removed,
+                sandbox_connected,
+                container_hosts_removed,
+                container_connected,
+            )
+        )
+        return verdict
+
+    async def _verify_agent_terminated(
+        self, sandbox_id: str, agent_summary: dict
+    ) -> dict:
+        """Prove Sandy's tracked agent process is gone before unsealing.
+
+        `run_agent` is an SSE request. Returning from it only proves that the
+        stream ended; requiring Sandy's terminal event plus an independent
+        /proc check closes the unsafe case where a broken stream leaves the
+        agent alive while scoring restores access to the answer sources.
+        """
+        probe = await self.sandy.execute_command(
+            sandbox_id,
+            "pid=$(cat /workspace/.chutes/agent.pid 2>/dev/null || true); "
+            "done_value=$(cat /workspace/.chutes/agent.done 2>/dev/null || true); "
+            "if [ -z \"$pid\" ]; then running=no; state=missing; "
+            "elif [ -r \"/proc/$pid/stat\" ]; then "
+            "state=$(cut -d' ' -f3 \"/proc/$pid/stat\" 2>/dev/null || echo unknown); "
+            "case \"$state\" in Z*) running=no;; *) running=yes;; esac; "
+            "else running=no; state=gone; fi; "
+            "echo PID=${pid:-missing} STATE=$state RUNNING=$running "
+            "DONE=${done_value:-missing}",
+        )
+        out = ((probe or {}).get("stdout") or "").strip()
+        completion_event = agent_summary.get("type") == "complete"
+        process_stopped = "RUNNING=no" in out
+        return {
+            "completion_event": completion_event,
+            "process_stopped": process_stopped,
+            "terminated": completion_event and process_stopped,
+            "probe": out,
+            "probe_exit": (probe or {}).get("exit_code"),
         }
 
     async def _sandbox_alive(self, sandbox_id: str) -> Optional[bool]:
@@ -1040,6 +1169,58 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             if len(numeric) == 1:
                 return numeric[0]
         return None
+
+    @classmethod
+    def _harbor_verifier_outcome(
+        cls,
+        test_result: Optional[dict],
+        reward_result: Optional[dict],
+        *,
+        test_command_executed: bool,
+    ) -> dict[str, Any]:
+        """Validate verifier execution before accepting Harbor's scalar."""
+        network_exclusion = classify_verifier_network_failure(test_result)
+        if network_exclusion:
+            detail = "\n".join(
+                str((test_result or {}).get(field) or "")
+                for field in ("stderr", "stdout", "error")
+            ).strip()
+            return {
+                "reward": None,
+                "is_correct": None,
+                "error": detail or "Verifier could not reach the network",
+                "exclusion_reason": network_exclusion,
+            }
+        if not test_command_executed:
+            detail = (
+                (test_result or {}).get("stderr")
+                or (test_result or {}).get("error")
+                or "Harbor verifier test command did not execute"
+            )
+            return {
+                "reward": None,
+                "is_correct": None,
+                "error": detail,
+                "exclusion_reason": VERIFIER_NOT_EXECUTED_EXCLUSION_REASON,
+            }
+
+        reward = cls._parse_harbor_reward(
+            (reward_result or {}).get("stdout") or ""
+        )
+        is_correct = reward is not None and reward >= 1.0
+        error = None
+        if reward is None:
+            error = (
+                (test_result or {}).get("stderr")
+                or (test_result or {}).get("error")
+                or "Harbor verifier did not emit a scalar reward"
+            )
+        return {
+            "reward": reward,
+            "is_correct": is_correct,
+            "error": error,
+            "exclusion_reason": None,
+        }
 
     async def evaluate_item(self, item_id: str) -> ItemResult:
         """Evaluate a single Terminal-Bench item."""
@@ -1248,6 +1429,40 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                             },
                         )
 
+                    agent_termination = await self._verify_agent_terminated(
+                        sandbox_id, agent_summary
+                    )
+                    if not agent_termination.get("terminated"):
+                        return ItemResult(
+                            item_id=item_id,
+                            item_hash=self.compute_item_hash(item.get("task_id")),
+                            prompt=prompt,
+                            error=(
+                                "Agent completion could not be verified before the "
+                                "scoring network would be restored "
+                                f"(completion_event="
+                                f"{agent_termination.get('completion_event')}, "
+                                f"probe={agent_termination.get('probe')!r})."
+                            ),
+                            latency_ms=int((time.time() - start_time) * 1000),
+                            input_tokens=agent_usage.get("input_tokens"),
+                            output_tokens=agent_usage.get("output_tokens"),
+                            metadata={
+                                "task_id": item.get("task_id"),
+                                "agent": agent_name,
+                                "agent_summary": agent_summary,
+                                "agent_usage": agent_usage,
+                                "agent_termination": agent_termination,
+                                "holdout": holdout,
+                                "seal": seal,
+                                "agent_timeout_sec": agent_timeout / 1000,
+                                "agent_timeout_multiplier": timeout_multiplier,
+                                "exclusion_reason": (
+                                    AGENT_NOT_TERMINATED_EXCLUSION_REASON
+                                ),
+                            },
+                        )
+
                     agent_events = agent_result.get("events") or []
                     agent_output = next(
                         (event.get("text") for event in reversed(agent_events) if event.get("type") == "output"),
@@ -1320,6 +1535,42 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                     seal["released_for_tests"] = await self._unseal_network(
                         sandbox_id, container_name
                     )
+                    if not seal["released_for_tests"].get("restored"):
+                        release = seal["released_for_tests"]
+                        return ItemResult(
+                            item_id=item_id,
+                            item_hash=self.compute_item_hash(item.get("task_id")),
+                            prompt=prompt,
+                            response=agent_output,
+                            error=(
+                                "Verifier network connectivity was not restored "
+                                "inside both the sandbox and task container "
+                                f"(sandbox={release.get('sandbox_stdout')!r}, "
+                                f"container={release.get('container_stdout')!r})."
+                            ),
+                            latency_ms=latency_ms,
+                            judge_output={
+                                "setup": setup_result,
+                                "agent_summary": agent_summary,
+                                "agent_exec": agent_exec,
+                            },
+                            input_tokens=agent_usage.get("input_tokens"),
+                            output_tokens=agent_usage.get("output_tokens"),
+                            metadata={
+                                "task_id": item.get("task_id"),
+                                "agent": agent_name,
+                                "agent_summary": agent_summary,
+                                "agent_usage": agent_usage,
+                                "agent_termination": agent_termination,
+                                "holdout": holdout,
+                                "seal": seal,
+                                "agent_timeout_sec": agent_timeout / 1000,
+                                "agent_timeout_multiplier": timeout_multiplier,
+                                "exclusion_reason": (
+                                    VERIFIER_NETWORK_EXCLUSION_REASON
+                                ),
+                            },
+                        )
                     # Put the tests back for scoring. The reference solution
                     # stays withheld -- we score what the agent wrote.
                     holdout["restored_for_tests"] = await self._restore_tests(
@@ -1337,11 +1588,39 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                     )
                     reward_result: Optional[dict[str, Any]] = None
                     harbor_reward: Optional[float] = None
+                    verifier_exclusion_reason: Optional[str] = None
+                    test_command_probe: Optional[dict[str, Any]] = None
+                    test_command_executed = True
                     if item.get("task_format") == "harbor":
+                        # A unique in-container sentinel is stronger than an
+                        # execute API response: transport failures return
+                        # exit_code=-1 too, and a stale reward file can still be
+                        # parseable. Only the shell that execs test.sh can write
+                        # this exact value, and it removes old rewards first.
+                        test_command_marker = (
+                            f"{sandbox_id}:{item_id}:{time.time_ns()}"
+                        )
+                        marker_path = "/logs/verifier/.chutes-test-command-started"
+                        verifier_command = (
+                            "rm -f /logs/verifier/reward.json "
+                            "/logs/verifier/reward.txt && "
+                            f"printf '%s' {shlex.quote(test_command_marker)} > "
+                            f"{marker_path} && exec bash /tests/test.sh"
+                        )
                         test_result = await self.sandy.execute_command(
                             sandbox_id,
-                            f"docker exec -w /app {container_name} bash /tests/test.sh",
+                            f"docker exec -w /app {container_name} bash -c "
+                            f"{shlex.quote(verifier_command)}",
                             timeout_ms=test_timeout,
+                        )
+                        test_command_probe = await self.sandy.execute_command(
+                            sandbox_id,
+                            f"docker exec {container_name} sh -c "
+                            f"{shlex.quote(f'cat {marker_path} 2>/dev/null || true')}",
+                        )
+                        test_command_executed = (
+                            ((test_command_probe or {}).get("stdout") or "").strip()
+                            == test_command_marker
                         )
                         reward_result = await self.sandy.execute_command(
                             sandbox_id,
@@ -1351,17 +1630,17 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                             "elif [ -f /logs/verifier/reward.txt ]; then "
                             "cat /logs/verifier/reward.txt; else exit 1; fi'",
                         )
-                        harbor_reward = self._parse_harbor_reward(
-                            (reward_result or {}).get("stdout") or ""
+                        verifier_outcome = self._harbor_verifier_outcome(
+                            test_result,
+                            reward_result,
+                            test_command_executed=test_command_executed,
                         )
-                        is_correct = harbor_reward is not None and harbor_reward >= 1.0
-                        error = None
-                        if harbor_reward is None:
-                            error = (
-                                (test_result or {}).get("stderr")
-                                or (test_result or {}).get("error")
-                                or "Harbor verifier did not emit a scalar reward"
-                            )
+                        harbor_reward = verifier_outcome["reward"]
+                        is_correct = verifier_outcome["is_correct"]
+                        error = verifier_outcome["error"]
+                        verifier_exclusion_reason = verifier_outcome[
+                            "exclusion_reason"
+                        ]
                     else:
                         test_script_check = await self.sandy.execute_command(
                             sandbox_id,
@@ -1397,6 +1676,53 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                         error = None if is_correct else (
                             test_result.get("stderr") or test_result.get("error")
                         )
+                        verifier_exclusion_reason = (
+                            classify_verifier_network_failure(test_result)
+                        )
+
+                    if verifier_exclusion_reason:
+                        if not error:
+                            error = "\n".join(
+                                str((test_result or {}).get(field) or "")
+                                for field in ("stderr", "stdout", "error")
+                            ).strip() or "Verifier could not reach the network"
+                        return ItemResult(
+                            item_id=item_id,
+                            item_hash=self.compute_item_hash(item.get("task_id")),
+                            prompt=prompt,
+                            response=agent_output,
+                            expected=(
+                                "[Harbor verifier reward >= 1]"
+                                if item.get("task_format") == "harbor"
+                                else "[Tests passed]"
+                            ),
+                            error=error,
+                            latency_ms=latency_ms,
+                            judge_output={
+                                "setup": setup_result,
+                                "agent_summary": agent_summary,
+                                "agent_exec": agent_exec,
+                                "test_result": test_result,
+                                "test_command_probe": test_command_probe,
+                                "test_command_executed": test_command_executed,
+                                "reward_result": reward_result,
+                            },
+                            input_tokens=agent_usage.get("input_tokens"),
+                            output_tokens=agent_usage.get("output_tokens"),
+                            metadata={
+                                "task_id": item.get("task_id"),
+                                "difficulty": item.get("difficulty"),
+                                "agent": agent_name,
+                                "agent_usage": agent_usage,
+                                "agent_summary": agent_summary,
+                                "agent_termination": agent_termination,
+                                "seal": seal,
+                                "holdout": holdout,
+                                "task_format": item.get("task_format"),
+                                "test_command_executed": test_command_executed,
+                                "exclusion_reason": verifier_exclusion_reason,
+                            },
+                        )
 
                     return ItemResult(
                         item_id=item_id,
@@ -1420,6 +1746,8 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                             "agent_summary": agent_summary,
                             "agent_exec": agent_exec,
                             "test_result": test_result,
+                            "test_command_probe": test_command_probe,
+                            "test_command_executed": test_command_executed,
                             "reward_result": reward_result,
                         },
                         error=error,
@@ -1430,6 +1758,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                             "difficulty": item.get("difficulty"),
                             "agent": agent_name,
                             "agent_usage": agent_usage,
+                            "agent_termination": agent_termination,
                             # Recorded per item so a reviewer can confirm the
                             # run was sealed without taking it on trust.
                             "seal": seal,
@@ -1441,6 +1770,7 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
                             "agent_output_excerpt": agent_output[:2000] if agent_output else "",
                             "task_yaml": task_yaml,
                             "task_format": item.get("task_format"),
+                            "test_command_executed": test_command_executed,
                             "dataset_repository": item.get("dataset_repository"),
                             "dataset_commit": item.get("dataset_commit"),
                             "manifest_repository": item.get("manifest_repository"),

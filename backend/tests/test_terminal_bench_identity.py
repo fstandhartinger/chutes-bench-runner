@@ -10,6 +10,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.benchmarks.adapters.terminal_bench import (
+    AGENT_NOT_TERMINATED_EXCLUSION_REASON,
+    VERIFIER_NETWORK_EXCLUSION_REASON,
+    VERIFIER_NOT_EXECUTED_EXCLUSION_REASON,
     BenchmarkIdentityError,
     TerminalBench1Adapter,
     TerminalBench2Adapter,
@@ -18,6 +21,7 @@ from app.benchmarks.adapters.terminal_bench import (
     TerminalBenchAdapter,
     TerminalBenchHardAdapter,
     classify_agent_exit,
+    classify_verifier_network_failure,
 )
 from app.benchmarks.adapters.terminal_bench_identity import (
     TERMINAL_BENCH_1,
@@ -246,3 +250,125 @@ def test_agent_exit_classification_still_excludes_only_dead_sandbox() -> None:
     exclusion, note = classify_agent_exit(summary, 100, True)
     assert exclusion is None
     assert "Scored" in (note or "")
+
+
+@pytest.mark.asyncio
+async def test_unseal_proves_connectivity_inside_both_environments() -> None:
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    adapter.sandy = type("Sandy", (), {})()
+    adapter.sandy.execute_command = AsyncMock(
+        side_effect=[
+            # Exit 4 was universal in the affected runs, including passes. The
+            # property probes, not these values, determine the verdict.
+            {"exit_code": 4, "stderr": "benign historical signature"},
+            {"exit_code": 4, "stderr": "benign historical signature"},
+            {"exit_code": 0, "stdout": "HOSTS=0\nNETWORK=OPEN\n"},
+            {"exit_code": 0, "stdout": "HOSTS=0\nNETWORK=OPEN\n"},
+        ]
+    )
+
+    verdict = await adapter._unseal_network("sandbox", "task-container")
+
+    assert verdict["restored"] is True
+    assert verdict["sandbox_connected"] is True
+    assert verdict["container_connected"] is True
+    restore_command = adapter.sandy.execute_command.await_args_list[0].args[1]
+    assert "cat \"$tmp\" > /etc/hosts" in restore_command
+    assert "sed -i" not in restore_command
+    container_probe = adapter.sandy.execute_command.await_args_list[3].args[1]
+    assert "docker exec task-container" in container_probe
+    assert "raw.githubusercontent.com" in container_probe
+
+
+@pytest.mark.asyncio
+async def test_unseal_rejects_successful_actions_without_restored_property() -> None:
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    adapter.sandy = type("Sandy", (), {})()
+    adapter.sandy.execute_command = AsyncMock(
+        side_effect=[
+            {"exit_code": 0},
+            {"exit_code": 0},
+            {"exit_code": 0, "stdout": "HOSTS=0\nNETWORK=OPEN\n"},
+            {"exit_code": 0, "stdout": "HOSTS=1\nNETWORK=CLOSED:\n"},
+        ]
+    )
+
+    verdict = await adapter._unseal_network("sandbox", "task-container")
+
+    assert verdict["restored"] is False
+    assert verdict["container_hosts_removed"] is False
+    assert verdict["container_connected"] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_must_emit_completion_and_be_stopped_before_unseal() -> None:
+    adapter = TerminalBench21Adapter.__new__(TerminalBench21Adapter)
+    adapter.sandy = type("Sandy", (), {})()
+    adapter.sandy.execute_command = AsyncMock(
+        return_value={
+            "exit_code": 0,
+            "stdout": "PID=42 STATE=gone RUNNING=no DONE=0\n",
+        }
+    )
+
+    terminated = await adapter._verify_agent_terminated(
+        "sandbox", {"type": "complete", "exitCode": 0}
+    )
+    missing_completion = await adapter._verify_agent_terminated(
+        "sandbox", {"exitCode": 0}
+    )
+
+    assert terminated["terminated"] is True
+    assert missing_completion["terminated"] is False
+    assert AGENT_NOT_TERMINATED_EXCLUSION_REASON == (
+        "infrastructure_agent_not_terminated"
+    )
+
+
+def test_verifier_network_failure_is_excluded_instead_of_scored_zero() -> None:
+    test_result = {
+        "exit_code": 127,
+        "stderr": (
+            "curl: (7) Failed to connect to github.com port 443\n"
+            "failed to download uv-x86_64-unknown-linux-gnu.tar.gz\n"
+            "/tests/test.sh: line 19: uvx: command not found"
+        ),
+    }
+    reward_result = {"exit_code": 0, "stdout": "0\n"}
+
+    outcome = TerminalBench21Adapter._harbor_verifier_outcome(
+        test_result,
+        reward_result,
+        test_command_executed=True,
+    )
+
+    assert outcome["exclusion_reason"] == VERIFIER_NETWORK_EXCLUSION_REASON
+    assert outcome["reward"] is None
+    assert outcome["is_correct"] is None
+
+
+def test_harbor_reward_requires_proof_test_command_executed() -> None:
+    outcome = TerminalBench21Adapter._harbor_verifier_outcome(
+        {"exit_code": -1, "error": "transport response lost"},
+        {"exit_code": 0, "stdout": "0\n"},
+        test_command_executed=False,
+    )
+
+    assert outcome["exclusion_reason"] == VERIFIER_NOT_EXECUTED_EXCLUSION_REASON
+    assert outcome["reward"] is None
+    assert outcome["is_correct"] is None
+
+
+def test_executed_harbor_verifier_can_still_return_capability_zero() -> None:
+    outcome = TerminalBench21Adapter._harbor_verifier_outcome(
+        {"exit_code": 1, "stderr": "2 assertions failed"},
+        {"exit_code": 0, "stdout": "0\n"},
+        test_command_executed=True,
+    )
+
+    assert outcome["exclusion_reason"] is None
+    assert outcome["reward"] == 0.0
+    assert outcome["is_correct"] is False
+    assert classify_verifier_network_failure(
+        {"stderr": "failed to download artifact: HTTP 404"}
+    ) is None
