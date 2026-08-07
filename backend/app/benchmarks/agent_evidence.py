@@ -9,6 +9,7 @@ archive is made visible as retained evidence.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import binascii
@@ -30,6 +31,11 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 EVIDENCE_SCHEMA_VERSION = 1
+RLM_NATIVE_REPOSITORY_HELPERS = frozenset(
+    {"read_file", "write_file", "apply_patch", "list_dir", "grep"}
+)
+MAX_RETAINED_NATIVE_HELPER_PATHS = 100
+MAX_RETAINED_NATIVE_HELPER_PATH_LENGTH = 1_000
 
 _PREPARE_EVIDENCE_SCRIPT = r"""
 import hashlib
@@ -345,6 +351,10 @@ def read_rollout_metrics(path: Path) -> dict[str, Any]:
     compaction_events = 0
     compaction_events_by_type: dict[str, int] = {}
     tool_calls_by_name: dict[str, int] = {}
+    rlm_native_helper_calls_by_name: dict[str, int] = {}
+    rlm_native_helper_paths: set[str] = set()
+    rlm_python_cells_with_subprocess = 0
+    rlm_python_cells_with_docker = 0
     malformed_lines = 0
     rollouts: list[str] = []
 
@@ -378,6 +388,50 @@ def read_rollout_metrics(path: Path) -> dict[str, Any]:
                 tool_name = payload.get("name")
                 if payload_type.endswith("_call") and isinstance(tool_name, str):
                     tool_calls_by_name[tool_name] = tool_calls_by_name.get(tool_name, 0) + 1
+                if payload_type == "function_call" and tool_name == "python":
+                    arguments = payload.get("arguments")
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except json.JSONDecodeError:
+                            arguments = None
+                    code = arguments.get("code") if isinstance(arguments, dict) else None
+                    if not isinstance(code, str):
+                        continue
+                    if re.search(r"\bsubprocess\b", code):
+                        rlm_python_cells_with_subprocess += 1
+                    if re.search(r"\bdocker(?:\s+exec|\b)", code, flags=re.IGNORECASE):
+                        rlm_python_cells_with_docker += 1
+                    try:
+                        tree = ast.parse(code)
+                    except SyntaxError:
+                        continue
+                    for node in ast.walk(tree):
+                        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                            continue
+                        helper = node.func.id
+                        if helper not in RLM_NATIVE_REPOSITORY_HELPERS:
+                            continue
+                        rlm_native_helper_calls_by_name[helper] = (
+                            rlm_native_helper_calls_by_name.get(helper, 0) + 1
+                        )
+                        path_node = node.args[0] if helper != "apply_patch" and node.args else None
+                        if helper == "grep":
+                            path_node = next(
+                                (
+                                    keyword.value
+                                    for keyword in node.keywords
+                                    if keyword.arg == "path"
+                                ),
+                                node.args[1] if len(node.args) > 1 else None,
+                            )
+                        if (
+                            isinstance(path_node, ast.Constant)
+                            and isinstance(path_node.value, str)
+                            and len(path_node.value) <= MAX_RETAINED_NATIVE_HELPER_PATH_LENGTH
+                            and len(rlm_native_helper_paths) < MAX_RETAINED_NATIVE_HELPER_PATHS
+                        ):
+                            rlm_native_helper_paths.add(path_node.value)
 
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
@@ -388,6 +442,10 @@ def read_rollout_metrics(path: Path) -> dict[str, Any]:
         "compaction_events": compaction_events,
         "compaction_events_by_type": dict(sorted(compaction_events_by_type.items())),
         "tool_calls_by_name": dict(sorted(tool_calls_by_name.items())),
+        "rlm_native_helper_calls_by_name": dict(sorted(rlm_native_helper_calls_by_name.items())),
+        "rlm_native_helper_paths": sorted(rlm_native_helper_paths),
+        "rlm_python_cells_with_subprocess": rlm_python_cells_with_subprocess,
+        "rlm_python_cells_with_docker": rlm_python_cells_with_docker,
     }
 
 
@@ -591,6 +649,10 @@ async def retain_agent_evidence(
                     "compaction_events": None,
                     "compaction_events_by_type": {},
                     "tool_calls_by_name": {},
+                    "rlm_native_helper_calls_by_name": {},
+                    "rlm_native_helper_paths": [],
+                    "rlm_python_cells_with_subprocess": None,
+                    "rlm_python_cells_with_docker": None,
                 }
             if require_rollout and not rollout_metrics.get("rollouts"):
                 raise RuntimeError(

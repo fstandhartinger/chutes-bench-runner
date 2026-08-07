@@ -53,7 +53,7 @@ from app.services.sandy_service import SandyService
 logger = get_logger(__name__)
 
 DEEPSWE_ITEM_TIMEOUT_MARGIN_SECONDS = 15 * 60
-DEEPSWE_HARNESS = "sandy-cli-separate-verifier"
+DEEPSWE_HARNESS = "sandy-cli-direct-workspace-separate-verifier"
 DEEPSWE_AGENT_NOT_TERMINATED_EXCLUSION_REASON = "infrastructure_agent_not_terminated"
 DEEPSWE_USAGE_ACCOUNTING_EXCLUSION_REASON = "infrastructure_usage_accounting"
 DEEPSWE_VERIFIER_NOT_EXECUTED_EXCLUSION_REASON = "infrastructure_verifier_not_executed"
@@ -61,6 +61,16 @@ DEEPSWE_SOURCE_PROBE_URL = (
     "https://raw.githubusercontent.com/datacurve-ai/deep-swe/"
     "435ee89ec2f2e2289f33b0da4f992f0b7b7266b9/README.md"
 )
+DEEPSWE_AGENT_REPOSITORY = "/workspace/repo"
+DEEPSWE_TASK_REPOSITORY = "/app"
+DEEPSWE_AGENT_WRAPPER_DIR = "/workspace/.chutes/bin"
+DEEPSWE_AGENT_COMMANDS = {
+    "prime-agent": "prime-agent",
+    "chutescoder": "chutescoder",
+    "chutescoder-baseline": "chutescoder",
+    "codex": "codex",
+}
+DEEPSWE_SANDBOX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 def classify_deepswe_agent_outcome(
@@ -513,6 +523,8 @@ class DeepSWEAdapter(BenchmarkAdapter):
         self,
         sandbox_id: str,
         heldout_hashes: list[dict[str, Any]] | None = None,
+        *,
+        task_repository_present: bool = False,
     ) -> dict[str, Any]:
         expected_hashes = {entry["sha256"] for entry in (heldout_hashes or [])}
         heldout_sizes = sorted({int(entry["size"]) for entry in (heldout_hashes or [])})
@@ -522,12 +534,19 @@ class DeepSWEAdapter(BenchmarkAdapter):
             if size_expr
             else ":"
         )
+        archive_repository_exclusion = (
+            f"! -path {shlex.quote(DEEPSWE_AGENT_REPOSITORY + '/*')} "
+            if task_repository_present
+            else ""
+        )
         result = await self.sandy.execute_command(
             sandbox_id,
             "answer_count=$(find /workspace/task/tests /workspace/task/solution "
             "-type f 2>/dev/null | wc -l); "
             "archive_count=$(find /workspace -type f "
-            "\\( -name '*.tar' -o -name '*.b64' -o -name '*.tar.gz' \\) | wc -l); "
+            "\\( -name '*.tar' -o -name '*.b64' -o -name '*.tar.gz' \\) "
+            + archive_repository_exclusion
+            + "| wc -l); "
             "cache_count=$(find /var/cache/sandy -mindepth 1 -type f 2>/dev/null | wc -l); "
             "echo ANSWERS=$answer_count ARCHIVES=$archive_count CACHE_FILES=$cache_count; "
             + hash_scan,
@@ -856,14 +875,58 @@ class DeepSWEAdapter(BenchmarkAdapter):
             kwargs["mem_limit"] = f"{int(item['memory_mb'])}m"
         return kwargs
 
+    @staticmethod
+    def _agent_workspace_mount(sandbox_id: str) -> dict[str, Any]:
+        """Resolve the sandbox's private workspace from the worker trust domain."""
+        sandbox = sandbox_container(sandbox_id)
+        matches = [
+            mount
+            for mount in sandbox.attrs.get("Mounts") or []
+            if mount.get("Destination") == "/workspace"
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(f"expected one Sandy /workspace mount, observed {len(matches)}")
+        mount = matches[0]
+        source = os.path.realpath(str(mount.get("Source") or ""))
+        if not source.startswith("/") or source == "/":
+            raise RuntimeError("Sandy /workspace mount has an unsafe host source")
+        if mount.get("RW") is not True:
+            raise RuntimeError("Sandy /workspace mount is not writable")
+        sensitive_roots = tuple(
+            os.path.realpath(path) for path in ("/var/run/docker.sock", "/var/lib/sandy/cache")
+        )
+        if any(source == root or source.startswith(f"{root}/") for root in sensitive_roots):
+            raise RuntimeError("Sandy /workspace resolves inside a sensitive host mount")
+        return {
+            "source": source,
+            "destination": "/workspace",
+            "type": mount.get("Type"),
+            "read_write": True,
+            "observed_from": "worker_docker_api",
+        }
+
     async def _start_agent_container(
         self,
         sandbox_id: str,
         item: dict[str, Any],
         container_name: str,
         pull_timeout_sec: int,
+        workspace_mount: dict[str, Any],
     ) -> dict[str, Any]:
         image = item["docker_image"]
+
+        repository_ready = await self.sandy.execute_command(
+            sandbox_id,
+            f"mkdir -p {shlex.quote(DEEPSWE_AGENT_REPOSITORY)} && "
+            f'test -z "$(find {shlex.quote(DEEPSWE_AGENT_REPOSITORY)} '
+            '-mindepth 1 -maxdepth 1 -print -quit)"',
+        )
+        if (repository_ready or {}).get("exit_code") != 0:
+            return {
+                "ok": False,
+                "stage": "repository_prepare",
+                "result": repository_ready,
+            }
 
         def _pull_and_start() -> dict[str, Any]:
             client = docker.from_env()
@@ -873,6 +936,24 @@ class DeepSWEAdapter(BenchmarkAdapter):
                 stale.remove(force=True)
             except docker.errors.NotFound:
                 pass
+            host_workspace = str(workspace_mount["source"])
+            host_repository = os.path.join(host_workspace, "repo")
+            client.containers.run(
+                pulled.id,
+                command=[
+                    "-lc",
+                    "set -eu; cp -a /app/. /workspace/repo/; test -d /workspace/repo/.git",
+                ],
+                entrypoint="/bin/sh",
+                remove=True,
+                network_mode="none",
+                volumes={host_repository: {"bind": DEEPSWE_AGENT_REPOSITORY, "mode": "rw"}},
+                labels={
+                    "chutes.benchmark": "deepswe",
+                    "chutes.bench.sandbox_id": sandbox_id,
+                    "chutes.bench.role": "repository-copy",
+                },
+            )
             container = client.containers.run(
                 pulled.id,
                 command=["sleep", "infinity"],
@@ -885,6 +966,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
                     "chutes.bench.sandbox_id": sandbox_id,
                     "chutes.bench.role": "agent-task",
                 },
+                volumes={host_repository: {"bind": DEEPSWE_TASK_REPOSITORY, "mode": "rw"}},
                 **self._resource_kwargs(item),
             )
             container.reload()
@@ -894,6 +976,13 @@ class DeepSWEAdapter(BenchmarkAdapter):
                 "image_id": pulled.id,
                 "image_digest": str(repo_digests[0]) if repo_digests else pulled.id,
                 "network_mode": (container.attrs.get("HostConfig") or {}).get("NetworkMode"),
+                "workspace": {
+                    "mode": "shared_bind_mount",
+                    "copy_mount_scope": "repository_only",
+                    "agent_repository": DEEPSWE_AGENT_REPOSITORY,
+                    "task_repository": DEEPSWE_TASK_REPOSITORY,
+                    "read_write": True,
+                },
             }
 
         try:
@@ -916,6 +1005,121 @@ class DeepSWEAdapter(BenchmarkAdapter):
             **started,
             "observed_from": "worker_docker_api",
         }
+
+    async def _verify_shared_task_workspace(
+        self,
+        sandbox_id: str,
+        container_name: str,
+    ) -> dict[str, Any]:
+        """Prove that native agent files and task-image commands share one checkout."""
+        token = hashlib.sha256(f"{sandbox_id}:{container_name}".encode()).hexdigest()
+        probe_name = f".chutes-workspace-probe-{token[:16]}"
+        agent_path = f"{DEEPSWE_AGENT_REPOSITORY}/{probe_name}"
+        task_path = f"{DEEPSWE_TASK_REPOSITORY}/{probe_name}"
+        agent_write = await self.sandy.execute_command(
+            sandbox_id,
+            f"printf %s {shlex.quote('agent-' + token)} > {shlex.quote(agent_path)}",
+        )
+        task_roundtrip = await TerminalBenchAdapter._docker_exec_outside(
+            self,
+            container_name,
+            [
+                "sh",
+                "-c",
+                f'test "$(cat {shlex.quote(task_path)})" = {shlex.quote("agent-" + token)} '
+                f"&& printf %s {shlex.quote('task-' + token)} > {shlex.quote(task_path)}",
+            ],
+        )
+        agent_read = await self.sandy.execute_command(
+            sandbox_id,
+            f"cat {shlex.quote(agent_path)}",
+        )
+        cleanup = await self.sandy.execute_command(
+            sandbox_id,
+            f"rm -f {shlex.quote(agent_path)}",
+        )
+        expected = f"task-{token}"
+        return {
+            "shared": (
+                agent_write.get("exit_code") == 0
+                and task_roundtrip.get("exit_code") == 0
+                and agent_read.get("exit_code") == 0
+                and (agent_read.get("stdout") or "") == expected
+                and cleanup.get("exit_code") == 0
+            ),
+            "agent_write_exit_code": agent_write.get("exit_code"),
+            "task_roundtrip_exit_code": task_roundtrip.get("exit_code"),
+            "agent_read_exit_code": agent_read.get("exit_code"),
+            "cleanup_exit_code": cleanup.get("exit_code"),
+            "agent_repository": DEEPSWE_AGENT_REPOSITORY,
+            "task_repository": DEEPSWE_TASK_REPOSITORY,
+            "observed_from": "agent_sandbox_and_worker_docker_api",
+        }
+
+    @staticmethod
+    def _agent_workdir_wrapper(
+        binary: str,
+        repository: str = DEEPSWE_AGENT_REPOSITORY,
+    ) -> str:
+        return f"""#!/usr/bin/env python3
+import os
+import sys
+
+BINARY = {binary!r}
+REPOSITORY = {repository!r}
+args = sys.argv[1:]
+for index, argument in enumerate(args):
+    if argument == "--cwd" and index + 1 < len(args):
+        args[index + 1] = REPOSITORY
+    elif argument.startswith("--cwd="):
+        args[index] = "--cwd=" + REPOSITORY
+os.chdir(REPOSITORY)
+os.execv(BINARY, [BINARY, *args])
+"""
+
+    async def _install_agent_workdir_wrapper(
+        self,
+        sandbox_id: str,
+        agent_name: str,
+    ) -> dict[str, Any]:
+        """Make the Codex-family process enter the directly mounted checkout."""
+        command = DEEPSWE_AGENT_COMMANDS.get(agent_name)
+        if command is None:
+            raise RuntimeError(f"DeepSWE direct workspace does not support agent {agent_name!r}")
+        resolved = await self.sandy.execute_command(
+            sandbox_id,
+            f"command -v {shlex.quote(command)} | xargs readlink -f",
+        )
+        binary = ((resolved or {}).get("stdout") or "").strip()
+        if (resolved or {}).get("exit_code") != 0 or not binary.startswith("/"):
+            raise RuntimeError(f"could not resolve the real {command} binary: {resolved}")
+        if binary.startswith(f"{DEEPSWE_AGENT_WRAPPER_DIR}/"):
+            raise RuntimeError(f"refusing to wrap an existing DeepSWE {command} wrapper")
+        wrapper = self._agent_workdir_wrapper(binary)
+        encoded = base64.b64encode(wrapper.encode()).decode("ascii")
+        installed = await self.sandy.execute_command(
+            sandbox_id,
+            f"mkdir -p {shlex.quote(DEEPSWE_AGENT_WRAPPER_DIR)} && "
+            f"printf %s {shlex.quote(encoded)} | base64 -d > "
+            f"{shlex.quote(f'{DEEPSWE_AGENT_WRAPPER_DIR}/{command}')} && "
+            f"chmod 755 {shlex.quote(f'{DEEPSWE_AGENT_WRAPPER_DIR}/{command}')}",
+        )
+        if (installed or {}).get("exit_code") != 0:
+            raise RuntimeError(f"could not install the DeepSWE agent cwd wrapper: {installed}")
+        return {
+            "agent": agent_name,
+            "command": command,
+            "binary": binary,
+            "cwd": DEEPSWE_AGENT_REPOSITORY,
+            "wrapper": f"{DEEPSWE_AGENT_WRAPPER_DIR}/{command}",
+        }
+
+    @staticmethod
+    def _agent_workspace_env(env_vars: dict[str, str]) -> dict[str, str]:
+        env = dict(env_vars)
+        existing_path = env.get("PATH") or DEEPSWE_SANDBOX_PATH
+        env["PATH"] = f"{DEEPSWE_AGENT_WRAPPER_DIR}:{existing_path}"
+        return env
 
     async def _collect_patch(
         self,
@@ -1294,6 +1498,18 @@ class DeepSWEAdapter(BenchmarkAdapter):
         result.metadata["compaction_events_by_type"] = compaction_experiment[
             "compaction_events_by_type"
         ]
+        result.metadata["repository_access"] = {
+            "agent_repository": DEEPSWE_AGENT_REPOSITORY,
+            "task_repository": DEEPSWE_TASK_REPOSITORY,
+            "rlm_native_helper_calls_by_name": rollout_metrics.get(
+                "rlm_native_helper_calls_by_name"
+            ),
+            "rlm_native_helper_paths": rollout_metrics.get("rlm_native_helper_paths"),
+            "rlm_python_cells_with_subprocess": rollout_metrics.get(
+                "rlm_python_cells_with_subprocess"
+            ),
+            "rlm_python_cells_with_docker": rollout_metrics.get("rlm_python_cells_with_docker"),
+        }
         result.metadata["agent_evidence"] = {
             key: evidence.get(key)
             for key in (
@@ -1355,13 +1571,17 @@ class DeepSWEAdapter(BenchmarkAdapter):
         state["agent"] = agent_name
         instruction = item["instruction"]
         prompt = (
-            "You are an interactive coding agent in a Sandy sandbox. A no-network "
-            "DeepSWE task container is already running. Use docker exec to inspect "
-            "and modify the repository at /app inside that container. Do not search "
-            "for benchmark sources, hidden tests, or reference solutions. You may run "
-            "the repository's existing tests. When finished, commit every intended "
-            "change to git; the harness submits the binary diff from the pinned base "
-            "commit through HEAD to a separate pristine verifier container.\n\n"
+            "You are an interactive coding agent in a Sandy sandbox. Your current "
+            f"working directory is the task repository at {DEEPSWE_AGENT_REPOSITORY}; "
+            "native file, grep, patch, and shell helpers operate directly on its real "
+            "files. Inspect and modify repository files with those native helpers, not "
+            "through docker exec. A no-network task runtime mounts the same checkout at "
+            f"{DEEPSWE_TASK_REPOSITORY}; use docker exec only when a command needs the "
+            "task image's dependencies. Do not search for benchmark sources, hidden "
+            "tests, or reference solutions. You may run the repository's existing "
+            "tests. When finished, commit every intended change to git; the harness "
+            "submits the binary diff from the pinned base commit through HEAD to a "
+            "separate pristine verifier container.\n\n"
             f"Task instruction:\n{instruction}\n"
         )
         start_time = time.time()
@@ -1430,6 +1650,39 @@ class DeepSWEAdapter(BenchmarkAdapter):
                     metadata={"agent": agent_name, "workspace_clean": workspace_clean},
                 )
 
+            removed_staging = await self.sandy.execute_command(
+                sandbox_id,
+                "rm -rf /workspace/task",
+            )
+            if removed_staging.get("exit_code") != 0:
+                return self._excluded_result(
+                    item=item,
+                    prompt=prompt,
+                    reason="infrastructure_setup",
+                    error="Could not remove sanitized DeepSWE staging metadata",
+                    start_time=start_time,
+                    metadata={
+                        "agent": agent_name,
+                        "workspace_clean": workspace_clean,
+                        "removed_staging": removed_staging,
+                    },
+                )
+
+            try:
+                workspace_mount = await asyncio.to_thread(
+                    self._agent_workspace_mount,
+                    sandbox_id,
+                )
+            except Exception as exc:
+                return self._excluded_result(
+                    item=item,
+                    prompt=prompt,
+                    reason="integrity_workspace_boundary_unproven",
+                    error=f"Refusing to expose the task checkout: {exc}",
+                    start_time=start_time,
+                    metadata={"agent": agent_name, "workspace_clean": workspace_clean},
+                )
+
             namespace = f"s{sandbox_id[:12]}".lower()
             safe_task = "".join(ch if ch.isalnum() else "-" for ch in item["task_id"].lower())
             agent_container = f"deepswe_{namespace}_{safe_task}_agent"
@@ -1441,6 +1694,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
                 item,
                 agent_container,
                 int(budget["environment_build"]),
+                workspace_mount,
             )
             if not setup.get("ok"):
                 return self._excluded_result(
@@ -1450,6 +1704,27 @@ class DeepSWEAdapter(BenchmarkAdapter):
                     error=f"DeepSWE task environment setup failed: {setup}",
                     start_time=start_time,
                     metadata={"agent": agent_name, "setup": setup},
+                )
+
+            shared_workspace = await self._verify_shared_task_workspace(
+                sandbox_id,
+                agent_container,
+            )
+            if not shared_workspace.get("shared"):
+                return self._excluded_result(
+                    item=item,
+                    prompt=prompt,
+                    reason="integrity_workspace_boundary_unproven",
+                    error=(
+                        "Refusing to run the agent: Sandy and the task runtime do not "
+                        f"share one proven checkout ({shared_workspace})"
+                    ),
+                    start_time=start_time,
+                    metadata={
+                        "agent": agent_name,
+                        "setup": setup,
+                        "shared_workspace": shared_workspace,
+                    },
                 )
 
             container_clean = await self._verify_container_clean(
@@ -1512,6 +1787,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
             agent_view_clean = await self._verify_workspace_clean(
                 sandbox_id,
                 item["heldout_hashes"],
+                task_repository_present=True,
             )
             if not agent_view_clean.get("clean"):
                 return self._excluded_result(
@@ -1550,17 +1826,35 @@ class DeepSWEAdapter(BenchmarkAdapter):
             state["agent_launch"] = agent_launch
             if agent_launch.setup is not None:
                 state["configured_context_window"] = agent_launch.setup.context_window
+            try:
+                workdir_wrapper = await self._install_agent_workdir_wrapper(
+                    sandbox_id,
+                    agent_name,
+                )
+            except Exception as exc:
+                return self._excluded_result(
+                    item=item,
+                    prompt=prompt,
+                    reason="infrastructure_agent_workdir",
+                    error=f"Could not enter the direct DeepSWE checkout: {exc}",
+                    start_time=start_time,
+                    metadata={
+                        "agent": agent_name,
+                        "setup": setup,
+                        "shared_workspace": shared_workspace,
+                    },
+                )
             agent_started_at = time.monotonic()
             state["agent_invoked"] = True
             agent_result = await self.sandy.run_agent(
                 sandbox_id,
                 agent=agent_name,
                 model=self.model_slug,
-                prompt=prompt + f"\nTask container name: {agent_container}\n",
+                prompt=prompt + f"\nTask runtime container name: {agent_container}\n",
                 max_duration=int(budget["agent"]),
                 raw_prompt=True,
                 api_base_url=agent_launch.api_base_url,
-                env_vars=agent_launch.env_vars,
+                env_vars=self._agent_workspace_env(agent_launch.env_vars),
             )
             agent_call_seconds = time.monotonic() - agent_started_at
             agent_summary = (agent_result or {}).get("summary") or {}
@@ -1805,6 +2099,11 @@ class DeepSWEAdapter(BenchmarkAdapter):
                     "seal": seal,
                     "agent_docker_gateway": gateway,
                     "docker_boundary": docker_boundary,
+                    "agent_workspace": {
+                        "setup": setup.get("workspace"),
+                        "shared_workspace": shared_workspace,
+                        "workdir_wrapper": workdir_wrapper,
+                    },
                     "answer_key_holdout": {
                         "workspace": workspace_clean,
                         "agent_view": agent_view_clean,

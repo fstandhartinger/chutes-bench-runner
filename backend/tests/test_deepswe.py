@@ -5,9 +5,12 @@ from __future__ import annotations
 import inspect
 import io
 import json
+import os
+import subprocess
 import tarfile
 import tomllib
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -229,9 +232,189 @@ def test_agent_never_receives_raw_docker_socket_or_verifier_archive() -> None:
     assert evaluate_source.index("_verify_agent_docker_boundary") < evaluate_source.index(
         "_prepare_agent_launch"
     )
+    assert evaluate_source.index("_verify_workspace_clean") < evaluate_source.index(
+        "_start_agent_container"
+    )
+    assert evaluate_source.index("_verify_shared_task_workspace") < evaluate_source.index(
+        "_prepare_agent_launch"
+    )
     assert "_upload_archive" not in verifier_source
     assert "self.sandy.write_file" not in verifier_source
     assert "docker.from_env" in verifier_source
+
+
+def test_workspace_mount_is_resolved_from_the_sandbox_boundary(monkeypatch) -> None:
+    sandbox = SimpleNamespace(
+        attrs={
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": "/var/lib/sandy/workspaces/sandbox",
+                    "Destination": "/workspace",
+                    "RW": True,
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(deepswe_module, "sandbox_container", lambda _sandbox_id: sandbox)
+
+    resolved = DeepSWEAdapter._agent_workspace_mount("sandbox")
+
+    assert resolved == {
+        "source": "/var/lib/sandy/workspaces/sandbox",
+        "destination": "/workspace",
+        "type": "bind",
+        "read_write": True,
+        "observed_from": "worker_docker_api",
+    }
+
+
+@pytest.mark.asyncio
+async def test_task_runtime_bind_mounts_the_agent_checkout(monkeypatch) -> None:
+    run_calls = []
+
+    class TaskContainer:
+        id = "task-container-id"
+        attrs = {"HostConfig": {"NetworkMode": "none"}}
+
+        @staticmethod
+        def reload() -> None:
+            return None
+
+    class Containers:
+        @staticmethod
+        def get(_name):
+            raise deepswe_module.docker.errors.NotFound("missing")
+
+        @staticmethod
+        def run(*args, **kwargs):
+            run_calls.append((args, kwargs))
+            return b"" if kwargs.get("remove") else TaskContainer()
+
+    class Images:
+        @staticmethod
+        def pull(_image):
+            return SimpleNamespace(
+                id="sha256:image",
+                attrs={"RepoDigests": ["example@sha256:digest"]},
+            )
+
+    class Client:
+        images = Images()
+        containers = Containers()
+
+    async def outside_exec(*_args, **_kwargs):
+        return {"exit_code": 0, "stdout": ""}
+
+    monkeypatch.setattr(deepswe_module.docker, "from_env", lambda: Client())
+    monkeypatch.setattr(
+        deepswe_module.TerminalBenchAdapter,
+        "_docker_exec_outside",
+        outside_exec,
+    )
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter.sandy = SimpleNamespace(
+        execute_command=AsyncMock(return_value={"exit_code": 0, "stdout": ""})
+    )
+
+    result = await adapter._start_agent_container(
+        "sandbox",
+        {"docker_image": "example:task", "cpus": 2, "memory_mb": 1024},
+        "task-container",
+        30,
+        {"source": "/host/sandbox", "destination": "/workspace"},
+    )
+
+    assert result["ok"] is True
+    assert len(run_calls) == 2
+    assert run_calls[0][1]["volumes"] == {
+        "/host/sandbox/repo": {"bind": "/workspace/repo", "mode": "rw"}
+    }
+    assert "cp -a /app/. /workspace/repo/" in run_calls[0][1]["command"][1]
+    assert run_calls[1][1]["volumes"] == {"/host/sandbox/repo": {"bind": "/app", "mode": "rw"}}
+    assert result["workspace"] == {
+        "mode": "shared_bind_mount",
+        "copy_mount_scope": "repository_only",
+        "agent_repository": "/workspace/repo",
+        "task_repository": "/app",
+        "read_write": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_shared_workspace_probe_round_trips_through_task_runtime(monkeypatch) -> None:
+    class SandyStub:
+        value = ""
+
+        async def execute_command(self, _sandbox_id, command, **_kwargs):
+            if command.startswith("printf %s"):
+                self.value = command.split("agent-", 1)[1].split(" ", 1)[0]
+                self.value = "agent-" + self.value
+                return {"exit_code": 0, "stdout": ""}
+            if command.startswith("cat "):
+                return {"exit_code": 0, "stdout": self.value}
+            if command.startswith("rm -f "):
+                self.value = ""
+                return {"exit_code": 0, "stdout": ""}
+            raise AssertionError(command)
+
+    sandy = SandyStub()
+
+    async def outside_exec(_adapter, _container, argv, **_kwargs):
+        assert argv[:2] == ["sh", "-c"]
+        assert "/app/.chutes-workspace-probe-" in argv[2]
+        sandy.value = "task-" + sandy.value.removeprefix("agent-")
+        return {"exit_code": 0, "stdout": ""}
+
+    monkeypatch.setattr(
+        deepswe_module.TerminalBenchAdapter,
+        "_docker_exec_outside",
+        outside_exec,
+    )
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter.sandy = sandy
+
+    proof = await adapter._verify_shared_task_workspace("sandbox", "task-container")
+
+    assert proof["shared"] is True
+    assert proof["agent_repository"] == "/workspace/repo"
+    assert proof["task_repository"] == "/app"
+
+
+@pytest.mark.parametrize("agent", ["chutescoder", "chutescoder-baseline", "codex"])
+def test_every_codex_family_arm_enters_the_same_repository(
+    agent: str,
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    observed = tmp_path / "observed.json"
+    binary = tmp_path / "real-agent"
+    binary.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['OBSERVED']).write_text(json.dumps({"
+        "'cwd': os.getcwd(), 'args': sys.argv[1:]}))\n"
+    )
+    binary.chmod(0o755)
+    wrapper = tmp_path / deepswe_module.DEEPSWE_AGENT_COMMANDS[agent]
+    wrapper.write_text(DeepSWEAdapter._agent_workdir_wrapper(str(binary), str(repository)))
+    wrapper.chmod(0o755)
+
+    subprocess.run(
+        [str(wrapper), "--cwd", "/workspace", "--model", "test-model"],
+        check=True,
+        env={**os.environ, "OBSERVED": str(observed)},
+    )
+
+    assert json.loads(observed.read_text()) == {
+        "cwd": str(repository),
+        "args": ["--cwd", str(repository), "--model", "test-model"],
+    }
+    env = DeepSWEAdapter._agent_workspace_env({"TOKEN": "value"})
+    assert env["PATH"].split(":", 1)[0] == "/workspace/.chutes/bin"
+    assert env["TOKEN"] == "value"
 
 
 class _RetentionSandy:
@@ -344,6 +527,10 @@ def test_compaction_experiment_metrics_are_queryable_per_arm(agent: str) -> None
                     "compaction_events_by_type": {"context_compacted": 3},
                     "rollout_line_count": 456,
                     "tool_calls_by_name": {"python": 88},
+                    "rlm_native_helper_calls_by_name": {"read_file": 4, "grep": 2},
+                    "rlm_native_helper_paths": ["src", "src/main.py"],
+                    "rlm_python_cells_with_subprocess": 0,
+                    "rlm_python_cells_with_docker": 0,
                 },
             },
         }
@@ -364,6 +551,14 @@ def test_compaction_experiment_metrics_are_queryable_per_arm(agent: str) -> None
         "tool_calls_by_name": {"python": 88},
         "rollout_metrics_complete": True,
         "score": 1.0,
+    }
+    assert result.metadata["repository_access"] == {
+        "agent_repository": "/workspace/repo",
+        "task_repository": "/app",
+        "rlm_native_helper_calls_by_name": {"read_file": 4, "grep": 2},
+        "rlm_native_helper_paths": ["src", "src/main.py"],
+        "rlm_python_cells_with_subprocess": 0,
+        "rlm_python_cells_with_docker": 0,
     }
 
 
@@ -591,6 +786,47 @@ async def test_agent_view_hash_scan_fails_on_heldout_bytes() -> None:
 
     assert proof["clean"] is False
     assert proof["heldout_hash_matches"] == [f"{digest}  /tmp/copied-hidden-test"]
+
+
+@pytest.mark.asyncio
+async def test_pre_image_holdout_proof_rejects_every_workspace_archive() -> None:
+    commands = []
+
+    class SandyStub:
+        async def execute_command(self, _sandbox_id, command, **_kwargs):
+            commands.append(command)
+            return {"exit_code": 0, "stdout": "ANSWERS=0 ARCHIVES=0 CACHE_FILES=0\n"}
+
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter.sandy = SandyStub()
+
+    proof = await adapter._verify_workspace_clean("sandbox")
+
+    assert proof["clean"] is True
+    assert "-name '*.tar'" in commands[0]
+    assert "-name '*.b64'" in commands[0]
+    assert "! -path '/workspace/repo/*'" not in commands[0]
+
+
+@pytest.mark.asyncio
+async def test_final_holdout_proof_only_exempts_archives_inside_public_task_repo() -> None:
+    commands = []
+
+    class SandyStub:
+        async def execute_command(self, _sandbox_id, command, **_kwargs):
+            commands.append(command)
+            return {"exit_code": 0, "stdout": "ANSWERS=0 ARCHIVES=0 CACHE_FILES=0\n"}
+
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter.sandy = SandyStub()
+
+    proof = await adapter._verify_workspace_clean(
+        "sandbox",
+        task_repository_present=True,
+    )
+
+    assert proof["clean"] is True
+    assert "! -path '/workspace/repo/*'" in commands[0]
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,8 @@ Last verified: 2026-08-07.
 The `deepswe` adapter runs the public DeepSWE v1.1 corpus through a selectable
 Sandy CLI (`codex`, `chutescoder`, or `chutescoder-baseline`). This intentionally
 differs from the official leaderboard's Pier + mini-SWE-agent + Modal scaffold,
-so exported results identify the harness as `sandy-cli-separate-verifier`.
+so exported results identify the harness as
+`sandy-cli-direct-workspace-separate-verifier`.
 Select an arm with run config
 `{"deepswe": {"agent": "chutescoder"}}` (also accepts
 `chutescoder-baseline` and `codex`) or the `DEEPSWE_AGENT` environment variable.
@@ -18,6 +19,8 @@ path does not install a runner-controlled config. Each retained DeepSWE item
 stores a queryable `item_metadata.compaction_experiment` object containing the
 arm, requested/configured context, structured compaction-event count, rollout
 line count, tool-call counts by name, and item score.
+Retained rollout parsing also populates `item_metadata.repository_access` with
+RLM native-helper counts and paths plus Python-cell Docker/subprocess counts.
 
 ## Pinned corpus
 
@@ -68,9 +71,14 @@ uploaded to Sandy. The loader creates a sanitized agent archive in the worker
 process and a tests-only verifier archive; reference-solution bytes are
 discarded, and the downloaded source archive is deleted from the runner cache.
 The uploaded sanitized archive is deleted immediately after extraction and its
-absence is proved before the task image is pulled. The adapter then checks from
-inside the actual agent container that `/tests`, `/solution`, and exact held-out
-file hashes are absent, including if those bytes were renamed.
+absence is proved before the task image is pulled. The task image's `/app`
+checkout is then copied into the sandbox-private `/workspace/repo` and mounted
+back into the no-network task runtime at `/app`. A two-way sentinel proves both
+paths expose the same writable bytes. The CLI enters `/workspace/repo`, so its
+native repository helpers operate on the task files; task-image-only commands
+remain available through the task-scoped Docker gateway. The adapter checks
+from both namespaces that `/tests`, `/solution`, and exact held-out file hashes
+are absent, including if those bytes were renamed, before the CLI starts.
 
 During the agent phase the task container uses Docker `--network none`. The
 Sandy CLI namespace also blackholes GitHub, Hugging Face, Datacurve, and Harbor
@@ -83,6 +91,14 @@ tests-only archive. It builds the task's `tests/Dockerfile`, starts a distinct
 no-network verifier container at the pinned base commit, transfers only
 `model.patch`, and runs `/tests/test.sh` there. The reference solution is never
 uploaded or used for grading.
+
+The shared checkout deliberately joins only the two components already in the
+agent trust domain: the Sandy CLI and its editable no-network task runtime. The
+raw Docker socket and shared Sandy cache remain absent, fresh-container and
+cross-container gateway probes must still fail, and the verifier has neither
+the shared mount nor any other path into the agent sandbox.
+The temporary no-network copy container receives only the empty repository
+directory, not the rest of the Sandy workspace.
 
 ## Storage behavior
 
@@ -97,5 +113,6 @@ images before rate limiting. Their compressed layer totals ranged from 0.704
 GiB to 2.373 GiB (median 0.794 GiB, mean 0.922 GiB). The verifier image reuses
 the source layers and adds the small task-specific tests layer rather than a
 second full copy. Runtime writable-layer demand can still approach the task's
-declared 20 GiB storage ceiling, so a full run must remain sequential on the
-current disk-constrained host.
+declared 20 GiB storage ceiling. Direct workspace access also materializes one
+copy of `/app` in the sandbox workspace for the duration of an item, so a full
+run must remain sequential on the current disk-constrained host.

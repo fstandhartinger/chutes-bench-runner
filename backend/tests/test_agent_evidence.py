@@ -76,6 +76,34 @@ def _bundle_without_rollout() -> bytes:
     return buffer.getvalue()
 
 
+def _bundle_with_native_repository_helpers() -> bytes:
+    event = {
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "name": "python",
+            "arguments": json.dumps(
+                {
+                    "code": (
+                        "source = read_file('src/worker.py')\n"
+                        "hits = grep('def run', path='src', glob='*.py')\n"
+                        "print(len(source), len(hits))"
+                    )
+                }
+            ),
+        },
+    }
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
+        payload = (json.dumps(event) + "\n").encode()
+        info = tarfile.TarInfo(
+            "rollouts/chutescoder/sessions/2026/08/07/rollout-native-helper.jsonl"
+        )
+        info.size = len(payload)
+        bundle.addfile(info, io.BytesIO(payload))
+    return buffer.getvalue()
+
+
 class _FakeSandy:
     def __init__(self, bundle: bytes, *, expected_sha256: str | None = None):
         self.bundle = bundle
@@ -165,7 +193,43 @@ async def test_retention_transfers_chunks_and_verifies_in_sandbox_hash(
         "compaction_events": 0,
         "compaction_events_by_type": {},
         "tool_calls_by_name": {},
+        "rlm_native_helper_calls_by_name": {},
+        "rlm_native_helper_paths": [],
+        "rlm_python_cells_with_subprocess": 0,
+        "rlm_python_cells_with_docker": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_retained_rollout_reports_native_task_file_helpers_without_docker_tunnel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle_with_native_repository_helpers()
+    sandy = _FakeSandy(bundle)
+    monkeypatch.setattr("app.benchmarks.agent_evidence.get_settings", lambda: _settings(tmp_path))
+
+    result = await retain_agent_evidence(
+        sandy,
+        "sandbox-native-helper",
+        run_id="adapter-path-proof",
+        benchmark_name="deepswe",
+        item_id="native-helper",
+        require_rollout=True,
+    )
+
+    assert result["status"] == "retained"
+    assert Path(result["path"]).is_file()
+    assert result["rollout_metrics"]["rlm_native_helper_calls_by_name"] == {
+        "grep": 1,
+        "read_file": 1,
+    }
+    assert result["rollout_metrics"]["rlm_native_helper_paths"] == [
+        "src",
+        "src/worker.py",
+    ]
+    assert result["rollout_metrics"]["rlm_python_cells_with_subprocess"] == 0
+    assert result["rollout_metrics"]["rlm_python_cells_with_docker"] == 0
 
 
 @pytest.mark.asyncio
@@ -320,6 +384,10 @@ def test_rollout_metrics_count_structured_compaction_and_tool_events(tmp_path: P
         "compaction_events": 1,
         "compaction_events_by_type": {"context_compacted": 1},
         "tool_calls_by_name": {"exec_command": 1, "python": 2},
+        "rlm_native_helper_calls_by_name": {},
+        "rlm_native_helper_paths": [],
+        "rlm_python_cells_with_subprocess": 0,
+        "rlm_python_cells_with_docker": 0,
     }
 
 
