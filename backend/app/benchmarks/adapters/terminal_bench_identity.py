@@ -37,7 +37,7 @@ class TerminalBenchSpec:
         return f"https://codeload.github.com/{self.repository}/tar.gz/{self.commit}"
 
 
-# Source: harbor-framework/terminal-bench registry.json, dataset
+# Source: harbor-framework/terminal-bench-1 registry.json, dataset
 # terminal-bench-core==0.1.1. The registry pins task contents to commit
 # 91e10457b5410f16c44364da1a34cb6de8c488a5 and lists these 80 task IDs.
 TERMINAL_BENCH_1_TASK_IDS = (
@@ -222,9 +222,11 @@ TERMINAL_BENCH_2_TASK_IDS = (
 
 # Source: NVIDIA-NeMo/Evaluator commit bd952253260e7077973aadf5fc656e425d2758e1,
 # `_TB_HARD_TASKS`. NVIDIA identifies this as the curated 47-task leaderboard
-# subset. Every ID is a `difficulty: hard` task at upstream Terminal-Bench
+# subset. Every ID is a `difficulty: hard` task at upstream Terminal-Bench v1
 # commit 74221fb; the only other hard-tagged task there, super-benchmark-upet,
-# is not part of this manifest.
+# is not part of this manifest. The legacy task repository moved to
+# harbor-framework/terminal-bench-1; harbor-framework/terminal-bench is now a
+# different repository and does not contain this commit.
 TERMINAL_BENCH_HARD_TASK_IDS = (
     "aimo-airline-departures",
     "blind-maze-explorer-5x5",
@@ -279,13 +281,13 @@ TERMINAL_BENCH_HARD_TASK_IDS = (
 TERMINAL_BENCH_1 = TerminalBenchSpec(
     display_name="Terminal-Bench 1.0 Core",
     expected_count=80,
-    repository="harbor-framework/terminal-bench",
+    repository="harbor-framework/terminal-bench-1",
     commit="91e10457b5410f16c44364da1a34cb6de8c488a5",
-    archive_sha256="c0dd697e58672818836607a3af007c16b67368237703c4f6fb4b713eaf9ef0f4",
+    archive_sha256="2e047525559b478ee9706a8ead93c43a5181ac7006967e8c23794e7f244a0a5f",
     task_root="tasks",
     task_format="legacy",
     task_ids=TERMINAL_BENCH_1_TASK_IDS,
-    manifest_repository="harbor-framework/terminal-bench",
+    manifest_repository="harbor-framework/terminal-bench-1",
     manifest_commit="d28711d0da2675d0bb1d56de45ae5df6082438a3",
 )
 
@@ -318,9 +320,9 @@ TERMINAL_BENCH_2_1 = TerminalBenchSpec(
 TERMINAL_BENCH_HARD = TerminalBenchSpec(
     display_name="Terminal-Bench Hard (47-task leaderboard subset)",
     expected_count=47,
-    repository="harbor-framework/terminal-bench",
+    repository="harbor-framework/terminal-bench-1",
     commit="74221fb0b6b5a7f88e53bed5726edaaf236348c9",
-    archive_sha256="38298cd844fa3798a720f4e9de8872c69216d7b7760148368a8b20381e8500ae",
+    archive_sha256="3211a056b2951a9d3db7a7af7d1e89295f46774a8135fd67581e9ccc5b753836",
     task_root="tasks",
     task_format="legacy",
     task_ids=TERMINAL_BENCH_HARD_TASK_IDS,

@@ -1,6 +1,6 @@
 # Terminal-Bench benchmark identity
 
-Last verified: 2026-08-06.
+Last verified: 2026-08-07.
 
 This harness does not infer a benchmark from a Hugging Face dataset name or a
 `difficulty` column. Every runnable Terminal-Bench adapter is tied to an exact
@@ -34,8 +34,8 @@ The official legacy repository calls the leaderboard dataset
 `task_id_subset` and pins task content to commit
 `91e10457b5410f16c44364da1a34cb6de8c488a5`:
 
-- Manifest: [`registry.json` at repository commit `d28711d`](https://github.com/harbor-framework/terminal-bench/blob/d28711d0da2675d0bb1d56de45ae5df6082438a3/registry.json)
-- Task content: [`terminal-bench` commit `91e10457`](https://github.com/harbor-framework/terminal-bench/commit/91e10457b5410f16c44364da1a34cb6de8c488a5)
+- Manifest: [`registry.json` at repository commit `d28711d`](https://github.com/harbor-framework/terminal-bench-1/blob/d28711d0da2675d0bb1d56de45ae5df6082438a3/registry.json)
+- Task content: [`terminal-bench-1` commit `91e10457`](https://github.com/harbor-framework/terminal-bench-1/commit/91e10457b5410f16c44364da1a34cb6de8c488a5)
 - Official 1.0 leaderboard instruction: [`terminal-bench-core==0.1.1`](https://www.tbench.ai/leaderboard/terminal-bench/1.0)
 - Expected count: **80**
 
@@ -98,7 +98,7 @@ in the missing membership list:
   Terminal-Bench commit `74221fb`, 47 hard tasks, and the Terminus 2 agent as
   its evaluation configuration.
 - All 47 manifest IDs exist at
-  [`terminal-bench` commit `74221fb`](https://github.com/harbor-framework/terminal-bench/tree/74221fb0b6b5a7f88e53bed5726edaaf236348c9/tasks)
+  [`terminal-bench-1` commit `74221fb`](https://github.com/harbor-framework/terminal-bench-1/tree/74221fb0b6b5a7f88e53bed5726edaaf236348c9/tasks)
   and all 47 have `difficulty: hard`. That revision contains one additional
   hard-tagged task, `super-benchmark-upet`; NVIDIA's manifest establishes that
   it is not in the historical 47-task leaderboard subset.
@@ -107,6 +107,12 @@ in the missing membership list:
 `terminal_bench_hard` therefore uses the NVIDIA membership manifest and task
 content from the pinned upstream commit. It does not derive membership by
 filtering a mutable difficulty column.
+
+The legacy repository moved from `laude-institute/terminal-bench` to
+`harbor-framework/terminal-bench-1`. The old owner URL still redirects in the
+GitHub UI, but `harbor-framework/terminal-bench` now names a different project
+and its codeload endpoint cannot serve either legacy commit. The adapters use
+the canonical `terminal-bench-1` codeload URLs directly.
 
 There is also a later **44-task** variant. The same NeMo source checks it in as
 `_TB_HARD_AA_SPLIT_TASKS` and identifies it as the split used by the AA scoring
@@ -137,8 +143,8 @@ verifies it before parsing:
 
 | Task content | SHA-256 |
 | --- | --- |
-| Terminal-Bench 1.0 Core, `91e10457` | `c0dd697e58672818836607a3af007c16b67368237703c4f6fb4b713eaf9ef0f4` |
-| Terminal-Bench Hard, `74221fb` | `38298cd844fa3798a720f4e9de8872c69216d7b7760148368a8b20381e8500ae` |
+| Terminal-Bench 1.0 Core, `91e10457` | `2e047525559b478ee9706a8ead93c43a5181ac7006967e8c23794e7f244a0a5f` |
+| Terminal-Bench Hard, `74221fb` | `3211a056b2951a9d3db7a7af7d1e89295f46774a8135fd67581e9ccc5b753836` |
 | Terminal-Bench 2.0, `2fd12b88` | `6718ca1bd5c3536c9099cb1b2cf22a78c7c7159a85a26053a2d85d20dc0b6f4d` |
 | Terminal-Bench 2.1, `5c8eadf1` | `f9298006a7462a0b933c880aed8494c8c7b68ea4f97d792460f1bdffff2e6620` |
 
@@ -152,6 +158,11 @@ can enumerate items:
    `task.toml`).
 3. The loaded count equals the named benchmark's expected count.
 4. Task IDs are unique and exactly match the checked-in manifest in order.
+
+The test suite also downloads every unique pinned source into an empty cache
+and runs the production archive loader. This checks URL reachability, SHA-256,
+archive layout, metadata presence, exact membership, ordering, and expected
+count together, so a dead codeload pin cannot pass on manifest length alone.
 
 The existing incident-driven controls remain in both execution paths:
 

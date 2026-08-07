@@ -91,11 +91,39 @@ def test_item_timeout_covers_long_agent_budget(monkeypatch) -> None:
 
 
 def test_hard_manifest_is_the_reproduced_leaderboard_subset() -> None:
+    assert TERMINAL_BENCH_HARD.repository == "harbor-framework/terminal-bench-1"
     assert TERMINAL_BENCH_HARD.commit == "74221fb0b6b5a7f88e53bed5726edaaf236348c9"
     assert TERMINAL_BENCH_HARD.manifest_repository == "NVIDIA-NeMo/Evaluator"
     assert TERMINAL_BENCH_HARD.manifest_commit == "bd952253260e7077973aadf5fc656e425d2758e1"
     assert TERMINAL_BENCH_HARD.task_ids[0] == "aimo-airline-departures"
     assert TERMINAL_BENCH_HARD.task_ids[-1] == "write-compressor"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("adapter_class", "spec"),
+    (
+        (TerminalBench1Adapter, TERMINAL_BENCH_1),
+        (TerminalBench20Adapter, TERMINAL_BENCH_2_0),
+        (TerminalBench21Adapter, TERMINAL_BENCH_2_1),
+        (TerminalBenchHardAdapter, TERMINAL_BENCH_HARD),
+    ),
+)
+async def test_each_pinned_source_archive_is_reachable_and_loadable(
+    adapter_class, spec, tmp_path, monkeypatch
+) -> None:
+    """Exercise the real source URL, checksum, layout, and task membership."""
+    # An empty per-test cache is intentional: a previously downloaded archive
+    # must not hide a dead pin, which was the production failure this guards.
+    monkeypatch.setenv("TERMINAL_BENCH_DATASET_CACHE", str(tmp_path))
+    adapter = adapter_class.__new__(adapter_class)
+
+    archive = await adapter._load_source_archive()
+    adapter._items = adapter._items_from_source_archive(archive)
+    adapter._assert_benchmark_identity()
+
+    assert len(adapter._items) == spec.expected_count
+    assert tuple(item["task_id"] for item in adapter._items) == spec.task_ids
 
 
 def test_harbor_source_archive_is_packaged_in_manifest_order() -> None:
