@@ -346,7 +346,7 @@ async def test_docker_boundary_attempts_fresh_container_source_fetch(monkeypatch
     class ExecResult:
         exit_code = 0
         output = (
-            b"SOCKET=ABSENT\nCACHE_MOUNT=ABSENT\nCACHE_FILES=0\n"
+            b"SOCKET=ABSENT\nCACHE_MOUNT=ABSENT\nCACHE_FILES=1\n"
             b"RAW_DOCKER=BLOCKED\nSPAWN=BLOCKED\n"
             b"OTHER_CONTAINER=BLOCKED\nTASK_PATH=WORKS\n"
         )
@@ -391,3 +391,24 @@ async def test_agent_view_hash_scan_fails_on_heldout_bytes() -> None:
 
     assert proof["clean"] is False
     assert proof["heldout_hash_matches"] == [f"{digest}  /tmp/copied-hidden-test"]
+
+
+@pytest.mark.asyncio
+async def test_agent_view_allows_private_image_cache_without_heldout_bytes() -> None:
+    class SandyStub:
+        async def execute_command(self, *_args, **_kwargs):
+            return {
+                "exit_code": 0,
+                "stdout": "ANSWERS=0 ARCHIVES=0 CACHE_FILES=1\n",
+            }
+
+    adapter = DeepSWEAdapter.__new__(DeepSWEAdapter)
+    adapter.sandy = SandyStub()
+
+    proof = await adapter._verify_workspace_clean(
+        "sandbox",
+        [{"sha256": "a" * 64, "size": 123}],
+    )
+
+    assert proof["clean"] is True
+    assert proof["heldout_hash_matches"] == []

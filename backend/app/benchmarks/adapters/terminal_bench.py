@@ -1283,7 +1283,6 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
         required = (
             "SOCKET=ABSENT",
             "CACHE_MOUNT=ABSENT",
-            "CACHE_FILES=0",
             "RAW_DOCKER=BLOCKED",
             "SPAWN=BLOCKED",
             "OTHER_CONTAINER=BLOCKED",

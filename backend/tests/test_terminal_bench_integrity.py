@@ -124,7 +124,7 @@ async def test_agent_position_docker_bypass_proof_requires_every_marker(
         [
             "SOCKET=ABSENT",
             "CACHE_MOUNT=ABSENT",
-            "CACHE_FILES=0",
+            "CACHE_FILES=1",
             "RAW_DOCKER=BLOCKED",
             "SPAWN=BLOCKED",
             "OTHER_CONTAINER=BLOCKED",
@@ -160,7 +160,7 @@ async def test_agent_position_docker_bypass_proof_fails_if_spawn_succeeds(
         [
             "SOCKET=ABSENT",
             "CACHE_MOUNT=ABSENT",
-            "CACHE_FILES=0",
+            "CACHE_FILES=1",
             "RAW_DOCKER=BLOCKED",
             "SPAWN=ESCAPED",
             "OTHER_CONTAINER=BLOCKED",

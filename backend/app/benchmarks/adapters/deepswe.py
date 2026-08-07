@@ -540,7 +540,6 @@ class DeepSWEAdapter(BenchmarkAdapter):
                 (result or {}).get("exit_code") == 0
                 and "ANSWERS=0" in stdout
                 and "ARCHIVES=0" in stdout
-                and (not heldout_hashes or "CACHE_FILES=0" in stdout)
                 and not found_hashes
             ),
             "stdout": stdout,
@@ -699,7 +698,6 @@ class DeepSWEAdapter(BenchmarkAdapter):
         required = (
             "SOCKET=ABSENT",
             "CACHE_MOUNT=ABSENT",
-            "CACHE_FILES=0",
             "RAW_DOCKER=BLOCKED",
             "SPAWN=BLOCKED",
             "OTHER_CONTAINER=BLOCKED",
