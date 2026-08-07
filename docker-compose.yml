@@ -53,6 +53,7 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+      - /var/run/docker.sock:/var/run/docker.sock
     command: python -m app.worker.runner
 
   frontend:
@@ -72,7 +73,6 @@ services:
 
 volumes:
   postgres_data:
-
 
 
 
