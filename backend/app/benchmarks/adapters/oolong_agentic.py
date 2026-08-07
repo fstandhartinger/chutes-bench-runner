@@ -83,6 +83,7 @@ EVIDENCE_RETENTION_EXCLUSION_REASON = "infrastructure_evidence_retention"
 LOCAL_ANSWER_LEAK_EXCLUSION_REASON = "integrity_local_answer_leak"
 NETWORK_SEAL_EXCLUSION_REASON = "integrity_network_seal_unproven"
 NETWORK_SEAL_BROKEN_EXCLUSION_REASON = "integrity_network_seal_broken"
+NETWORK_PROBE_EXCLUSION_REASON = "infrastructure_network_probe"
 
 
 
@@ -300,6 +301,18 @@ class OolongAgenticAdapter(OolongAdapter):
         return {
             "sealed": sealed,
             "stdout": stdout,
+            "probe_exit_code": (result or {}).get("exit_code"),
+            "probe_error": (result or {}).get("error"),
+            "probe_complete": all(
+                marker in stdout
+                for marker in (
+                    "HOSTS=",
+                    "CURL=",
+                    "SOURCE_FETCH=",
+                    "PUBLIC_FETCH=",
+                    "PROVIDER_FETCH=",
+                )
+            ),
             "probe_url": probe_url,
             "provider_probe_url": provider_url,
             "provider_host": self._provider_host(),
@@ -311,6 +324,21 @@ class OolongAgenticAdapter(OolongAdapter):
         verdict = await self._probe_network_seal(sandbox_id)
         verdict["install_exit_code"] = (installed or {}).get("exit_code")
         return verdict
+
+    @staticmethod
+    def _network_probe_exclusion_reason(
+        verdict: dict[str, Any], integrity_reason: str
+    ) -> str:
+        """Separate an unreachable verifier from a reachable leaked network.
+
+        A resource-exhausted sandbox can return ``sh: Cannot fork`` before the
+        probe prints any of its markers. That proves neither that the seal held
+        nor that it broke, so it is infrastructure and must never be reported
+        as an integrity violation (or scored as a model failure).
+        """
+        if verdict.get("probe_exit_code") != 0 or not verdict.get("probe_complete"):
+            return NETWORK_PROBE_EXCLUSION_REASON
+        return integrity_reason
 
     async def _probe_local_answer_sources(self, sandbox_id: str) -> dict[str, Any]:
         """Prove the sandbox did not inherit a local OOLONG dataset cache."""
@@ -523,7 +551,8 @@ class OolongAgenticAdapter(OolongAdapter):
                 self.get_item_timeout_seconds(item_id) + 59
             ) // 60 + 1
             sandbox_id = await self.sandy.create_sandbox(
-                timeout_minutes=sandbox_ttl_minutes
+                timeout_minutes=sandbox_ttl_minutes,
+                requires_agent=True,
             )
             if not sandbox_id:
                 return self._excluded_result(
@@ -574,7 +603,9 @@ class OolongAgenticAdapter(OolongAdapter):
                         item=item,
                         prompt=prompt,
                         agent_name=agent_name,
-                        reason=NETWORK_SEAL_EXCLUSION_REASON,
+                        reason=self._network_probe_exclusion_reason(
+                            network_seal_before, NETWORK_SEAL_EXCLUSION_REASON
+                        ),
                         error=(
                             "Refusing to score: OOLONG source network seal could not "
                             f"be proved: {network_seal_before}"
@@ -712,7 +743,9 @@ class OolongAgenticAdapter(OolongAdapter):
                         item=item,
                         prompt=prompt,
                         agent_name=agent_name,
-                        reason=NETWORK_SEAL_BROKEN_EXCLUSION_REASON,
+                        reason=self._network_probe_exclusion_reason(
+                            network_seal_after, NETWORK_SEAL_BROKEN_EXCLUSION_REASON
+                        ),
                         error=(
                             "Refusing to score: the OOLONG source seal did not "
                             f"survive the agent run: {network_seal_after}"

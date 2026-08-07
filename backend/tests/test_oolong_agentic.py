@@ -5,9 +5,12 @@ import pytest
 
 from app.benchmarks.adapters.oolong_agentic import (
     EVIDENCE_RETENTION_EXCLUSION_REASON,
+    NETWORK_PROBE_EXCLUSION_REASON,
+    NETWORK_SEAL_BROKEN_EXCLUSION_REASON,
     OolongAgenticAdapter,
 )
 from app.benchmarks.base import ItemResult
+from app.services.sandy_service import SandyService
 
 
 class _CorpusSandy:
@@ -43,18 +46,53 @@ async def test_corpus_upload_proves_bytes_and_sha256():
 
 
 class _SealSandy:
-    def __init__(self, probe_stdout):
+    def __init__(self, probe_stdout, probe_exit_code=0):
         self.probe_stdout = probe_stdout
+        self.probe_exit_code = probe_exit_code
 
     async def execute_command(self, sandbox_id, command, timeout_ms=None):
         if "provider_addresses=$(getent" in command:
             return {"exit_code": 0, "stdout": ""}
-        return {"exit_code": 0, "stdout": self.probe_stdout}
+        return {"exit_code": self.probe_exit_code, "stdout": self.probe_stdout}
 
 
 class _OpenRouterClient:
     def get_api_base_url(self):
         return "https://openrouter.ai/api/v1"
+
+
+class _CreateResponse:
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"sandboxId": "agent-sandbox"}
+
+
+class _CreateClient:
+    def __init__(self):
+        self.payload = None
+
+    async def post(self, url, headers, json):
+        self.payload = json
+        return _CreateResponse()
+
+
+@pytest.mark.asyncio
+async def test_agent_sandbox_requests_agent_ready_pid_budget():
+    sandy = SandyService.__new__(SandyService)
+    sandy.api_key = "test"
+    sandy.base_url = "https://sandy.test"
+    sandy.docker_upstream = None
+    sandy.last_error = None
+    sandy.headers = {}
+    sandy._client = _CreateClient()
+
+    sandbox_id = await sandy.create_sandbox(requires_agent=True, timeout_minutes=21)
+
+    assert sandbox_id == "agent-sandbox"
+    assert sandy._client.payload["flavor"] == "agent-ready"
+    assert sandy._client.payload["timeoutMinutes"] == 21
 
 
 @pytest.mark.asyncio
@@ -69,6 +107,8 @@ async def test_network_seal_requires_hosts_entry_curl_and_failed_fetch():
     sealed = await adapter._seal_network("sandbox")
 
     assert sealed["sealed"] is True
+    assert sealed["probe_complete"] is True
+    assert sealed["probe_exit_code"] == 0
 
 
 @pytest.mark.asyncio
@@ -90,6 +130,33 @@ async def test_network_seal_rejects_unproved_or_reachable_sources(stdout):
     verdict = await adapter._probe_network_seal("sandbox")
 
     assert verdict["sealed"] is False
+
+
+@pytest.mark.asyncio
+async def test_network_probe_cannot_fork_is_infrastructure_not_broken_seal():
+    adapter = OolongAgenticAdapter.__new__(OolongAgenticAdapter)
+    adapter.sandy = _SealSandy("sh: 4: Cannot fork", probe_exit_code=2)
+    adapter.client = _OpenRouterClient()
+
+    verdict = await adapter._probe_network_seal("sandbox")
+
+    assert verdict["sealed"] is False
+    assert verdict["probe_complete"] is False
+    assert adapter._network_probe_exclusion_reason(
+        verdict, NETWORK_SEAL_BROKEN_EXCLUSION_REASON
+    ) == NETWORK_PROBE_EXCLUSION_REASON
+
+
+def test_complete_failed_network_probe_remains_integrity_exclusion():
+    verdict = {
+        "probe_exit_code": 0,
+        "probe_complete": True,
+        "sealed": False,
+    }
+
+    assert OolongAgenticAdapter._network_probe_exclusion_reason(
+        verdict, NETWORK_SEAL_BROKEN_EXCLUSION_REASON
+    ) == NETWORK_SEAL_BROKEN_EXCLUSION_REASON
 
 
 def test_missing_evidence_excludes_item_without_changing_observed_score():

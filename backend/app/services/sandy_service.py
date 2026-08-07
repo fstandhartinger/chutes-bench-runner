@@ -64,6 +64,15 @@ class SandyService:
             "priority": priority,
             "preemptable": preemptable,
         }
+        # Agent CLIs (especially Prime Agent, which keeps a Node process tree
+        # plus persistent Python kernels) can exhaust the basic sandbox's
+        # default PID budget. Sandy's agent-ready flavor uses the same runtime
+        # image but raises the PID limit from 256 to at least 512. Without this,
+        # a successful rollout can leave the sandbox unable to fork the
+        # verifier/evidence commands, making infrastructure exhaustion look
+        # like an integrity failure.
+        if requires_agent:
+            payload["flavor"] = "agent-ready"
         # Sandy defaults to a 10-minute TTL and only extends it when someone
         # POSTs /api/sandboxes/{id}/refresh -- which bench-runner never does.
         # So a long benchmark item had its sandbox reaped out from under it at
