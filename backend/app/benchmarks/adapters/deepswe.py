@@ -1277,7 +1277,7 @@ class DeepSWEAdapter(BenchmarkAdapter):
         if result.metadata is None:
             result.metadata = {}
         rollout_metrics = evidence.get("rollout_metrics") or {}
-        result.metadata["compaction_experiment"] = {
+        compaction_experiment = {
             "schema_version": 1,
             "arm": state.get("agent") or result.metadata.get("agent"),
             "context_limit_tokens": state.get("context_limit_tokens"),
@@ -1289,6 +1289,11 @@ class DeepSWEAdapter(BenchmarkAdapter):
             "rollout_metrics_complete": rollout_metrics.get("complete"),
             "score": result.score,
         }
+        result.metadata["compaction_experiment"] = compaction_experiment
+        result.metadata["compaction_events"] = compaction_experiment["compaction_events"]
+        result.metadata["compaction_events_by_type"] = compaction_experiment[
+            "compaction_events_by_type"
+        ]
         result.metadata["agent_evidence"] = {
             key: evidence.get(key)
             for key in (
