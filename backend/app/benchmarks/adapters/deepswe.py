@@ -247,6 +247,10 @@ class DeepSWEAdapter(BenchmarkAdapter):
             )
         return max(totals)
 
+    def get_dataset_footprint(self):
+        """Return the measurement bound to the pinned DeepSWE release."""
+        return self.benchmark_spec.dataset_footprint
+
     async def get_total_items(self) -> int:
         if not self._items:
             await self.preload()

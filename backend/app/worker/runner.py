@@ -15,6 +15,7 @@ from sqlalchemy.orm import noload
 
 from app.benchmarks import get_adapter
 from app.benchmarks.base import BenchmarkAdapter, ItemResult
+from app.benchmarks.resource_preflight import check_dataset_disk_capacity
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.session import async_session_maker
@@ -1452,6 +1453,77 @@ class BenchmarkWorker:
             judge_client = get_chutes_client()
 
         try:
+            resource_declarations = {}
+            for run_benchmark in run_benchmarks:
+                if run_benchmark.status in (
+                    BenchmarkRunStatus.SUCCEEDED.value,
+                    BenchmarkRunStatus.FAILED.value,
+                    BenchmarkRunStatus.SKIPPED.value,
+                ):
+                    continue
+                adapter = get_adapter(
+                    run_benchmark.benchmark_name,
+                    client,
+                    run.model_slug,
+                    judge_client=judge_client,
+                )
+                if adapter is not None:
+                    resource_declarations[run_benchmark.benchmark_name] = (
+                        adapter.get_dataset_footprint()
+                    )
+
+            resource_preflight = check_dataset_disk_capacity(
+                resource_declarations,
+                run_config=run.config if isinstance(run.config, dict) else None,
+                safety_margin_bytes=settings.dataset_disk_safety_margin_bytes,
+                bench_data_dir=settings.bench_data_dir,
+            )
+            if not resource_preflight.allowed:
+                refusal = (
+                    f"{resource_preflight.exclusion_reason}: "
+                    f"{resource_preflight.message}"
+                )
+                for run_benchmark in run_benchmarks:
+                    if run_benchmark.status in (
+                        BenchmarkRunStatus.SUCCEEDED.value,
+                        BenchmarkRunStatus.FAILED.value,
+                        BenchmarkRunStatus.SKIPPED.value,
+                    ):
+                        continue
+                    await self._safe_update_benchmark_status(
+                        run_benchmark.id,
+                        BenchmarkRunStatus.SKIPPED,
+                        error_message=refusal,
+                    )
+                await self._safe_update_run_status(
+                    run.id,
+                    RunStatus.FAILED,
+                    error_message=refusal,
+                )
+                await self._safe_add_run_event(
+                    run.id,
+                    "run_resource_preflight_refused",
+                    message=refusal,
+                    data={
+                        "exclusion_reason": resource_preflight.exclusion_reason,
+                        "checks": list(resource_preflight.checks),
+                    },
+                )
+                logger.warning(
+                    "Run refused by dataset resource preflight",
+                    run_id=run.id,
+                    exclusion_reason=resource_preflight.exclusion_reason,
+                    checks=list(resource_preflight.checks),
+                )
+                return
+
+            await self._safe_add_run_event(
+                run.id,
+                "run_resource_preflight_succeeded",
+                message=resource_preflight.message,
+                data={"checks": list(resource_preflight.checks)},
+            )
+
             if run.provider == "chutes":
                 model = await db.get(Model, run.model_id)
                 chute_id = model.chute_id if model else None

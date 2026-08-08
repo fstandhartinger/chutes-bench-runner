@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.benchmarks.resource_preflight import MIB, DatasetCacheLocation, DatasetFootprint
+
 
 @dataclass(frozen=True)
 class DeepSWESpec:
@@ -11,6 +13,7 @@ class DeepSWESpec:
 
     display_name: str
     expected_count: int
+    dataset_footprint: DatasetFootprint
     repository: str
     commit: str
     archive_sha256: str
@@ -153,6 +156,11 @@ DEEPSWE_V1_1_TASK_IDS = (
 DEEPSWE_V1_1 = DeepSWESpec(
     display_name="DeepSWE v1.1 (Sandy CLI scaffold)",
     expected_count=113,
+    dataset_footprint=DatasetFootprint(
+        4 * MIB,
+        DatasetCacheLocation.TEMP,
+        "3,824,510-byte pinned codeload archive downloaded on 2026-08-08",
+    ),
     repository="datacurve-ai/deep-swe",
     commit="435ee89ec2f2e2289f33b0da4f992f0b7b7266b9",
     archive_sha256="34c6fabd3dad1770d753829378a81c3d8bb658ff255de9f01f3606e213cd2b46",

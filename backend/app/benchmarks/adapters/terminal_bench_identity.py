@@ -11,6 +11,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.benchmarks.resource_preflight import MIB, DatasetCacheLocation, DatasetFootprint
+
 
 @dataclass(frozen=True)
 class TerminalBenchSpec:
@@ -18,6 +20,7 @@ class TerminalBenchSpec:
 
     display_name: str
     expected_count: int
+    dataset_footprint: DatasetFootprint
     repository: str
     commit: str
     archive_sha256: str
@@ -237,6 +240,11 @@ TERMINAL_BENCH_HARD_TASK_IDS = tuple(TERMINAL_BENCH_HARD_MANIFEST["task_ids"])
 TERMINAL_BENCH_1 = TerminalBenchSpec(
     display_name="Terminal-Bench 1.0 Core",
     expected_count=80,
+    dataset_footprint=DatasetFootprint(
+        14 * MIB,
+        DatasetCacheLocation.TEMP,
+        "14,032,339-byte pinned codeload archive downloaded on 2026-08-08",
+    ),
     repository="harbor-framework/terminal-bench-1",
     commit="91e10457b5410f16c44364da1a34cb6de8c488a5",
     archive_sha256="2e047525559b478ee9706a8ead93c43a5181ac7006967e8c23794e7f244a0a5f",
@@ -250,6 +258,11 @@ TERMINAL_BENCH_1 = TerminalBenchSpec(
 TERMINAL_BENCH_2_0 = TerminalBenchSpec(
     display_name="Terminal-Bench 2.0",
     expected_count=89,
+    dataset_footprint=DatasetFootprint(
+        39 * MIB,
+        DatasetCacheLocation.TEMP,
+        "40,357,259-byte pinned codeload archive downloaded on 2026-08-08",
+    ),
     repository="harbor-framework/terminal-bench-2",
     commit="2fd12b88aafdd04a52c298e3940bcb189f9766d6",
     archive_sha256="6718ca1bd5c3536c9099cb1b2cf22a78c7c7159a85a26053a2d85d20dc0b6f4d",
@@ -263,6 +276,11 @@ TERMINAL_BENCH_2_0 = TerminalBenchSpec(
 TERMINAL_BENCH_2_1 = TerminalBenchSpec(
     display_name="Terminal-Bench 2.1",
     expected_count=89,
+    dataset_footprint=DatasetFootprint(
+        51 * MIB,
+        DatasetCacheLocation.TEMP,
+        "52,665,081-byte pinned codeload archive downloaded on 2026-08-08",
+    ),
     repository="harbor-framework/terminal-bench-2-1",
     commit="5c8eadf1f393183288fa08b8f73ca9a469cc5e00",
     archive_sha256="f9298006a7462a0b933c880aed8494c8c7b68ea4f97d792460f1bdffff2e6620",
@@ -276,6 +294,11 @@ TERMINAL_BENCH_2_1 = TerminalBenchSpec(
 TERMINAL_BENCH_HARD = TerminalBenchSpec(
     display_name="Terminal-Bench Hard (47-task leaderboard subset)",
     expected_count=TERMINAL_BENCH_HARD_MANIFEST["expected_count"],
+    dataset_footprint=DatasetFootprint(
+        41 * MIB,
+        DatasetCacheLocation.TEMP,
+        "42,370,791-byte pinned codeload archive downloaded on 2026-08-08",
+    ),
     repository=TERMINAL_BENCH_HARD_MANIFEST["task_source"]["repository"],
     commit=TERMINAL_BENCH_HARD_MANIFEST["task_source"]["commit"],
     archive_sha256=TERMINAL_BENCH_HARD_MANIFEST["task_source"]["archive_sha256"],

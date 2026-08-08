@@ -209,10 +209,15 @@ Optional but recommended:
 - `SANDY_BASE_URL`, `SANDY_API_KEY` (sandboxed benchmarks)
 - `SANDY_DOCKER_UPSTREAM` (route Docker-socket benchmarks to a Docker-backed Sandy upstream)
 - `BENCH_DATA_DIR`, `HF_HOME`, `HF_DATASETS_CACHE`, `HF_HUB_CACHE` (shared cache paths)
+- `DATASET_DISK_SAFETY_MARGIN_BYTES` (free space retained after declared dataset growth; defaults to 10 GiB)
 - `BENCH_SIGNING_PRIVATE_KEY`, `BENCH_SIGNING_PUBLIC_KEY` (signed exports)
 - `ADMIN_SECRET` (admin endpoints)
 - `CRITPT_EVAL_URL`, `CRITPT_API_KEY` (CritPt evaluation service)
 - `AA_OMNISCIENCE_JUDGE_MODEL`, `GDPVAL_JUDGE_MODEL` (LLM judges for AA-Omniscience/GDPval)
+
+Before loading any dataset, the worker checks the filesystem backing each effective cache path.
+Adapters with an unmeasured footprint are refused unless that individual run sets
+`config.resource_preflight.allow_unknown_dataset_footprint=true`.
 
 ## Testing
 

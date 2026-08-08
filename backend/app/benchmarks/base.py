@@ -5,6 +5,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Optional
 
+from app.benchmarks.resource_preflight import (
+    ADAPTER_DATASET_FOOTPRINTS,
+    DatasetCacheLocation,
+    DatasetFootprint,
+    unknown_footprint,
+)
 from app.services.inference_client import InferenceClient
 
 
@@ -66,6 +72,11 @@ class BenchmarkAdapter(ABC):
     - preload(): Called before evaluation starts
     - postprocess(): Called after all items are evaluated
     """
+
+    dataset_footprint = unknown_footprint(
+        DatasetCacheLocation.BENCH_DATA,
+        "adapter has not established a dataset footprint",
+    )
 
     def __init__(
         self,
@@ -131,6 +142,10 @@ class BenchmarkAdapter(ABC):
     def get_item_timeout_seconds(self, item_id: Optional[str] = None) -> Optional[int]:
         """Return the timeout for an item, or None to use the runner default."""
         return None
+
+    def get_dataset_footprint(self) -> DatasetFootprint:
+        """Return this adapter's fail-closed dataset disk declaration."""
+        return ADAPTER_DATASET_FOOTPRINTS.get(self.get_name(), self.dataset_footprint)
 
     def requires_setup(self) -> bool:
         """Return True if special setup is required."""

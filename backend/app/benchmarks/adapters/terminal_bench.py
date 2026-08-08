@@ -355,6 +355,10 @@ class TerminalBenchBaseAdapter(BenchmarkAdapter):
             )
         return max(item_timeouts)
 
+    def get_dataset_footprint(self):
+        """Return the measurement bound to this pinned benchmark release."""
+        return self.benchmark_spec.dataset_footprint
+
     async def get_total_items(self) -> int:
         if not self._items:
             await self.preload()

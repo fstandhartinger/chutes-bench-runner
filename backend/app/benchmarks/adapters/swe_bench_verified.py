@@ -125,6 +125,10 @@ class SWEBenchVerifiedAdapter(BenchmarkAdapter):
     )
     SEAL_MARKER = "chutes-bench-runner: SWE-bench Verified answer sources"
 
+    def get_dataset_footprint(self):
+        """Return the declaration bound to the pinned benchmark identity."""
+        return self.benchmark_spec.dataset_footprint
+
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._items: list[dict[str, Any]] = []

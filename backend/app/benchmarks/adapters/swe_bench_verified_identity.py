@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.benchmarks.resource_preflight import (
+    DatasetCacheLocation,
+    DatasetFootprint,
+    unknown_footprint,
+)
+
 
 @dataclass(frozen=True)
 class SWEBenchVerifiedSpec:
@@ -11,6 +17,7 @@ class SWEBenchVerifiedSpec:
 
     display_name: str
     expected_count: int
+    dataset_footprint: DatasetFootprint
     dataset_repository: str
     dataset_commit: str
     dataset_file: str
@@ -43,6 +50,10 @@ class SWEBenchVerifiedSpec:
 SWE_BENCH_VERIFIED = SWEBenchVerifiedSpec(
     display_name="SWE-bench Verified (Sandy CLI scaffold)",
     expected_count=500,
+    dataset_footprint=unknown_footprint(
+        DatasetCacheLocation.BENCH_DATA,
+        "official dataset and per-item evaluation-image disk growth have not been measured",
+    ),
     dataset_repository="princeton-nlp/SWE-bench_Verified",
     dataset_commit="c104f840cc67f8b6eec6f759ebc8b2693d585d4a",
     dataset_file="data/test-00000-of-00001.parquet",

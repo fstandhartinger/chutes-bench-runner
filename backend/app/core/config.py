@@ -128,6 +128,10 @@ class Settings(BaseSettings):
 
     # Benchmark data cache
     bench_data_dir: str = "/tmp/chutes-bench-data"
+    # Every run must retain this much free space after its declared dataset
+    # footprint. This host also carries production Postgres, so zero headroom
+    # is never an acceptable benchmark launch condition.
+    dataset_disk_safety_margin_bytes: int = 10 * 1024 * 1024 * 1024
 
     # CLI-agent evidence. The production worker bind-mounts /var/lib/sandy/cache
     # from the runner host, so this path survives worker and sandbox teardown.
